@@ -23,6 +23,8 @@ class PipelineConfig:
     roi_dir: Path = Path("high_resolution_work/roi")
     splits: tuple[str, ...] = ("train", "val", "test")
     resolution_m: float = 10.0
+    source_crop_offset: int = 128
+    source_crop_size: int = 256
     patch_size: int = 256
     patch_stride: int = 256
     time_series_length: int = 10
@@ -47,9 +49,11 @@ class PipelineConfig:
                 "resolution_m must be at least 10 m: the supported TESSERA "
                 "source grid is nominally 10 m, and finer cells would invent samples"
             )
-        for name in ("patch_size", "patch_stride", "time_series_length", "window_stride_days", "tessera_strip_rows"):
+        for name in ("source_crop_size", "patch_size", "patch_stride", "time_series_length", "window_stride_days", "tessera_strip_rows"):
             if getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be positive")
+        if self.source_crop_offset < 0:
+            raise ValueError("source_crop_offset cannot be negative")
         if self.patch_stride > self.patch_size:
             raise ValueError("patch_stride cannot exceed patch_size because that would leave uncovered gaps")
 
@@ -62,6 +66,8 @@ class PipelineConfig:
             "source_repo": self.source_repo,
             "destination_repo": self.destination_repo,
             "resolution_m": self.resolution_m,
+            "source_crop_offset_pixels": self.source_crop_offset,
+            "source_crop_size_pixels": self.source_crop_size,
             "patch_size_pixels": self.patch_size,
             "patch_stride_pixels": self.patch_stride,
             "time_series_length_days": self.time_series_length,

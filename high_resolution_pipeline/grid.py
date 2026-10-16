@@ -56,12 +56,15 @@ def build_target_grid(
 ) -> GridSpec:
     """Use the actual VIIRS GeoTIFF transform to define a meter-based grid.
 
-    The crop matches the rows/columns 128:384 currently used by the legacy
-    preprocessor. Its four corner bounds are transformed into a local UTM CRS;
-    target width/height are then computed from the requested ground spacing.
+    By default, the crop matches the rows/columns 128:384 used by the legacy
+    preprocessor. Callers can select a different pixel offset and crop size.
+    Its four corner bounds are transformed into a local UTM CRS; target
+    width/height are then computed from the requested ground spacing.
     """
     if resolution_m < 10:
         raise ValueError("resolution_m below 10 m is finer than the supported TESSERA grid")
+    if crop_offset < 0 or crop_size <= 0:
+        raise ValueError("crop_offset must be nonnegative and crop_size must be positive")
     with rasterio.open(reference_path) as src:
         if src.crs is None:
             raise ValueError(f"Raster has no CRS: {reference_path}")

@@ -10,6 +10,9 @@ from pathlib import Path
 
 import pandas as pd
 from huggingface_hub import HfApi, hf_hub_download
+import rasterio
+from rasterio.transform import array_bounds
+from rasterio.warp import transform_bounds
 
 from satimg_dataset_processor.hf_dataset import VAL_IDS
 
@@ -161,3 +164,47 @@ def match_companion_file(day_remote: str, mode: str, remote_to_local: dict[str, 
     if len(matches) > 1:
         raise ValueError(f"Ambiguous {mode} companion for {day_remote}")
     return matches[0] if matches else None
+
+
+def validate_fire_inventory(day_remotes, remote_to_local):
+    """Require one same-named FirePred raster for every day frame.
+
+    Night rasters are optional, matching the legacy pipeline, but when present
+    they must have an unambiguous same-name companion. This prevents silently
+    pairing a frame with another date's auxiliary data.
+    """
+    if not day_remotes:
+        raise ValueError("The fire has no VIIRS_Day frames")
+    missing = []
+    for day_remote in day_remotes:
+        firepred = match_companion_file(day_remote, "FirePred", remote_to_local)
+        if firepred is None:
+            missing.append((day_remote, "FirePred"))
+        night = match_companion_file(day_remote, "VIIRS_Night", remote_to_local)
+        if night is None:
+            continue
+        if night.name != Path(day_remote).name:
+            raise ValueError(f"Night frame does not match day-frame filename: {day_remote} -> {night}")
+    if missing:
+        details = ", ".join(f"{day} ({mode})" for day, mode in missing[:5])
+        raise FileNotFoundError(f"Missing same-date FirePred companions: {details}")
+
+
+def validate_raster_coverage(day_remotes, remote_to_local, grid):
+    """Check that each selected date/mode raster has usable metadata and overlaps the grid."""
+    left, bottom, right, top = array_bounds(grid.height, grid.width, grid.transform)
+    target = (left, bottom, right, top)
+    for day_remote in day_remotes:
+        candidates = [day_remote]
+        for mode in ("VIIRS_Night", "FirePred"):
+            companion = match_companion_file(day_remote, mode, remote_to_local)
+            if companion is not None:
+                candidates.append(next(remote for remote, local in remote_to_local.items() if local == companion))
+        for remote in candidates:
+            path = remote_to_local[remote]
+            with rasterio.open(path) as src:
+                if src.crs is None or src.width <= 0 or src.height <= 0:
+                    raise ValueError(f"Raster has invalid dimensions or no CRS: {remote}")
+                bounds = transform_bounds(src.crs, grid.crs, *src.bounds, densify_pts=21)
+                if bounds[2] <= target[0] or bounds[0] >= target[2] or bounds[3] <= target[1] or bounds[1] >= target[3]:
+                    raise ValueError(f"Raster does not overlap the shared target grid: {remote}")

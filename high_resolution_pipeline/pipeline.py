@@ -13,6 +13,7 @@ from pathlib import Path
 import shutil
 import sys
 import time
+from zipfile import BadZipFile
 
 import numpy as np
 
@@ -27,12 +28,19 @@ from high_resolution_pipeline.package import (
 )
 from high_resolution_pipeline.patches import apply_valid_mask, iter_patch_specs
 from high_resolution_pipeline.resample import add_temporal_maxima, read_prediction_features, read_prediction_labels
-from high_resolution_pipeline.sources import download_fire_files, load_fire_records, match_companion_file
+from high_resolution_pipeline.sources import (
+    download_fire_files,
+    load_fire_records,
+    match_companion_file,
+    validate_fire_inventory,
+    validate_raster_coverage,
+)
 
 
 def _dataset_tag(config: PipelineConfig) -> str:
     return (
-        f"{config.resolution_m:g}m_p{config.patch_size}_s{config.patch_stride}_"
+        f"{config.resolution_m:g}m_c{config.source_crop_offset}_{config.source_crop_size}_"
+        f"p{config.patch_size}_s{config.patch_stride}_"
         f"t{config.time_series_length}_i{config.window_stride_days}"
     )
 
@@ -84,15 +92,21 @@ def _fire_manifest_metadata(record, config, day_count):
             "VIIRS_Night_1", "VIIRS_Night_2",
             *[f"FirePred_{i}" for i in range(1, 20)],
         ],
-        "label_rule": "new pixels in accumulated active-fire mask" if record.label_sel == 1 else "new pixels in accumulated active-fire OR burned-area mask",
+        "label_rule": "pixels newly present in the cumulative active-fire mask on the target frame" if record.label_sel == 1 else "pixels newly present in the cumulative active-fire OR burned-area mask on the target frame",
     }
 
 
-def _process_one_patch(record, config, remote_to_local, day_remotes, grid, spec, tessera_client, fire_dir):
+def _process_one_patch(record, config, remote_to_local, day_remotes, grid, spec, tessera_client, fire_dir, expected_windows):
     """Stream one patch through time; retain only the temporal input queue."""
     patch_path = fire_dir / "patches" / f"{spec.patch_id}.npz"
     if patch_path.exists() and not config.overwrite:
-        return patch_archive_window_count(patch_path)
+        try:
+            count = patch_archive_window_count(patch_path, config.to_dict())
+            if count == expected_windows:
+                return count
+            print(f"{patch_path.name}: unexpected window count; rebuilding")
+        except (OSError, ValueError, KeyError, BadZipFile):
+            print(f"{patch_path.name}: invalid archive; rebuilding")
     valid_mask = spec.valid_mask()
     embedding, coverage, tessera_year = _read_tessera_patch(
         tessera_client, record.fire_year, spec, config.tessera_strip_rows
@@ -109,6 +123,7 @@ def _process_one_patch(record, config, remote_to_local, day_remotes, grid, spec,
         "col": spec.col,
         "resolution_m": config.resolution_m,
         "patch_size_pixels": spec.size,
+        "configuration": config.to_dict(),
         "crs": grid.crs.to_string(),
         "transform": list(tuple(spec.transform)[:6]),
         "coverage_threshold_semantics": "fraction of valid source TESSERA pixels",
@@ -152,7 +167,7 @@ def _process_one_patch(record, config, remote_to_local, day_remotes, grid, spec,
                     "target_day_index": day_index,
                     "input_length_days": config.time_series_length,
                     "window_stride_days": config.window_stride_days,
-                    "target_rule": "new cumulative pixels on the target day",
+                    "target_rule": "pixels newly present in the cumulative selected mask on this target frame, compared with the previous frame",
                 }
                 archive.add_window(data, target, window_metadata)
                 window_count += 1
@@ -167,26 +182,53 @@ def process_fire(record, config: PipelineConfig, tessera_client=None, upload_cli
     """Build one fire's aligned TESSERA/input/label patches, optionally upload."""
     fire_dir = fire_output_dir(config, record.split, record.fire_id)
     manifest_path = fire_dir / "manifest.json"
-    if manifest_path.exists() and not config.overwrite:
-        print(f"{record.fire_id}: already has a local manifest; skipping")
-        if upload_client is not None:
-            upload_client.upload_fire(fire_dir, record.split, record.fire_id)
-        return fire_dir
-
     fire_dir.mkdir(parents=True, exist_ok=True)
     local_source_dir = config.work_dir / "downloads" / f"p{record.fire_id}"
     remote_to_local = download_fire_files(record, config.source_repo, local_source_dir, config.token)
     day_remotes = list(record.remote_files.get("VIIRS_Day", ()))
     if not day_remotes:
         raise ValueError(f"{record.fire_id} has no VIIRS_Day rasters")
+    validate_fire_inventory(day_remotes, remote_to_local)
     reference_path = remote_to_local[day_remotes[0]]
-    grid = build_target_grid(reference_path, resolution_m=config.resolution_m)
+    grid = build_target_grid(
+        reference_path,
+        resolution_m=config.resolution_m,
+        crop_offset=config.source_crop_offset,
+        crop_size=config.source_crop_size,
+    )
+    validate_raster_coverage(day_remotes, remote_to_local, grid)
     tessera_client = tessera_client or _tessera_client()
     if record.fire_year - 1 not in tessera_client.years:
         raise ValueError(f"No TESSERA for fire {record.fire_id}: prior year {record.fire_year - 1} unavailable")
 
     patch_specs = list(iter_patch_specs(grid, config.patch_size, config.patch_stride))
     estimated_patches = len(patch_specs)
+    expected_patch_ids = {spec.patch_id for spec in patch_specs}
+    expected_windows_per_patch = max(
+        0,
+        (len(day_remotes) - config.time_series_length - 1) // config.window_stride_days + 1,
+    )
+    if manifest_path.exists() and not config.overwrite:
+        import json
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            found_patch_ids = {
+                path.stem for path in (fire_dir / "patches").glob("*.npz")
+                if patch_archive_window_count(path, config.to_dict()) == expected_windows_per_patch
+            }
+            saved_config = manifest.get("fire", {}).get("configuration", {})
+            if (manifest.get("patch_count") == estimated_patches
+                    and found_patch_ids == expected_patch_ids
+                    and saved_config == config.to_dict()):
+                print(f"{record.fire_id}: complete local manifest and all patches are present; skipping")
+                if upload_client is not None:
+                    upload_client.upload_fire(fire_dir, record.split, record.fire_id)
+                return fire_dir
+            print(f"{record.fire_id}: prior output is incomplete or has different settings; repairing missing patches")
+        except (OSError, ValueError, KeyError, json.JSONDecodeError, BadZipFile):
+            print(f"{record.fire_id}: prior manifest or patch archive is invalid; rebuilding")
+    # Never leave a stale completion marker if this attempt fails partway.
+    manifest_path.unlink(missing_ok=True)
     print(
         f"{record.fire_id}: source pixel vectors={grid.source_pixel_size[0]:.3f}m x "
         f"{grid.source_pixel_size[1]:.3f}m; target={grid.width}x{grid.height} at "
@@ -198,8 +240,14 @@ def process_fire(record, config: PipelineConfig, tessera_client=None, upload_cli
         print(f"{record.fire_id}: patch {patch_index}/{estimated_patches} {spec.patch_id}")
         total_windows += _process_one_patch(
             record, config, remote_to_local, day_remotes, grid, spec,
-            tessera_client, fire_dir,
+            tessera_client, fire_dir, expected_windows_per_patch,
         )
+
+    actual_patch_ids = {path.stem for path in (fire_dir / "patches").glob("*.npz")}
+    if actual_patch_ids != expected_patch_ids:
+        missing = sorted(expected_patch_ids - actual_patch_ids)
+        extra = sorted(actual_patch_ids - expected_patch_ids)
+        raise RuntimeError(f"Patch output inventory mismatch; missing={missing[:5]}, extra={extra[:5]}")
 
     write_fire_manifest(
         manifest_path,
@@ -226,6 +274,8 @@ def _common_arguments(parser):
     parser.add_argument("--roi-dir", type=Path, default=Path("high_resolution_work/roi"))
     parser.add_argument("--splits", nargs="+", choices=("train", "val", "test"), default=("train", "val", "test"))
     parser.add_argument("--resolution-m", type=float, default=10.0, help="Target grid pixel spacing in meters; minimum 10")
+    parser.add_argument("--source-crop-offset", type=int, default=128, help="VIIRS source-pixel row/column where the square crop begins")
+    parser.add_argument("--source-crop-size", type=int, default=256, help="Side length of the source crop in VIIRS pixels")
     parser.add_argument("--patch-size", type=int, default=256, help="Patch side length in target-grid pixels")
     parser.add_argument("--patch-stride", type=int, default=256, help="Patch spacing in target-grid pixels; smaller values overlap")
     parser.add_argument("--ts-length", type=int, default=10, help="Number of daily input frames per example")
@@ -248,6 +298,8 @@ def _config_from_args(args) -> PipelineConfig:
         roi_dir=args.roi_dir,
         splits=tuple(args.splits),
         resolution_m=args.resolution_m,
+        source_crop_offset=args.source_crop_offset,
+        source_crop_size=args.source_crop_size,
         patch_size=args.patch_size,
         patch_stride=args.patch_stride,
         time_series_length=args.ts_length,
@@ -348,7 +400,11 @@ def main(argv=None):
         files = download_fire_files(
             record, config.source_repo, local_dir, config.token, selected_files=(first_day,)
         )
-        grid = build_target_grid(files[first_day], config.resolution_m)
+        grid = build_target_grid(
+            files[first_day], config.resolution_m,
+            crop_offset=config.source_crop_offset,
+            crop_size=config.source_crop_size,
+        )
         patches, windows, tessera_bytes, window_bytes = _estimate(config, record, grid)
         print(json.dumps({
             "fire_id": record.fire_id,
@@ -356,6 +412,8 @@ def main(argv=None):
             "source_pixel_size_m": grid.source_pixel_size,
             "target_grid_shape": [grid.height, grid.width],
             "resolution_m": config.resolution_m,
+            "source_crop_offset_pixels": config.source_crop_offset,
+            "source_crop_size_pixels": config.source_crop_size,
             "patch_size_pixels": config.patch_size,
             "patch_stride_pixels": config.patch_stride,
             "patch_count": patches,

@@ -92,13 +92,25 @@ class PatchArchiveWriter:
         return False
 
 
-def patch_archive_window_count(path) -> int:
+def patch_archive_window_count(path, expected_configuration=None) -> int:
     """Read the number of temporal examples in a completed patch archive."""
     with np.load(path, allow_pickle=False) as archive:
         version = int(np.asarray(archive["format_version"]).item())
         if version != FORMAT_VERSION:
             raise ValueError(f"Unsupported patch archive version {version}")
-        return int(np.asarray(archive["num_windows"]).item())
+        count = int(np.asarray(archive["num_windows"]).item())
+        if expected_configuration is not None:
+            metadata = json.loads(str(np.asarray(archive["metadata"]).item()))
+            if metadata.get("configuration") != expected_configuration:
+                raise ValueError(f"Patch archive {path} was built with different settings")
+        required = {"embedding", "coverage", "valid_mask", "metadata"}
+        for index in range(count):
+            suffix = f"{index:05d}"
+            required.update((f"data_{suffix}", f"label_{suffix}", f"window_meta_{suffix}"))
+        missing = required.difference(archive.files)
+        if missing:
+            raise ValueError(f"Patch archive {path} is incomplete; missing members: {sorted(missing)[:5]}")
+        return count
 
 
 def _atomic_npz(path: str | Path, **arrays) -> Path:
@@ -212,6 +224,7 @@ TESSERA on a common projected grid, split into fixed-size spatial patches.
 ## Generation settings
 
 - Target grid spacing: **{settings['resolution_m']} m per pixel**
+- Source crop: **offset {settings['source_crop_offset_pixels']}, size {settings['source_crop_size_pixels']} pixels**
 - Patch size: **{settings['patch_size_pixels']} × {settings['patch_size_pixels']} pixels**
 - Patch stride: **{settings['patch_stride_pixels']} pixels**
 - Input time series: **{settings['time_series_length_days']} days**

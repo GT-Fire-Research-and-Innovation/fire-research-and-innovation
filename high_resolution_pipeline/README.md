@@ -9,8 +9,11 @@ existing 256 × 256 pipeline remains separate.
 
 1. Read fire IDs, dates, and split assignments from the ROI metadata.
 2. Fetch the raw source rasters needed for one fire.
-3. Read every raster's CRS and affine transform and define one common target
-   grid for the selected area.
+3. Use the configured pixel crop from the first VIIRS image to define one
+   geographic area, then read every raster's CRS and affine transform and
+   reproject it to that same target grid. The default crop (offset 128, size
+   256) preserves the area used by the existing pipeline; both settings can
+   be changed with `--source-crop-offset` and `--source-crop-size`.
 4. Resample each source layer onto that grid using a method appropriate to its
    data type. Resampling coarse values to a finer grid aligns the arrays; it
    does not create new source detail.
@@ -37,10 +40,9 @@ upload/download. No data is downloaded or uploaded merely by importing them.
 
 ## Important distinction
 
-Grid spacing (meters per pixel) and patch dimensions (pixels per patch) are
+Grid spacing (meters per pixel), source crop, and patch dimensions (pixels per patch) are
 independent settings. For example, 64 × 64 pixels at 10 m spacing covers 640 m
 on each side. The source GeoTIFF transforms, rather than a nominal sensor
-resolution, must determine exact alignment.
 
 ## Commands
 
