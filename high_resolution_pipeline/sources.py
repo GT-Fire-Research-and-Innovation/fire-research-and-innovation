@@ -23,6 +23,7 @@ class FireRecord:
     split: str
     start_date: str
     label_sel: int
+    label_sel_source: str
     remote_files: dict[str, tuple[str, ...]]
 
     @property
@@ -82,8 +83,16 @@ def load_fire_records(
     roi_dir: str | Path,
     token: str | None = None,
     splits: tuple[str, ...] = ("train", "val", "test"),
+    train_val_label_sel: int = 0,
 ) -> list[FireRecord]:
-    """Read ROI metadata and source file inventory for selected data splits."""
+    """Read fire metadata, using train/val default labels and test ROI labels.
+
+    The paper's train/validation target combines accumulated active-fire and
+    burned-area masks (`label_sel=0`). Test fires use the per-fire ROI choice
+    when the CSV provides one; otherwise they use the train/validation default.
+    """
+    if train_val_label_sel not in (0, 1):
+        raise ValueError("train_val_label_sel must be 0 (AF + BA) or 1 (AF only)")
     api = HfApi(token=token)
     csv_paths = _download_roi_tables(api, source_repo, Path(roi_dir), token)
     locations = _mode_files(api, source_repo)
@@ -106,10 +115,18 @@ def load_fire_records(
             fire_id = _clean_id(row["Id"])
             year = int(pd.to_datetime(row["start_date"]).year)
             split = year_split or ("val" if fire_id in {str(v) for v in VAL_IDS} else "train")
+            roi_label_sel = row.get("label_sel")
+            if split == "test" and pd.notna(roi_label_sel):
+                label_sel = int(roi_label_sel)
+            else:
+                label_sel = train_val_label_sel
+            if label_sel not in (0, 1):
+                raise ValueError(f"Invalid label_sel={label_sel} for fire {fire_id}; expected 0 or 1")
             by_id[fire_id] = {
                 "split": split,
                 "start_date": str(row["start_date"]),
-                "label_sel": int(row.get("label_sel", 1)) if pd.notna(row.get("label_sel", 1)) else 1,
+                "label_sel": label_sel,
+                "label_sel_source": "test_roi" if split == "test" and pd.notna(roi_label_sel) else "train_val_default",
                 "year": year,
             }
 
@@ -125,6 +142,7 @@ def load_fire_records(
             split=metadata["split"],
             start_date=metadata["start_date"],
             label_sel=metadata["label_sel"],
+            label_sel_source=metadata["label_sel_source"],
             remote_files={mode: tuple(files) for mode, files in modes.items()},
         ))
     return records

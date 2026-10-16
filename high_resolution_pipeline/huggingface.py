@@ -1,8 +1,12 @@
 """Upload or download a versioned high-resolution patch dataset on Hugging Face."""
 
+import json
 from pathlib import Path
 
-from huggingface_hub import HfApi, snapshot_download
+from huggingface_hub import HfApi, hf_hub_download, snapshot_download
+
+
+REMOTE_CONFIG_FILE = "high_resolution_config.json"
 
 
 class HuggingFaceDataset:
@@ -25,6 +29,38 @@ class HuggingFaceDataset:
     def list_files(self) -> set[str]:
         """Return all file paths currently stored in the destination dataset."""
         return set(self.api.list_repo_files(self.repo_id, repo_type="dataset"))
+
+    def ensure_configuration(self, configuration: dict) -> None:
+        """Record the dataset settings and refuse to mix incompatible uploads."""
+        files = self.list_files()
+        if REMOTE_CONFIG_FILE in files:
+            config_path = hf_hub_download(
+                repo_id=self.repo_id,
+                filename=REMOTE_CONFIG_FILE,
+                repo_type="dataset",
+                token=self.token,
+            )
+            existing = json.loads(Path(config_path).read_text(encoding="utf-8"))
+            if existing != configuration:
+                raise ValueError(
+                    f"Destination repo {self.repo_id} already contains a different "
+                    "high-resolution dataset configuration. Use a separate repo."
+                )
+            return
+
+        existing_data = files.difference({".gitattributes"})
+        if existing_data:
+            raise RuntimeError(
+                f"Destination repo {self.repo_id} already has files but no "
+                f"{REMOTE_CONFIG_FILE}; refusing to risk mixing dataset settings."
+            )
+        self.api.upload_file(
+            path_or_fileobj=json.dumps(configuration, indent=2, sort_keys=True).encode("utf-8"),
+            path_in_repo=REMOTE_CONFIG_FILE,
+            repo_id=self.repo_id,
+            repo_type="dataset",
+            commit_message="Record high-resolution dataset settings",
+        )
 
     def upload_fire(self, local_fire_dir: str | Path, split: str, fire_id: str) -> str:
         """Upload one complete fire directory under `<split>/p<id>/`."""

@@ -76,16 +76,20 @@ def read_prediction_features(
         day_path, dst_crs, dst_transform, patch_size, patch_size, bands=range(1, 7)
     )
 
-    if night_path is None:
-        night = np.zeros((2, patch_size, patch_size), dtype=np.float32)
-    else:
+    night_bands = None
+    if night_path is not None:
         with rasterio.open(night_path) as src:
             if src.count == 5:
                 night_bands = (4, 5)  # equivalent to the old array slice [3:5]
             elif src.count >= 2:
                 night_bands = (1, 2)
             else:
-                raise ValueError(f"{night_path} has only {src.count} bands")
+                # The reference preprocessing treats an unusable night pass
+                # like a missing one: both night channels are zero-filled.
+                night_bands = None
+    if night_bands is None:
+        night = np.zeros((2, patch_size, patch_size), dtype=np.float32)
+    else:
         night = read_raster_patch(
             night_path, dst_crs, dst_transform, patch_size, patch_size, bands=night_bands
         )

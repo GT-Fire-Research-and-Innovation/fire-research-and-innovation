@@ -1,7 +1,6 @@
 """Write self-describing, versioned patch files for Hugging Face storage."""
 
 import json
-import io
 import os
 from pathlib import Path
 import tempfile
@@ -13,13 +12,6 @@ import numpy as np
 FORMAT_VERSION = 1
 
 
-def _npy_bytes(array) -> bytes:
-    """Serialize one NumPy member without retaining a full patch archive in RAM."""
-    buffer = io.BytesIO()
-    np.save(buffer, array, allow_pickle=False)
-    return buffer.getvalue()
-
-
 class PatchArchiveWriter:
     """Incrementally write one patch's static TESSERA and temporal examples.
 
@@ -28,12 +20,13 @@ class PatchArchiveWriter:
     writer does not need to keep every window for a patch in memory.
     """
 
-    def __init__(self, path, embedding, coverage, valid_mask, metadata):
+    def __init__(self, path, embedding, coverage, valid_mask, metadata, compresslevel=1):
         self.path = Path(path)
         self.embedding = np.nan_to_num(np.asarray(embedding), nan=0.0, posinf=0.0, neginf=0.0)
         self.coverage = np.nan_to_num(np.asarray(coverage), nan=0.0, posinf=0.0, neginf=0.0)
         self.valid_mask = np.asarray(valid_mask, dtype=np.uint8)
         self.metadata = metadata
+        self.compresslevel = compresslevel
         self.window_count = 0
         self.temporary = None
         self.archive = None
@@ -49,7 +42,12 @@ class PatchArchiveWriter:
             prefix=self.path.stem + ".", suffix=".npz", dir=self.path.parent
         )
         os.close(handle)
-        self.archive = zipfile.ZipFile(self.temporary, mode="w", compression=zipfile.ZIP_DEFLATED)
+        self.archive = zipfile.ZipFile(
+            self.temporary,
+            mode="w",
+            compression=zipfile.ZIP_DEFLATED,
+            compresslevel=self.compresslevel,
+        )
         self._write("embedding", self.embedding.astype(np.float16))
         self._write("coverage", self.coverage.astype(np.float16))
         self._write("valid_mask", self.valid_mask)
@@ -57,7 +55,10 @@ class PatchArchiveWriter:
         return self
 
     def _write(self, key, array):
-        self.archive.writestr(f"{key}.npy", _npy_bytes(array))
+        # Write .npy bytes directly into the ZIP member. This avoids making a
+        # second full-size in-memory copy of each high-resolution data window.
+        with self.archive.open(f"{key}.npy", mode="w", force_zip64=True) as member:
+            np.lib.format.write_array(member, np.asanyarray(array), allow_pickle=False)
 
     def add_window(self, data, label, metadata):
         """Append one `(27,T,H,W)` input, `(H,W)` target, and window metadata."""
@@ -229,6 +230,8 @@ TESSERA on a common projected grid, split into fixed-size spatial patches.
 - Patch stride: **{settings['patch_stride_pixels']} pixels**
 - Input time series: **{settings['time_series_length_days']} days**
 - Window stride: **{settings['window_stride_days']} days**
+- Archive compression level: **{settings['archive_compresslevel']}** (lower is faster; files may be larger)
+- Train/validation label selection: **{settings['train_val_label_sel']}** (0 = accumulated AF + BA; 1 = accumulated AF only)
 - Source dataset: `{settings['source_repo']}`
 
 ## Layout and contents

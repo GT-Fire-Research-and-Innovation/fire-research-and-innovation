@@ -8,6 +8,8 @@ existing 256 × 256 pipeline remains separate.
 ## Workflow
 
 1. Read fire IDs, dates, and split assignments from the ROI metadata.
+   Train/validation use the paper's default target (accumulated active fire
+   plus burned area); test fires use their ROI `label_sel` when provided.
 2. Fetch the raw source rasters needed for one fire.
 3. Use the configured pixel crop from the first VIIRS image to define one
    geographic area, then read every raster's CRS and affine transform and
@@ -56,6 +58,16 @@ python -m high_resolution_pipeline.pipeline upload --repo-id YOUR_ACCOUNT/ts-sat
 python -m high_resolution_pipeline.pipeline run --repo-id YOUR_ACCOUNT/ts-satfire-10m-patches --resolution-m 10 --patch-size 256 --patch-stride 256
 python -m high_resolution_pipeline.pipeline download --repo-id YOUR_ACCOUNT/ts-satfire-10m-patches --output-dir ./downloaded_patches
 ```
+
+Defaults follow the paper's prediction setup: 6 input days and a 1-day
+window stride. Override these with `--ts-length` and `--window-stride-days`.
+Archive members stream directly into the ZIP file to avoid a second full-window
+byte buffer. `--archive-compresslevel` controls the speed/size tradeoff (default
+1, which favors faster writing and can produce larger files).
+Use `--train-val-label-sel 1` if you intentionally want active-fire-only
+targets for train/validation; the default `0` combines active-fire and
+burned-area masks. The selected rule is saved in each fire manifest, and the
+destination repo rejects uploads with mismatched settings.
 
 `preflight` downloads one source GeoTIFF to inspect actual GeoTIFF spacing and
 estimate output size. `process` writes locally. `upload` sends completed local

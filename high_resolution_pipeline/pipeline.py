@@ -41,7 +41,7 @@ def _dataset_tag(config: PipelineConfig) -> str:
     return (
         f"{config.resolution_m:g}m_c{config.source_crop_offset}_{config.source_crop_size}_"
         f"p{config.patch_size}_s{config.patch_stride}_"
-        f"t{config.time_series_length}_i{config.window_stride_days}"
+        f"t{config.time_series_length}_i{config.window_stride_days}_l{config.train_val_label_sel}"
     )
 
 
@@ -85,6 +85,7 @@ def _fire_manifest_metadata(record, config, day_count):
         "start_date": record.start_date,
         "fire_year": record.fire_year,
         "label_sel": record.label_sel,
+        "label_sel_source": record.label_sel_source,
         "day_image_count": day_count,
         "configuration": config.to_dict(),
         "channel_order": [
@@ -135,7 +136,14 @@ def _process_one_patch(record, config, remote_to_local, day_remotes, grid, spec,
     previous_final = np.zeros_like(cumulative_af)
     window_count = 0
 
-    with PatchArchiveWriter(patch_path, embedding, coverage, valid_mask, patch_metadata) as archive:
+    with PatchArchiveWriter(
+        patch_path,
+        embedding,
+        coverage,
+        valid_mask,
+        patch_metadata,
+        compresslevel=config.archive_compresslevel,
+    ) as archive:
         del embedding, coverage
         for day_index, day_remote in enumerate(day_remotes):
             day_path = remote_to_local[day_remote]
@@ -273,13 +281,22 @@ def _common_arguments(parser):
     parser.add_argument("--work-dir", type=Path, default=Path("high_resolution_work"))
     parser.add_argument("--roi-dir", type=Path, default=Path("high_resolution_work/roi"))
     parser.add_argument("--splits", nargs="+", choices=("train", "val", "test"), default=("train", "val", "test"))
+    parser.add_argument(
+        "--train-val-label-sel",
+        type=int,
+        choices=(0, 1),
+        default=0,
+        help="Train/validation target: 0 = accumulated AF + BA (paper); 1 = accumulated AF only",
+    )
     parser.add_argument("--resolution-m", type=float, default=10.0, help="Target grid pixel spacing in meters; minimum 10")
     parser.add_argument("--source-crop-offset", type=int, default=128, help="VIIRS source-pixel row/column where the square crop begins")
     parser.add_argument("--source-crop-size", type=int, default=256, help="Side length of the source crop in VIIRS pixels")
     parser.add_argument("--patch-size", type=int, default=256, help="Patch side length in target-grid pixels")
     parser.add_argument("--patch-stride", type=int, default=256, help="Patch spacing in target-grid pixels; smaller values overlap")
-    parser.add_argument("--ts-length", type=int, default=10, help="Number of daily input frames per example")
-    parser.add_argument("--window-stride-days", type=int, default=3)
+    parser.add_argument("--ts-length", type=int, default=6, help="Number of daily input frames per example")
+    parser.add_argument("--window-stride-days", type=int, default=1, help="Days between starts of temporal windows")
+    parser.add_argument("--archive-compresslevel", type=int, choices=range(0, 10), default=1,
+                        help="ZIP compression level 0-9; lower is faster, often produces larger files")
     parser.add_argument("--tessera-strip-rows", type=int, default=128)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--keep-source-files", action="store_true", help="Keep each fire's downloaded GeoTIFFs after processing")
@@ -297,6 +314,7 @@ def _config_from_args(args) -> PipelineConfig:
         work_dir=args.work_dir,
         roi_dir=args.roi_dir,
         splits=tuple(args.splits),
+        train_val_label_sel=args.train_val_label_sel,
         resolution_m=args.resolution_m,
         source_crop_offset=args.source_crop_offset,
         source_crop_size=args.source_crop_size,
@@ -304,6 +322,7 @@ def _config_from_args(args) -> PipelineConfig:
         patch_stride=args.patch_stride,
         time_series_length=args.ts_length,
         window_stride_days=args.window_stride_days,
+        archive_compresslevel=args.archive_compresslevel,
         tessera_strip_rows=args.tessera_strip_rows,
         overwrite=args.overwrite,
         remove_source_files_after_fire=not args.keep_source_files,
@@ -337,7 +356,13 @@ def _estimate(config, record, grid):
 
 
 def _get_records(config):
-    return load_fire_records(config.source_repo, config.roi_dir, config.token, config.splits)
+    return load_fire_records(
+        config.source_repo,
+        config.roi_dir,
+        config.token,
+        config.splits,
+        train_val_label_sel=config.train_val_label_sel,
+    )
 
 
 def main(argv=None):
@@ -354,6 +379,7 @@ def main(argv=None):
         if not config.destination_repo:
             raise ValueError("--repo-id is required for upload")
         client = HuggingFaceDataset(config.destination_repo, config.token, private=True)
+        client.ensure_configuration(config.to_dict())
         card_path = write_dataset_card(config.output_dir / _dataset_tag(config), config)
         client.upload_dataset_card(card_path)
         wanted = {str(fire_id) for fire_id in args.only_fires} if args.only_fires else None
@@ -429,6 +455,7 @@ def main(argv=None):
         if not config.destination_repo:
             raise ValueError("--repo-id is required for run")
         upload_client = HuggingFaceDataset(config.destination_repo, config.token, private=True)
+        upload_client.ensure_configuration(config.to_dict())
     dataset_dir = config.output_dir / _dataset_tag(config)
     card_path = write_dataset_card(dataset_dir, config)
     if upload_client is not None:
