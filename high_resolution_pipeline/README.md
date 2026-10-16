@@ -35,6 +35,7 @@ existing 256 × 256 pipeline remains separate.
 - `patches.py` — extracts matching patches from all aligned arrays.
 - `package.py` — validates and writes versioned dataset shards and metadata.
 - `huggingface.py` — uploads/downloads shards and records the dataset layout.
+- `loader.py` — reads one temporal window at a time for PyTorch and keeps optional static TESSERA as one tensor per sample.
 - `pipeline.py` — coordinates the per-fire workflow and resumable batches.
 
 The modules implement local patch generation, storage, and Hugging Face
@@ -81,8 +82,17 @@ then adds its temporal examples as individual `data_#####` and `label_#####`
 members, which keeps memory bounded and reduces the number of Hugging Face
 files. Each temporal sample contains the 27 input channels and next-day label;
 the patch contains one shared validity mask. Arrays are FP16 for
-inputs/embeddings and uint8 for labels/masks. A separate training loader must
-read this new format; the legacy 256 × 256 loader does not.
+inputs/embeddings and uint8 for labels/masks. The `loader.py` module reads this
+format; the legacy 256 × 256 loader does not.
+
+For local PyTorch loading, pass a split directory to
+`HighResolutionPatchDataset`, such as
+`data_high_resolution/<settings>/train`. The returned `data` has 27 raw
+channels, `labels` has background/fire class channels, and `valid_mask` marks
+cells that should contribute to loss. To include TESSERA, compute
+`compute_tessera_stats` from training patch archives only and pass the result
+as `tessera_stats`; each sample then includes one static `(129,H,W)` tensor.
+The training loop can repeat that tensor over time on the GPU.
 
 Run `preflight` first. At 10 m, a 256 × 256 patch covers 2.56 km per side and
 the full fire crop may produce many patches. The size estimate is uncompressed
