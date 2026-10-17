@@ -23,7 +23,7 @@ class PipelineConfig:
     roi_dir: Path = Path("high_resolution_work/roi")
     splits: tuple[str, ...] = ("train", "val", "test")
     train_val_label_sel: int = 0
-    resolution_m: float = 10.0
+    resolution_m: float = 75.0
     source_crop_offset: int = 128
     source_crop_size: int = 256
     patch_size: int = 256
@@ -50,8 +50,8 @@ class PipelineConfig:
             raise ValueError("train_val_label_sel must be 0 (AF + BA) or 1 (AF only)")
         if self.resolution_m < 10:
             raise ValueError(
-                "resolution_m must be at least 10 m: the supported TESSERA "
-                "source grid is nominally 10 m, and finer cells would invent samples"
+                "resolution_m must be at least 10 m: finer cells than the "
+                "nominal TESSERA source grid would invent samples"
             )
         for name in ("source_crop_size", "patch_size", "patch_stride", "time_series_length", "window_stride_days", "tessera_strip_rows"):
             if getattr(self, name) <= 0:

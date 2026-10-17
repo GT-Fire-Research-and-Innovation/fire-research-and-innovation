@@ -288,7 +288,10 @@ def _common_arguments(parser):
         default=0,
         help="Train/validation target: 0 = accumulated AF + BA (paper); 1 = accumulated AF only",
     )
-    parser.add_argument("--resolution-m", type=float, default=10.0, help="Target grid pixel spacing in meters; minimum 10")
+    parser.add_argument(
+        "--resolution-m", type=float, default=75.0,
+        help="Target grid pixel spacing in meters; defaults to 75 m (5x5 cells per nominal 375 m VIIRS pixel)",
+    )
     parser.add_argument("--source-crop-offset", type=int, default=128, help="VIIRS source-pixel row/column where the square crop begins")
     parser.add_argument("--source-crop-size", type=int, default=256, help="Side length of the source crop in VIIRS pixels")
     parser.add_argument("--patch-size", type=int, default=256, help="Patch side length in target-grid pixels")

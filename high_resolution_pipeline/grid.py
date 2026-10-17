@@ -50,7 +50,7 @@ def _local_utm_crs(bounds_lonlat: tuple[float, float, float, float]) -> CRS:
 
 def build_target_grid(
     reference_path: str | Path,
-    resolution_m: float = 10.0,
+    resolution_m: float = 75.0,
     crop_offset: int = 128,
     crop_size: int = 256,
 ) -> GridSpec:
@@ -62,7 +62,7 @@ def build_target_grid(
     width/height are then computed from the requested ground spacing.
     """
     if resolution_m < 10:
-        raise ValueError("resolution_m below 10 m is finer than the supported TESSERA grid")
+        raise ValueError("resolution_m below 10 m is finer than the nominal TESSERA source grid")
     if crop_offset < 0 or crop_size <= 0:
         raise ValueError("crop_offset must be nonnegative and crop_size must be positive")
     with rasterio.open(reference_path) as src:

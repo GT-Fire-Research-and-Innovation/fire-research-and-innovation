@@ -53,13 +53,18 @@ Run from the repository root. Install the project's environment first and set
 `HF_TOKEN` for private or write access.
 
 ```powershell
-python -m high_resolution_pipeline.pipeline preflight --resolution-m 10 --patch-size 256 --patch-stride 256
-python -m high_resolution_pipeline.pipeline process --resolution-m 10 --patch-size 256 --patch-stride 256
-python -m high_resolution_pipeline.pipeline upload --repo-id YOUR_ACCOUNT/ts-satfire-10m-patches
-python -m high_resolution_pipeline.pipeline run --repo-id YOUR_ACCOUNT/ts-satfire-10m-patches --resolution-m 10 --patch-size 256 --patch-stride 256
-python -m high_resolution_pipeline.pipeline download --repo-id YOUR_ACCOUNT/ts-satfire-10m-patches --output-dir ./downloaded_patches
+python -m high_resolution_pipeline.pipeline preflight --resolution-m 75 --patch-size 256 --patch-stride 256
+python -m high_resolution_pipeline.pipeline process --resolution-m 75 --patch-size 256 --patch-stride 256
+python -m high_resolution_pipeline.pipeline upload --repo-id YOUR_ACCOUNT/ts-satfire-75m-patches
+python -m high_resolution_pipeline.pipeline run --repo-id YOUR_ACCOUNT/ts-satfire-75m-patches --resolution-m 75 --patch-size 256 --patch-stride 256
+python -m high_resolution_pipeline.pipeline download --repo-id YOUR_ACCOUNT/ts-satfire-75m-patches --output-dir ./downloaded_patches
 ```
 
+The default target spacing is 75 m, dividing a nominal 375 m VIIRS pixel into
+5 x 5 target cells. This is not an exact integer grouping of nominal 10 m
+TESSERA cells, so TESSERA values are spatially aggregated onto the 75 m grid
+and VIIRS rasters are reprojected onto that same grid. A 75 m target cell does
+not contain a fixed whole number of TESSERA embeddings.
 Defaults follow the paper's prediction setup: 6 input days and a 1-day
 window stride. Override these with `--ts-length` and `--window-stride-days`.
 Archive members stream directly into the ZIP file to avoid a second full-window
