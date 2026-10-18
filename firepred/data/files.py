@@ -22,7 +22,21 @@ from firepred.config.dataset import SPLITS
 
 
 def find_data_root(base):
-    """Return the one folder under `base` holding train/, val/ and test/ archives."""
+    """Find the one folder under a path that holds train/, val/ and test/ archives.
+
+    An unzipped data.zip may put the data root at any depth. This searches for
+    the folder with all three split folders and checks that each contains
+    window archives.
+
+    Args:
+        base (str | Path): where to start looking.
+
+    Returns:
+        Path: the data root.
+
+    Raises:
+        RuntimeError: if there is not exactly one such folder, or a split is empty.
+    """
     base = Path(base)
     # The root may sit at any depth inside the unzipped folder; there must be
     # exactly one folder holding train/, val/ and test/.
@@ -39,17 +53,37 @@ def find_data_root(base):
 
 
 def count_archives(root):
-    """{split: number of .npz archives directly inside root/split}."""
+    """Count the window archives in each split folder of a data root.
+
+    The notebooks print these counts after staging data. Only archives
+    directly inside each split folder are counted.
+
+    Args:
+        root (str | Path): a data root with train/, val/ and test/.
+
+    Returns:
+        dict[str, int]: {split: number of .npz archives}.
+    """
     root = Path(root)
     return {split: sum(1 for _ in (root / split).glob("*.npz")) for split in SPLITS}
 
 
 def check_members_inside(archive, destination):
-    """Refuse a zip whose member paths would land outside `destination` ("zip slip").
+    """Refuse a zip whose members would be written outside the target folder.
 
-    CPython's extractall already strips ".." and absolute paths; this makes the
-    guarantee explicit and fails loudly instead of rewriting names. Returns the
-    member names checked.
+    A malicious zip can name a member "../../file" to escape the folder it is
+    unpacked into ("zip slip"). Python already guards against this; this check
+    makes it explicit and fails loudly instead of quietly renaming.
+
+    Args:
+        archive (zipfile.ZipFile): the open zip to check.
+        destination (str | Path): the folder it will be extracted into.
+
+    Returns:
+        list[str]: the member names checked.
+
+    Raises:
+        ValueError: if any member would land outside destination.
     """
     root = Path(destination).resolve()
     names = []
@@ -61,11 +95,18 @@ def check_members_inside(archive, destination):
 
 
 def zip_folders(folders, output_path):
-    """Zip every file under each existing folder into `output_path`; return the member names.
+    """Zip every file under the given folders into one zip file.
 
-    Members keep their folder name (train/p123.npz), so unzipping recreates the
-    layout. ZIP_STORED: the archives inside are already compressed. Missing
-    folders are skipped.
+    Each member keeps its folder name (train/p123.npz), so unzipping recreates
+    the same layout. Files are stored without recompression, because the
+    archives inside are already compressed. Folders that do not exist are skipped.
+
+    Args:
+        folders (list[str | Path]): folders to include.
+        output_path (str | Path): the zip file to write.
+
+    Returns:
+        list[str]: the member names written.
     """
     members = []
     with zipfile.ZipFile(output_path, "w", zipfile.ZIP_STORED) as bundle:
@@ -81,7 +122,18 @@ def zip_folders(folders, output_path):
 
 
 def unzip_into(zip_path, destination):
-    """Extract `zip_path` into `destination` after the path-escape check; return destination."""
+    """Unpack a zip into a folder after checking its member paths.
+
+    This is the plain unpack used after downloading a zip. Member paths are
+    checked first, so nothing can be written outside the folder.
+
+    Args:
+        zip_path (str | Path): the zip file.
+        destination (str | Path): the folder to unpack into.
+
+    Returns:
+        Path: destination.
+    """
     destination = Path(destination)
     with zipfile.ZipFile(zip_path, "r") as bundle:
         check_members_inside(bundle, destination)
@@ -90,7 +142,22 @@ def unzip_into(zip_path, destination):
 
 
 def extract_zip(archive_path, destination):
-    """Extract once per session, with disk-space and path-escape checks; return destination."""
+    """Unpack a zip once per session, checking disk space and member paths.
+
+    A marker file records which zip was unpacked: the same zip again does
+    nothing, while a different zip is refused instead of being mixed in. The
+    disk must have room for the unpacked files plus 1 GiB.
+
+    Args:
+        archive_path (str | Path): the zip file.
+        destination (str | Path): the folder to unpack into.
+
+    Returns:
+        Path: destination.
+
+    Raises:
+        RuntimeError: if a different zip was unpacked there, or the disk is too small.
+    """
     archive_path, destination = Path(archive_path), Path(destination)
     destination.mkdir(parents=True, exist_ok=True)
     # A marker records which zip was unpacked here: the same zip again is a
@@ -119,12 +186,30 @@ def extract_zip(archive_path, destination):
 
 
 def extract_data(archive_path, destination):
-    """Extract a data.zip and return its train/val/test root."""
+    """Unpack a data.zip and return its train/val/test root.
+
+    This combines extract_zip and find_data_root. The training notebooks use it
+    to turn a downloaded or attached zip into a data root.
+
+    Args:
+        archive_path (str | Path): the data.zip file.
+        destination (str | Path): the folder to unpack into.
+
+    Returns:
+        Path: the data root inside destination.
+    """
     return find_data_root(extract_zip(archive_path, destination))
 
 
 def code_version():
-    """Git commit of this repository, or "" when not run from a checkout."""
+    """Read the git commit of this checkout.
+
+    The commit is stored with every TESSERA file and window_config.json, so
+    anyone can see which code built them. Outside a git checkout it is empty.
+
+    Returns:
+        str: the commit hash, or "" when it cannot be read.
+    """
     try:
         return subprocess.run(
             ["git", "-C", os.path.dirname(os.path.abspath(__file__)), "rev-parse", "HEAD"],

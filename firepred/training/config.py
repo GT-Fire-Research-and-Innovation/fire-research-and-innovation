@@ -45,15 +45,22 @@ from firepred.config.training import (
 )
 
 
-def default_loss(model_name):
-    """Paper: Dice+CE for U-Net-3D, UNETR-3D and SwinUNETR-3D; the
-    Attention-U-Net-3D "kept the original setup of using Dice loss". [paper]"""
-    return "dice" if model_name == "attunet" else "dicece"
-
-
 @dataclass(frozen=True)
 class LossConfig:
-    """Which loss, with its weights (see training/objectives.build_criterion)."""
+    """Hold the training loss and its weights.
+
+    The loss is built from this by objectives.TrainingLoss. The weights that
+    do not apply to the chosen loss are kept but ignored.
+
+    Attributes:
+        name (str): "dice", "dicece" or "dicefocal".
+        ce_weight (tuple[float, float]): class weights (background, fire) for dicece.
+        lambda_dice (float): weight of the Dice term.
+        lambda_ce (float): weight of the cross-entropy term (dicece).
+        lambda_focal (float): weight of the focal term (dicefocal).
+        focal_gamma (float): focal exponent (dicefocal).
+        focal_alpha (float | None): weight of fire pixels in the focal term (dicefocal).
+    """
 
     name: str = "dicece"
     ce_weight: tuple = PAPER_CE_WEIGHT
@@ -63,8 +70,30 @@ class LossConfig:
     focal_gamma: float = FOCAL_GAMMA
     focal_alpha: float = FOCAL_ALPHA
 
+    @staticmethod
+    def paper_loss(model_name):
+        """Pick the paper's loss for a model.
+
+        The paper trains U-Net-3D, UNETR-3D and SwinUNETR-3D with Dice + cross
+        entropy. Attention-U-Net-3D "kept the original setup of using Dice loss".
+
+        Args:
+            model_name (str): the model name.
+
+        Returns:
+            str: "dice" for attunet, "dicece" otherwise.
+        """
+        return "dice" if model_name == "attunet" else "dicece"
+
     def record(self):
-        """The loss settings recorded in W&B and in every checkpoint."""
+        """List the loss settings recorded in W&B and in every checkpoint.
+
+        Only the weights the chosen loss uses are listed. The record is how a run's
+        loss is found again later.
+
+        Returns:
+            dict: e.g. {"loss": "dicece", "ce_weight": [...], "lambda_dice": 1.0, "lambda_ce": 1.0}.
+        """
         config = {"loss": self.name}
         if self.name == "dicece":
             config.update(ce_weight=list(self.ce_weight), lambda_dice=self.lambda_dice, lambda_ce=self.lambda_ce)
@@ -80,7 +109,17 @@ class LossConfig:
 
 @dataclass(frozen=True)
 class ScheduleConfig:
-    """The optional learning-rate decay. [ours]"""
+    """Hold the optional learning-rate decay.
+
+    This is ours, not the paper's [ours]. The paper keeps the rate constant ("none"). "plateau" lowers it when the
+    validation loss stops improving; "cosine" lowers it smoothly to min_lr.
+
+    Attributes:
+        name (str): "none", "plateau" or "cosine".
+        decay_factor (float): plateau: multiply the rate by this.
+        patience (int): plateau: epochs without improvement before decaying.
+        min_lr (float): the lowest rate (plateau and cosine).
+    """
 
     name: str = "none"
     decay_factor: float = LR_DECAY_FACTOR
@@ -88,8 +127,14 @@ class ScheduleConfig:
     min_lr: float = LR_MIN
 
     def record(self):
-        """The schedule recorded in W&B and in every checkpoint, so decayed runs
-        are never mistaken for paper runs."""
+        """List the schedule settings recorded in W&B and in every checkpoint.
+
+        Recording the schedule keeps decayed runs from being mistaken for paper
+        runs. Only the settings the schedule uses are listed.
+
+        Returns:
+            dict: e.g. {"lr_schedule": "plateau", "lr_min": 1e-06, ...}.
+        """
         config = {"lr_schedule": self.name}
         if self.name != "none":
             config["lr_min"] = self.min_lr
@@ -99,13 +144,63 @@ class ScheduleConfig:
 
     @property
     def tag(self):
-        """'' for a constant rate, else '_lr-<schedule>'."""
+        """Give the schedule's suffix for run and checkpoint names.
+
+        A constant rate adds nothing, so paper runs keep their old names. A decay
+        adds "_lr-<schedule>".
+
+        Returns:
+            str: "" or "_lr-<schedule>".
+        """
         return "" if self.name == "none" else f"_lr-{self.name}"
 
 
 @dataclass(frozen=True)
 class RunConfig:
-    """Every setting of one training or test run (one field per training flag)."""
+    """Hold every setting of one training or test run, fixed once at the start.
+
+    The command line becomes one RunConfig, and every part of the run reads its
+    settings from it. Because it is frozen, no step can change a setting
+    another step relies on. Every derived value (channels, names, recorded
+    settings) has exactly one definition here.
+
+    Attributes:
+        model (str): the registered model name.
+        mode (str): the task label, e.g. "pred" (part of every name).
+        batch_size (int): windows per batch.
+        learning_rate (float): Adam's learning rate.
+        num_heads (int): attention heads per stage.
+        feature_size (int): the model's base feature width.
+        ts_length (int): input days per window.
+        ts_interval (int): days between window starts (recorded only).
+        run_number (int): the run number (recorded only).
+        seed (int): the random seed.
+        epochs (int): training passes over the data.
+        num_workers (int): data-loading processes.
+        device (str): "auto", "cpu", "cuda" or "tpu".
+        data_root (Path): the folder with train/, val/ and test/.
+        unzip_dir (str): "off", "auto" or a folder to unzip the archives into.
+        tessera (bool): append TESSERA embeddings.
+        tessera_dir (Path | None): the TESSERA folder (default <data_root>/tessera).
+        tessera_min_coverage (float): TESSERA pixels below this coverage are masked.
+        loss (LossConfig): the training loss.
+        schedule (ScheduleConfig): the learning-rate schedule.
+        swin_temporal_downsample (bool): SwinUNETR-3D also merges days.
+        unetr_version (str): UNETR-3D sizes, "v1" (paper) or "v0".
+        extra_model_options (tuple[tuple[str, object], ...]): --model-option pairs.
+        test_only (bool): test a checkpoint instead of training.
+        checkpoint (Path | None): the checkpoint to test.
+        trust_checkpoint (bool): allow full unpickling of that checkpoint.
+        load_epoch (int): the epoch in the default test checkpoint name.
+        test_csv (Path): the test fires, in scoring order.
+        plot_dir (Path): where test overlays go.
+        test_every (int): score the test fires every N epochs (0 = never).
+        test_after_train (bool): test the best checkpoint after training.
+        upload_checkpoints (bool): upload kept checkpoints to W&B.
+        wandb_entity (str): the W&B team.
+        expected_channels (int | None): -nc, checked against the data.
+        keep_checkpoints (int): how many best checkpoints stay on disk.
+    """
 
     model: str
     mode: str = "pred"
@@ -125,7 +220,7 @@ class RunConfig:
     tessera: bool = False
     tessera_dir: Path = None
     tessera_min_coverage: float = TESSERA_MIN_COVERAGE
-    loss: LossConfig = None            # None -> the paper's loss for `model` (default_loss)
+    loss: LossConfig = None            # None -> the paper's loss for `model` (LossConfig.paper_loss)
     schedule: ScheduleConfig = field(default_factory=ScheduleConfig)
     swin_temporal_downsample: bool = False
     unetr_version: str = "v1"
@@ -144,9 +239,16 @@ class RunConfig:
     keep_checkpoints: int = TOP_N_CHECKPOINTS
 
     def __post_init__(self):
-        """Fill the default loss and validate settings that combine."""
+        """Fill in the default loss and check settings that depend on each other.
+
+        Without a loss, the model gets the paper's loss. The loss and schedule
+        names must be known, and -nc must match the data's channel count.
+
+        Raises:
+            ValueError: on an unknown loss or schedule, or a wrong -nc.
+        """
         if self.loss is None:
-            object.__setattr__(self, "loss", LossConfig(default_loss(self.model)))
+            object.__setattr__(self, "loss", LossConfig(LossConfig.paper_loss(self.model)))
         if self.loss.name not in LOSSES:
             raise ValueError(f"Unsupported loss: {self.loss.name}")
         if self.schedule.name not in LR_SCHEDULES:
@@ -161,12 +263,24 @@ class RunConfig:
 
     @property
     def input_channels(self):
-        """Model input channels after preprocessing: 43, or 172 with TESSERA."""
+        """Count the model's input channels after preprocessing.
+
+        This follows from the TESSERA setting. It is 43 without TESSERA and 172 with it.
+
+        Returns:
+            int: the input channels.
+        """
         return model_input_channels(self.tessera)
 
     @property
     def tessera_root(self):
-        """Folder of tessera/p<id>.npz files (None without TESSERA); default <data-root>/tessera."""
+        """Give the folder of TESSERA files, or None without TESSERA.
+
+        By default it is the data root's tessera/ folder. --tessera-dir overrides it.
+
+        Returns:
+            Path | None: the TESSERA folder.
+        """
         if not self.tessera:
             return None
         return Path(self.tessera_dir).expanduser() if self.tessera_dir is not None else Path(self.data_root) / "tessera"
@@ -175,7 +289,14 @@ class RunConfig:
 
     @property
     def model_options(self):
-        """ModelSpec.options: the dedicated flags, then any --model-option pairs."""
+        """Collect the model-specific settings handed to the model builder.
+
+        The dedicated flags come first, then any --model-option pairs, which win on
+        a name clash. They become ModelSpec.options.
+
+        Returns:
+            dict: e.g. {"unetr_version": "v1", "swin_temporal_downsample": False, ...}.
+        """
         return {
             "unetr_version": self.unetr_version,
             "swin_temporal_downsample": self.swin_temporal_downsample,
@@ -183,7 +304,17 @@ class RunConfig:
         }
 
     def model_spec(self, image_size=None):
-        """The ModelSpec handed to the model builder (models/registry.py)."""
+        """Build the ModelSpec the model builder receives.
+
+        The spec carries the input channels, the classes, the days, heads, width
+        and options. image_size is overridden only by the shape check.
+
+        Args:
+            image_size (tuple[int, int] | None): another (H, W), or None for the default.
+
+        Returns:
+            ModelSpec: the spec.
+        """
         from firepred.models.registry import ModelSpec
 
         sizes = {} if image_size is None else {"image_size": tuple(image_size)}
@@ -201,13 +332,28 @@ class RunConfig:
 
     @property
     def run_tag(self):
-        """Suffix for checkpoint names; the released-code Dice loss keeps the old names."""
+        """Give the suffix that ends checkpoint names.
+
+        It marks TESSERA runs, non-Dice losses and decayed schedules. A Dice run
+        with no extras keeps the released code's names.
+
+        Returns:
+            str: e.g. "_tessera_dicece_lr-plateau".
+        """
         tessera_tag = "_tessera" if self.tessera else ""
         return tessera_tag + ("" if self.loss.name == "dice" else f"_{self.loss.name}") + self.schedule.tag
 
     @property
     def run_name(self):
-        """The W&B run name."""
+        """Give the W&B run name.
+
+        It starts with train_ or test_ and lists the model, heads, width, batch size
+        and the run tag. Old runs are found again by these names, so they never
+        change.
+
+        Returns:
+            str: e.g. "train_pred_swinunetr3d_num_heads_3_hidden_size_36_batchsize_8_dicece".
+        """
         return (
             f"{'test' if self.test_only else 'train'}_{self.mode}_{self.model}_"
             f"num_heads_{self.num_heads}_hidden_size_{self.feature_size}_"
@@ -218,7 +364,14 @@ class RunConfig:
 
     @property
     def checkpoint_template(self):
-        """Checkpoint file name with a literal '{epoch}' placeholder (1-based epoch)."""
+        """Give the checkpoint file name, with an {epoch} placeholder.
+
+        CheckpointStore fills in the 1-based epoch. The name records the model,
+        width, batch size, channels, days and run tag.
+
+        Returns:
+            str: the file name template.
+        """
         return (
             f"model_{self.model}_mode_{self.mode}_num_heads_{self.num_heads}_"
             f"hidden_size_{self.feature_size}_batchsize_{self.batch_size}_"
@@ -228,20 +381,45 @@ class RunConfig:
 
     @property
     def test_checkpoint(self):
-        """Where -test looks without --checkpoint. [released]
+        """Give where -test looks for a checkpoint when none is given.
 
-        Training saves into the W&B run directory instead (docs/KNOWN_ISSUES.md).
+        This follows the released code [released]. It is saved_models/ with the template at load_epoch. Training saves into the
+        W&B run folder instead (docs/KNOWN_ISSUES.md), so pass --checkpoint.
+
+        Returns:
+            Path: the default test checkpoint path.
         """
         return Path("saved_models") / self.checkpoint_template.format(epoch=self.load_epoch)
 
     def artifact_name(self, run_id):
-        """W&B model-artifact name for a run's best checkpoints."""
+        """Name the W&B model artifact that holds a run's checkpoints.
+
+        The name combines the model, the run tag and the run id. Every uploaded
+        checkpoint is a new version of it.
+
+        Args:
+            run_id (str): the W&B run id.
+
+        Returns:
+            str: the artifact name.
+        """
         return f"{self.model}{self.run_tag.replace('_', '-')}-checkpoints-{run_id}"
 
     # ----- what gets recorded ----- #
 
     def checkpoint_settings(self, tessera_stats):
-        """Settings saved in every checkpoint, needed to rebuild identical inputs at test time."""
+        """Collect the settings stored in every checkpoint.
+
+        A later test run needs them to rebuild exactly the same inputs: TESSERA
+        mode and statistics, channels and temporal merging. The loss, schedule and
+        model options are stored too, as a record.
+
+        Args:
+            tessera_stats (dict | None): the training TESSERA statistics.
+
+        Returns:
+            dict: the settings.
+        """
         settings = {
             "use_tessera": self.tessera,
             "model_input_channels": self.input_channels,
@@ -255,7 +433,17 @@ class RunConfig:
         return settings
 
     def wandb_config(self, on_tpu=False):
-        """The run's W&B config: hyperparameters, loss, schedule and model options."""
+        """Collect the run's W&B config: hyperparameters, loss, schedule and model options.
+
+        This is what the W&B dashboard shows and filters by. Model-specific keys
+        appear only when they apply.
+
+        Args:
+            on_tpu (bool): record that the run uses a TPU.
+
+        Returns:
+            dict: the config.
+        """
         config = {
             "learning_rate": self.learning_rate,
             # Logged only; Adam never receives it (docs/KNOWN_ISSUES.md).

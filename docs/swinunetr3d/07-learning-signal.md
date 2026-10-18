@@ -10,7 +10,7 @@ The model outputs two numbers per pixel, the *logits* `z_bg` and `z_fire`.
 They are not probabilities; any real number is allowed. To decide, the code
 squashes each channel with a sigmoid, `p = 1 / (1 + e^-z)`, which maps to
 (0, 1), and thresholds at 0.5 (`firepred/training/objectives.py:
-build_post_transform`). The prediction is "fire" where `sigmoid(z_fire) > 0.5`,
+Scorer.predictions`). The prediction is "fire" where `sigmoid(z_fire) > 0.5`,
 which is the same as `z_fire > 0`.
 
 ## Dice loss: optimize the score you're graded on

@@ -17,11 +17,18 @@ from firepred.config.dataset import SPLITS, TEST_YEARS, TRAIN_VAL_YEARS, VAL_IDS
 
 @dataclass(frozen=True)
 class RoiTable:
-    """Everything the pipeline needs from the ROI CSVs, read once.
+    """Hold everything the pipeline needs from the ROI CSVs, read once.
 
-    train_ids / val_ids / test_ids: fire IDs per split, in pipeline order
-    label_sel:   {fire id: label rule} where a CSV records one
-    start_years: {fire id: year the fire started}
+    The ROI CSVs list every fire with its id, dates and label rule. Reading them
+    once into this table and passing it around means no step downloads or
+    parses them again. The table is frozen, so no step can change it.
+
+    Attributes:
+        train_ids (tuple[str, ...]): training fire ids, sorted by id.
+        val_ids (tuple[str, ...]): validation fire ids (the fixed VAL_IDS list).
+        test_ids (tuple[str, ...]): test fire ids, in CSV order.
+        label_sel (dict[str, int]): label rule per fire, where a CSV records one.
+        start_years (dict[str, int]): the year each fire started.
     """
 
     train_ids: tuple
@@ -31,19 +38,45 @@ class RoiTable:
     start_years: dict = field(default_factory=dict)
 
     def ids_by_split(self):
-        """{"train": ids, "val": ids, "test": ids}."""
+        """Group the fire ids by split.
+
+        Most steps loop over splits, so this gives the three id lists under their
+        split names. The order is train, val, test.
+
+        Returns:
+            dict[str, tuple[str, ...]]: {"train": ids, "val": ids, "test": ids}.
+        """
         return dict(zip(SPLITS, (self.train_ids, self.val_ids, self.test_ids)))
 
     def split_of(self):
-        """{fire id: split name} for every listed fire."""
+        """Look up which split each fire belongs to.
+
+        This is the reverse of ids_by_split. It is used to put a downloaded archive
+        into the right train/val/test folder.
+
+        Returns:
+            dict[str, str]: {fire id: split name} for every listed fire.
+        """
         return {fire_id: split for split, ids in self.ids_by_split().items() for fire_id in ids}
 
 
 def split_ids(roi_paths, train_val_years=TRAIN_VAL_YEARS, test_years=TEST_YEARS, val_ids=VAL_IDS):
-    """(train, val, test) fire-ID tuples from the ROI CSVs, by the year in each file name.
+    """Split the fire ids into train, validation and test from the ROI CSVs.
 
-    Train/val come from the train/val years, sorted by Id (val is the fixed
-    `val_ids` list); test keeps the CSV order of the test-year files.
+    The year in each CSV's file name decides where its fires go: 2017-2020
+    fires are for training and validation, 2021 fires are for testing
+    [released]. Validation is a fixed list of fire ids; every other 2017-2020
+    fire trains.
+
+    Args:
+        roi_paths (list[str]): local paths of the ROI CSV files.
+        train_val_years (tuple[str, ...]): file-name years of train/val fires.
+        test_years (tuple[str, ...]): file-name years of test fires.
+        val_ids (list[str]): the fire ids used for validation.
+
+    Returns:
+        tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]: (train, val,
+        test) fire ids; train and val sorted by id, test in CSV order.
     """
     train_val = [
         pd.read_csv(path, dtype={"Id": str})
@@ -65,7 +98,21 @@ def split_ids(roi_paths, train_val_years=TRAIN_VAL_YEARS, test_years=TEST_YEARS,
 
 
 def fire_label_sel(roi_paths):
-    """{fire Id: label_sel} from every ROI CSV that has the column; a fire listed twice must agree."""
+    """Read which burned-area label rule each fire uses.
+
+    Some ROI CSVs have a label_sel column: 0 means active fire plus NIFC
+    perimeters, 1 means active fire only. A fire listed in two CSVs must have
+    the same rule in both.
+
+    Args:
+        roi_paths (list[str]): local paths of the ROI CSV files.
+
+    Returns:
+        dict[str, int]: {fire id: label_sel} for fires that have one.
+
+    Raises:
+        ValueError: if two CSVs give the same fire different rules.
+    """
     label_sel = {}
     for path in roi_paths:
         df = pd.read_csv(path, dtype={"Id": str})
@@ -81,7 +128,17 @@ def fire_label_sel(roi_paths):
 
 
 def fire_start_years(roi_paths):
-    """{fire Id: start year} from the ROI CSVs that have a start_date column."""
+    """Read the year each fire started.
+
+    The start year decides which TESSERA embeddings a fire can use (the year
+    before the fire). Fires without a start date are left out.
+
+    Args:
+        roi_paths (list[str]): local paths of the ROI CSV files.
+
+    Returns:
+        dict[str, int]: {fire id: start year}.
+    """
     years = {}
     for path in roi_paths:
         df = pd.read_csv(path, dtype={"Id": str})
@@ -94,17 +151,37 @@ def fire_start_years(roi_paths):
 
 
 def read_roi(roi_paths):
-    """A RoiTable from ROI CSV files on disk."""
+    """Read the ROI CSVs into one RoiTable.
+
+    This is the one call the masters make: it splits the fires, reads their
+    label rules and their start years. Every later step uses the table
+    instead of the files.
+
+    Args:
+        roi_paths (list[str]): local paths of the ROI CSV files.
+
+    Returns:
+        RoiTable: the splits, label rules and start years.
+    """
     train, val, test = split_ids(roi_paths)
     return RoiTable(train, val, test, fire_label_sel(roi_paths), fire_start_years(roi_paths))
 
 
 def label_rules(roi, splits, use_roi_label_sel, train_val_label_sel):
-    """{fire id: label_sel} for every fire of `splits`.
+    """Pick the burned-area label rule for every fire of the chosen splits.
 
-    The ROI CSV's label_sel where it has one (the paper's per-fire choice for
-    test fires), else `train_val_label_sel`; with use_roi_label_sel=False
-    every fire uses `train_val_label_sel`.
+    A fire uses its CSV's rule when it has one (the paper's per-fire choice for
+    test fires); every other fire uses train_val_label_sel. With
+    use_roi_label_sel False, every fire uses train_val_label_sel.
+
+    Args:
+        roi (RoiTable): the fires and their recorded rules.
+        splits (tuple[str, ...]): which splits to cover.
+        use_roi_label_sel (bool): whether CSV rules take precedence.
+        train_val_label_sel (int): the rule used otherwise (0 or 1).
+
+    Returns:
+        dict[str, int]: {fire id: label_sel}.
     """
     from_roi = roi.label_sel if use_roi_label_sel else {}
     ids = roi.ids_by_split()
@@ -116,5 +193,15 @@ def label_rules(roi, splits, use_roi_label_sel, train_val_label_sel):
 
 
 def fire_id_of(archive_name):
-    """'train/p20562846.npz' -> '20562846' (the archive's fire ID)."""
+    """Turn an archive file name into its fire id.
+
+    Window archives are named p<fire id>.npz and may sit in a split folder.
+    This strips the folder, the extension and the leading "p".
+
+    Args:
+        archive_name (str): e.g. "train/p20562846.npz".
+
+    Returns:
+        str: the fire id, e.g. "20562846".
+    """
     return os.path.basename(archive_name).removesuffix(".npz").removeprefix("p")

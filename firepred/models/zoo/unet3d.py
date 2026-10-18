@@ -50,82 +50,12 @@ STRIDES = (1, 2, 2)  # never downsample the T days
 
 
 class UNet(nn.Module):
-    """
-    Enhanced version of UNet which has residual units implemented with the ResidualUnit class.
-    The residual part uses a convolution to change the input dimensions to match the output dimensions
-    if this is necessary but will use nn.Identity if not.
-    Refer to: https://link.springer.com/chapter/10.1007/978-3-030-12029-0_40.
+    """U-Net in 3-D with residual units: the paper's U-Net-3D baseline.
 
-    Each layer of the network has a encode and decode path with a skip connection between them. Data in the encode path
-    is downsampled using strided convolutions (if `strides` is given values greater than 1) and in the decode path
-    upsampled using strided transpose convolutions. These down or up sampling operations occur at the beginning of each
-    block rather than afterwards as is typical in UNet implementations.
-
-    To further explain this consider the first example network given below. This network has 3 layers with strides
-    of 2 for each of the middle layers (the last layer is the bottom connection which does not down/up sample). Input
-    data to this network is immediately reduced in the spatial dimensions by a factor of 2 by the first convolution of
-    the residual unit defining the first layer of the encode part. The last layer of the decode part will upsample its
-    input (data from the previous layer concatenated with data from the skip connection) in the first convolution. this
-    ensures the final output of the network has the same shape as the input.
-
-    Padding values for the convolutions are chosen to ensure output sizes are even divisors/multiples of the input
-    sizes if the `strides` value for a layer is a factor of the input sizes. A typical case is to use `strides` values
-    of 2 and inputs that are multiples of powers of 2. An input can thus be downsampled evenly however many times its
-    dimensions can be divided by 2, so for the example network inputs would have to have dimensions that are multiples
-    of 4. In the second example network given below the input to the bottom layer will have shape (1, 64, 15, 15) for
-    an input of shape (1, 1, 240, 240) demonstrating the input being reduced in size spatially by 2**4.
-
-    Args:
-        spatial_dims: number of spatial dimensions.
-        in_channels: number of input channels.
-        out_channels: number of output channels.
-        channels: sequence of channels. Top block first. The length of `channels` should be no less than 2.
-        strides: sequence of convolution strides. The length of `stride` should equal to `len(channels) - 1`.
-        kernel_size: convolution kernel size, the value(s) should be odd. If sequence,
-            its length should equal to dimensions. Defaults to 3.
-        up_kernel_size: upsampling convolution kernel size, the value(s) should be odd. If sequence,
-            its length should equal to dimensions. Defaults to 3.
-        num_res_units: number of residual units. Defaults to 0.
-        act: activation type and arguments. Defaults to PReLU.
-        norm: feature normalization type and arguments. Defaults to instance norm.
-        dropout: dropout ratio. Defaults to no dropout.
-        bias: whether to have a bias term in convolution blocks. Defaults to True.
-            According to `Performance Tuning Guide <https://pytorch.org/tutorials/recipes/recipes/tuning_guide.html>`_,
-            if a conv layer is directly followed by a batch norm layer, bias should be False.
-        adn_ordering: a string representing the ordering of activation (A), normalization (N), and dropout (D).
-            Defaults to "NDA". See also: :py:class:`monai.networks.blocks.ADN`.
-
-    Examples::
-
-        from monai.networks.nets import UNet
-
-        # 3 layer network with down/upsampling by a factor of 2 at each layer with 2-convolution residual units
-        net = UNet(
-            spatial_dims=2,
-            in_channels=1,
-            out_channels=1,
-            channels=(4, 8, 16),
-            strides=(2, 2),
-            num_res_units=2
-        )
-
-        # 5 layer network with simple convolution/normalization/dropout/activation blocks defining the layers
-        net=UNet(
-            spatial_dims=2,
-            in_channels=1,
-            out_channels=1,
-            channels=(4, 8, 16, 32, 64),
-            strides=(2, 2, 2, 2),
-        )
-
-    Note: The acceptable spatial size of input data depends on the parameters of the network,
-        to set appropriate spatial size, please check the tutorial for more details:
-        https://github.com/Project-MONAI/tutorials/blob/master/modules/UNet_input_size_constrains.ipynb.
-        Typically, when using a stride of 2 in down / up sampling, the output dimensions are either half of the
-        input when downsampling, or twice when upsampling. In this case with N numbers of layers in the network,
-        the inputs must have spatial dimensions that are all multiples of 2^N.
-        Usually, applying `resize`, `pad` or `crop` transforms can help adjust the spatial size of input data.
-
+    The encoder halves the image level by level with strided convolutions, the
+    decoder doubles it back, and skip connections join matching levels.
+    Strides never touch the days, so the output keeps one map per day. Copied
+    from MONAI's UNet so the strides can leave time alone.
     """
 
     def __init__(
@@ -145,7 +75,28 @@ class UNet(nn.Module):
         bias: bool = True,
         adn_ordering: str = "NDA",
     ) -> None:
-        """Build the encoder-decoder from channel widths and strides (MONAI's UNet arguments)."""
+        """Build the encoder-decoder from channel widths and strides.
+
+        The arguments are MONAI UNet's. The levels are created recursively, top first.
+
+        Args:
+            spatial_dims (int): 3 for this model.
+            in_channels (int): input channels.
+            out_channels (int): output channels.
+            channels (Sequence[int]): channels per level, top first (at least 2).
+            strides (Sequence[int]): downsampling factor between levels (len(channels) - 1).
+            kernel_size (Sequence[int] | int): convolution kernel size (odd).
+            up_kernel_size (Sequence[int] | int): upsampling kernel size (odd).
+            num_res_units (int): residual units per level (0 = plain convolutions).
+            act (tuple | str): activation type and arguments.
+            norm (tuple | str): normalization type and arguments.
+            dropout (float): dropout rate.
+            bias (bool): bias terms in the convolutions.
+            adn_ordering (str): order of activation (A), normalization (N), dropout (D).
+
+        Raises:
+            ValueError: on inconsistent channels and strides.
+        """
         super().__init__()
 
         if len(channels) < 2:
@@ -179,16 +130,20 @@ class UNet(nn.Module):
         def _create_block(
             inc: int, outc: int, channels: Sequence[int], strides: Sequence[int], is_top: bool
         ) -> nn.Module:
-            """
-            Builds the UNet structure from the bottom up by recursing down to the bottom block, then creating sequential
-            blocks containing the downsample path, a skip connection around the previous block, and the upsample path.
+            """Build the U-Net from the bottom up, recursively.
+
+            Each call builds one level: its down path, a skip connection around the
+            deeper levels and its up path. The recursion stops at the bottom block.
 
             Args:
-                inc: number of input channels.
-                outc: number of output channels.
-                channels: sequence of channels. Top block first.
-                strides: convolution stride.
-                is_top: True if this is the top block.
+                inc (int): input channels of this level.
+                outc (int): output channels of this level.
+                channels (Sequence[int]): channels from this level down.
+                strides (Sequence[int]): downsampling factors from this level down.
+                is_top (bool): True for the top level.
+
+            Returns:
+                nn.Module: this level with all deeper ones inside it.
             """
             c = channels[0]
 
@@ -212,29 +167,35 @@ class UNet(nn.Module):
         self.model = _create_block(in_channels, out_channels, self.channels, self.strides, True)
 
     def _get_connection_block(self, down_path: nn.Module, up_path: nn.Module, subblock: nn.Module) -> nn.Module:
-        """
-        Returns the block object defining a layer of the UNet structure including the implementation of the skip
-        between encoding (down) and decoding (up) sides of the network.
+        """Join one level's down path, the deeper levels and its up path.
+
+        The skip connection concatenates the down path's output with the deeper
+        levels' result. The up path then decodes the joined features.
 
         Args:
-            down_path: encoding half of the layer
-            up_path: decoding half of the layer
-            subblock: block defining the next layer in the network.
-        Returns: block for this layer: `nn.Sequential(down_path, SkipConnection(subblock), up_path)`
+            down_path (nn.Module): this level's encoder half.
+            up_path (nn.Module): this level's decoder half.
+            subblock (nn.Module): the deeper levels.
+
+        Returns:
+            nn.Sequential: down_path, SkipConnection(subblock), up_path.
         """
         return nn.Sequential(down_path, SkipConnection(subblock), up_path)
 
     def _get_down_layer(self, in_channels: int, out_channels: int, strides: int, is_top: bool) -> nn.Module:
-        """
-        Returns the encoding (down) part of a layer of the network. This typically will downsample data at some point
-        in its structure. Its output is used as input to the next layer down and is concatenated with output from the
-        next layer to form the input for the decode (up) part of the layer.
+        """Build one level's encoder half, which may downsample.
+
+        With residual units it is a ResidualUnit, otherwise one convolution. Its
+        output goes down to the next level and across the skip connection.
 
         Args:
-            in_channels: number of input channels.
-            out_channels: number of output channels.
-            strides: convolution stride.
-            is_top: True if this is the top block.
+            in_channels (int): input channels.
+            out_channels (int): output channels.
+            strides (int | Sequence[int]): downsampling factor.
+            is_top (bool): True for the top level.
+
+        Returns:
+            nn.Module: the encoder half.
         """
         mod: nn.Module
         if self.num_res_units > 0:
@@ -267,25 +228,33 @@ class UNet(nn.Module):
         return mod
 
     def _get_bottom_layer(self, in_channels: int, out_channels: int) -> nn.Module:
-        """
-        Returns the bottom or bottleneck layer at the bottom of the network linking encode to decode halves.
+        """Build the bottleneck that links the encoder to the decoder.
+
+        It is the deepest level and does not downsample. It is a down layer with stride 1.
 
         Args:
-            in_channels: number of input channels.
-            out_channels: number of output channels.
+            in_channels (int): input channels.
+            out_channels (int): output channels.
+
+        Returns:
+            nn.Module: the bottleneck.
         """
         return self._get_down_layer(in_channels, out_channels, 1, False)
 
     def _get_up_layer(self, in_channels: int, out_channels: int, strides: int, is_top: bool) -> nn.Module:
-        """
-        Returns the decoding (up) part of a layer of the network. This typically will upsample data at some point
-        in its structure. Its output is used as input to the next layer up.
+        """Build one level's decoder half, which upsamples.
+
+        A transposed convolution upsamples the joined features; with residual units
+        a ResidualUnit follows. The top level outputs the logits.
 
         Args:
-            in_channels: number of input channels.
-            out_channels: number of output channels.
-            strides: convolution stride.
-            is_top: True if this is the top block.
+            in_channels (int): input channels.
+            out_channels (int): output channels.
+            strides (int | Sequence[int]): upsampling factor.
+            is_top (bool): True for the top level (no final activation).
+
+        Returns:
+            nn.Module: the decoder half.
         """
         conv: Convolution | nn.Sequential
 
@@ -325,7 +294,17 @@ class UNet(nn.Module):
 
     # (B, C, T, H, W) -> logits (B, K, T, H, W); the trainer averages over T.
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """(B, C, T, H, W) input -> (B, K, T, H, W) logits."""
+        """Run the U-Net on one batch.
+
+        The days are kept throughout, so the output is one map per day.
+        The trainer averages them.
+
+        Args:
+            x (torch.Tensor): input of shape (B, C, T, H, W).
+
+        Returns:
+            torch.Tensor: per-day logits of shape (B, K, T, H, W).
+        """
         x = self.model(x)
         return x
 
@@ -335,7 +314,17 @@ Unet = UNet
 
 @register_model("unet3d")
 def build(spec):
-    """The paper's U-Net-3D baseline. [released]"""
+    """Build the paper's U-Net-3D baseline for a ModelSpec.
+
+    Channels and strides are the released code's, with strides that never
+    downsample the days [released]. Heads, feature size and options are ignored.
+
+    Args:
+        spec (ModelSpec): what the model is built for.
+
+    Returns:
+        UNet: the new model.
+    """
     return UNet(
         spatial_dims=3,
         in_channels=spec.in_channels,

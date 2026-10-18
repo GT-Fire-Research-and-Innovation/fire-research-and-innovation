@@ -17,71 +17,85 @@ import torchvision.transforms.functional as TF
 from firepred.config.dataset import DEGREE_CHANNELS, LANDCOVER_CHANNEL, N_LANDCOVER_CLASSES
 
 
-class Normalize:
-    """Normalize selected input channels using fixed dataset statistics."""
+def normalize(sample, mean, std, skip=()):
+    """Return a standardized copy of one window with fixed dataset statistics.
 
-    def __init__(self, mean, std, dont_normalize_idc):
-        """Store per-channel statistics; channels in `dont_normalize_idc` pass through."""
-        # [released] the original per-channel normalization statistics.
-        self.mean = mean
-        self.std = std
-        self.dont_normalize_idc = set(dont_normalize_idc)
+    Each channel has its own mean and spread, computed by the released code over
+    the training data. Standardizing ((x - mean) / std) puts every channel on a
+    similar scale, which helps training. Skipped channels (angles and land
+    cover) are copied unchanged, because preprocess encodes them differently.
 
-        # [ours] fail early when the supplied statistics are inconsistent.
-        if len(self.mean) != len(self.std):
-            raise ValueError(
-                "Normalization mean/std lengths differ: "
-                f"{len(self.mean)} versus {len(self.std)}"
-            )
+    Args:
+        sample (torch.Tensor | np.ndarray): one window, shape (C, T, H, W).
+        mean (Sequence[float]): per-channel means (27 values).
+        std (Sequence[float]): per-channel standard deviations (27 values).
+        skip (Iterable[int]): channels left as they are.
 
-    def __call__(self, sample):
-        """A standardized copy of `sample` (C, T, H, W), tensor or array; `sample` is unchanged."""
-        # [ours] validate the channel dimension first.
-        if sample.ndim != 4:
-            raise ValueError(
-                "Expected input shaped (C, T, H, W), but found "
-                f"{tuple(sample.shape)}"
-            )
+    Returns:
+        torch.Tensor | np.ndarray: the standardized copy, same type and shape.
 
-        if sample.shape[0] != len(self.mean):
-            raise ValueError(
-                f"Expected {len(self.mean)} channels for normalization, "
-                f"but found {sample.shape[0]}"
-            )
+    Raises:
+        ValueError: if mean and std differ in length, or the window is not 4-D
+            or has the wrong channel count.
+    """
+    # [ours] fail early when the statistics or the window are inconsistent.
+    if len(mean) != len(std):
+        raise ValueError(f"Normalization mean/std lengths differ: {len(mean)} versus {len(std)}")
+    if sample.ndim != 4:
+        raise ValueError(f"Expected input shaped (C, T, H, W), but found {tuple(sample.shape)}")
+    if sample.shape[0] != len(mean):
+        raise ValueError(f"Expected {len(mean)} channels for normalization, but found {sample.shape[0]}")
 
-        # [released] normalize one channel at a time and skip angle/land-cover
-        # channels, which preprocess() encodes instead. The per-channel
-        # arithmetic is kept as released so results stay bit-identical.
-        normalized = sample.copy() if isinstance(sample, np.ndarray) else sample.clone()
-        for channel_idx in range(len(self.mean)):
-            if channel_idx not in self.dont_normalize_idc:
-                normalized[channel_idx] = (
-                    sample[channel_idx] - self.mean[channel_idx]
-                ) / self.std[channel_idx]
-
-        return normalized
+    # [released] normalize one channel at a time and skip angle/land-cover
+    # channels, which preprocess() encodes instead. The per-channel arithmetic
+    # is kept as released so results stay bit-identical.
+    skip = set(skip)
+    normalized = sample.copy() if isinstance(sample, np.ndarray) else sample.clone()
+    for channel_idx in range(len(mean)):
+        if channel_idx not in skip:
+            normalized[channel_idx] = (sample[channel_idx] - mean[channel_idx]) / std[channel_idx]
+    return normalized
 
 
 def landcover_one_hot_matrix(n_classes=N_LANDCOVER_CLASSES):
-    """(n_classes + 1, n_classes) lookup table: row k is class k's encoding.
+    """Build the lookup table that turns a land-cover class into one-hot planes.
 
-    [released] classes 1..n map to one-hot rows. [ours] row 0, the leading
-    zero row, encodes missing land cover (0) as no class.
+    Row k is the encoding of class k: classes 1..17 get a single 1 in their own
+    column [released]. Row 0, for missing land cover, is all zeros, meaning "no
+    class" [ours].
+
+    Args:
+        n_classes (int): number of land-cover classes.
+
+    Returns:
+        torch.Tensor: shape (n_classes + 1, n_classes), float.
     """
     return torch.cat((torch.zeros(1, n_classes), torch.eye(n_classes)), dim=0)
 
 
-def augment(x, y, static=None, degree_channels=DEGREE_CHANNELS):
-    """Random horizontal flip, vertical flip and multiple-of-90-degree rotation.
+def augment(x, y, static=None, degree_channels=DEGREE_CHANNELS, rng=np.random):
+    """Randomly flip and rotate a training window, its target and its TESSERA map together.
 
-    [released] three independent draws from np.random per sample, applied to
-    the input x (C, T, H, W) and target y (2, H, W) alike; angle channels are
-    rotated with the raster so wind still points the right way. [ours]
-    `static` (the TESSERA map, or None) gets the same transforms.
+    Three random draws decide a horizontal flip, a vertical flip and a rotation
+    by 0, 90, 180 or 270 degrees [released]. The same change is applied to the
+    input, the target and the TESSERA map, so they stay aligned; angle channels
+    are rotated too, so wind still points the right way. New tensors are
+    returned and the inputs are left unchanged.
+
+    Args:
+        x (torch.Tensor): the input window, shape (C, T, H, W).
+        y (torch.Tensor): the target, shape (2, H, W).
+        static (torch.Tensor | None): the TESSERA map (129, H, W), or None.
+        degree_channels (list[int]): the channels holding angles in degrees.
+        rng (np.random.Generator | module): where the three draws come from; numpy's
+            global generator by default, as released.
+
+    Returns:
+        tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]: (x, y, static) after the change.
     """
-    hflip = bool(np.random.random() > 0.5)
-    vflip = bool(np.random.random() > 0.5)
-    rotate = int(np.floor(np.random.random() * 4))
+    hflip = bool(rng.random() > 0.5)
+    vflip = bool(rng.random() > 0.5)
+    rotate = int(np.floor(rng.random() * 4))
 
     if hflip:
         x = TF.hflip(x)
@@ -124,9 +138,23 @@ def augment(x, y, static=None, degree_channels=DEGREE_CHANNELS):
 
 
 def preprocess(x, one_hot_matrix, degree_channels=DEGREE_CHANNELS, landcover_channel=LANDCOVER_CHANNEL):
-    """sin() of the angle channels and land cover -> one-hot planes, as a new tensor. [released]
+    """Encode a window for the model: sin() of the angles and one-hot land cover.
 
-    (27, T, H, W) -> (27 - 1 + 17, T, H, W) = (43, T, H, W); `x` is unchanged.
+    Angles in degrees become sin(angle) [released]. The land-cover channel
+    (class 1..17, 0 = missing) becomes 17 one-hot planes, so the stored 27
+    channels become 43. A new tensor is returned and x is unchanged.
+
+    Args:
+        x (torch.Tensor): a window, shape (27, T, H, W).
+        one_hot_matrix (torch.Tensor): landcover_one_hot_matrix().
+        degree_channels (list[int]): channels holding angles in degrees.
+        landcover_channel (int): the land-cover channel.
+
+    Returns:
+        torch.Tensor: shape (43, T, H, W).
+
+    Raises:
+        ValueError: if land cover holds a value outside 0..17.
     """
     new_shape = (
         x.shape[1],

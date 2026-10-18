@@ -5,9 +5,10 @@ data flows through them:
 
     TESSERA      read_tessera, load_tessera_maps, compute_tessera_stats:
                  per-fire embedding files and their normalization statistics
-    FireDataset  every window of every fire in a split, as one Dataset;
-                 dataset[i] reads one window from its fire archive
-                 (data/archive.py) and runs data/transforms.py on it:
+    FireDataset  every window of every fire in a split, as one Dataset. It is
+                 a thin adapter PyTorch needs: dataset[i] calls read_window
+                 (one window from its fire archive, data/archive.py) and
+                 prepare_window (data/transforms.py), both plain functions:
                      load       (27, T, 256, 256) float32 input, (256, 256) target
                      normalize  standardized channels
                      augment    (training only) flips/rotation
@@ -41,25 +42,165 @@ from firepred.config.dataset import (
 )
 from firepred.data.archive import find_fire_sources, fire_name, index_fires, open_fire
 from firepred.data.tessera_archive import load_tessera_maps, static_map
-from firepred.data.transforms import Normalize, augment, landcover_one_hot_matrix, preprocess
+from firepred.data.transforms import augment, landcover_one_hot_matrix, normalize, preprocess
+
+
+# ----- One window: read, then prepare ----- #
+
+# [released] angles and land cover are encoded by preprocess, not standardized.
+NORMALIZE_SKIP = (*DEGREE_CHANNELS, LANDCOVER_CHANNEL)
+
+
+def read_window(source, window_idx, n_channel, ts_length, target_is_single_day):
+    """Read exactly one window and its target from a fire archive, and check their shapes.
+
+    Only this window's two members are decompressed. The target becomes two
+    channels: background (0) and newly burned (1). A wrong shape fails here
+    rather than deep inside the model.
+
+    Args:
+        source (Path): a p<id>.npz archive or unzipped p<id>/ folder.
+        window_idx (int): the window's number inside the fire.
+        n_channel (int): stored channels per window (27).
+        ts_length (int): input days per window.
+        target_is_single_day (bool): the target is one (H, W) next-day map rather
+            than a (T, H, W) sequence.
+
+    Returns:
+        tuple[torch.Tensor, torch.Tensor]: (x (27, T, H, W) float32, y (2, H, W) long).
+
+    Raises:
+        ValueError: if the stored input or target has an unexpected shape.
+    """
+    suffix = f"{window_idx:03d}"
+    data_key = f"data_{suffix}"
+    label_key = f"label_{suffix}"
+
+    with open_fire(source) as archive:
+        data_array = archive[data_key]
+        label_array = archive[label_key]
+
+    # No squeeze(): it could remove a real temporal dimension when T == 1.
+    x = torch.from_numpy(data_array).to(dtype=torch.float32)
+    label = torch.from_numpy(label_array)
+
+    expected_x_shape = (n_channel, ts_length, CROP_SIZE, CROP_SIZE)
+    if tuple(x.shape) != expected_x_shape:
+        raise ValueError(f"{source}:{data_key} has shape {tuple(x.shape)}; expected {expected_x_shape}")
+
+    # [released] target_is_single_day: one map, or a temporal sequence.
+    # Prediction targets are one 256 x 256 map (the newly burned pixels of the next day).
+    if target_is_single_day:
+        # Accept a harmless leading singleton left by older exports.
+        if label.ndim == 3 and label.shape[0] == 1:
+            label = label[0]
+        if label.ndim != 2:
+            raise ValueError(
+                f"target_is_single_day=True requires (H, W), but "
+                f"{source}:{label_key} has shape {tuple(label.shape)}"
+            )
+    else:
+        if label.ndim != 3:
+            raise ValueError(
+                f"target_is_single_day=False requires (T, H, W), but "
+                f"{source}:{label_key} has shape {tuple(label.shape)}"
+            )
+        if label.shape[0] != ts_length:
+            raise ValueError(f"{source}:{label_key} contains {label.shape[0]} target frames; expected {ts_length}")
+
+    if tuple(label.shape[-2:]) != (CROP_SIZE, CROP_SIZE):
+        raise ValueError(
+            f"{source}:{label_key} has spatial shape {tuple(label.shape[-2:])}; expected ({CROP_SIZE}, {CROP_SIZE})"
+        )
+
+    # [released] the binary target as two channels: 0 background, 1 fire.
+    # stack infers either (2,H,W) or (2,T,H,W).
+    y = torch.stack((label == 0, label > 0), dim=0).long()
+    return x, y
+
+
+def prepare_window(x, y, one_hot_matrix, static=None, augment_window=False, rng=np.random):
+    """Turn a read window into model input: standardize, (training only) augment, encode.
+
+    The steps run in the released order: normalize before augmentation, then
+    sin() of the angles and one-hot land cover. Every step returns new tensors,
+    so x and y are unchanged.
+
+    Args:
+        x (torch.Tensor): the stored window, (27, T, H, W).
+        y (torch.Tensor): the two-channel target, (2, H, W).
+        one_hot_matrix (torch.Tensor): landcover_one_hot_matrix().
+        static (torch.Tensor | None): the fire's TESSERA map (129, H, W), or None.
+        augment_window (bool): random flips and rotation (training only).
+        rng (np.random.Generator | module): where augmentation draws come from.
+
+    Returns:
+        dict[str, torch.Tensor]: {"data": (43, T, H, W), "labels": (2, H, W)}, plus
+        "static": (129, H, W) when a TESSERA map is given.
+    """
+    x = normalize(x, NORMALIZATION_MEAN, NORMALIZATION_STD, skip=NORMALIZE_SKIP)
+    # [released] augment training examples but leave validation unchanged.
+    if augment_window:
+        x, y, static = augment(x, y, static, list(DEGREE_CHANNELS), rng=rng)
+    # [released] degrees -> sine, land cover -> one-hot.
+    x = preprocess(x, one_hot_matrix, list(DEGREE_CHANNELS))
+    sample = {"data": x, "labels": y}
+    if static is not None:
+        sample["static"] = static
+    return sample
+
+
+def valid_tessera_maps(tessera_maps, sources, min_coverage):
+    """Pair every fire's TESSERA embedding with its validity mask.
+
+    A TESSERA cell is valid when enough of its 10 m pixels had data. The mask
+    is computed once per fire here, not once per window.
+
+    Args:
+        tessera_maps (dict): {fire name: (embedding, coverage)} (load_tessera_maps).
+        sources (list[Path]): the split's fire archives.
+        min_coverage (float): the smallest valid coverage (from the training statistics).
+
+    Returns:
+        dict[str, tuple[np.ndarray, np.ndarray]]: {fire name: (embedding, valid mask)}.
+    """
+    maps = {}
+    for path in sources:
+        name = fire_name(path)
+        embedding, coverage = tessera_maps[name]
+        maps[name] = (embedding, coverage.astype(np.float32) >= min_coverage)
+    return maps
+
+
+def group_by_fire(index):
+    """Group a window index by fire.
+
+    Test scores are computed per fire and then averaged, so the evaluator needs
+    to know which items belong to which fire. Fire ids are given without the
+    leading "p".
+
+    Args:
+        index (list[tuple[Path, int]]): (fire archive, window number) per item.
+
+    Returns:
+        dict[str, list[int]]: {fire id: item positions of its windows}, in index order.
+    """
+    groups = {}
+    for dataset_index, (archive_path, _) in enumerate(index):
+        groups.setdefault(fire_name(archive_path).removeprefix("p"), []).append(dataset_index)
+    return groups
 
 
 # ----- FireDataset ----- #
 
 
 class FireDataset(Dataset):
-    """Expose every temporal window across every fire as one Dataset item.
+    """Serve every window of every fire in one split as one PyTorch Dataset.
 
-    npz_dir:              a split folder of p<id>.npz archives or p<id>/ folders
-    ts_length:            input days T per window
-    use_augmentations:    random flips/rotation (training split only)
-    n_channel:            stored channels per window (27)
-    target_is_single_day: labels are (H, W) next-day maps (prediction) rather
-                          than (T, H, W) sequences
-    tessera_dir:          folder of tessera/p<id>.npz files, or None
-    tessera_stats:        training-split statistics from compute_tessera_stats()
-    tessera_maps:         this split's maps from load_tessera_maps(), when the
-                          caller already read them; otherwise read from tessera_dir
+    PyTorch's loaders need a Dataset object, so this is a thin adapter: it
+    checks and indexes the split once, then item i is read_window followed by
+    prepare_window. The index runs across all fires, so shuffling mixes them.
+    In TESSERA mode each item also carries the fire's static TESSERA map.
     """
 
     def __init__(
@@ -73,206 +214,127 @@ class FireDataset(Dataset):
         tessera_stats=None,
         tessera_maps=None,
     ):
-        """Find the split's fires, load TESSERA maps if asked, and index every window."""
+        """Find a split's fires, read their TESSERA maps if asked, and index every window.
+
+        All checks happen here, before training: the split must have fires, every
+        fire needs a TESSERA file in TESSERA mode, and every archive must be in the
+        current format. Windows themselves are read only when asked for.
+
+        Args:
+            npz_dir (str | Path): a split folder of p<id>.npz archives or p<id>/ folders.
+            ts_length (int): input days per window.
+            use_augmentations (bool): random flips and rotation (training split only).
+            n_channel (int): stored channels per window (27).
+            target_is_single_day (bool): targets are one (H, W) next-day map
+                (prediction) rather than a (T, H, W) sequence.
+            tessera_dir (str | Path | None): folder of tessera/p<id>.npz files, or None.
+            tessera_stats (dict | None): training statistics (compute_tessera_stats).
+            tessera_maps (dict | None): this split's maps (load_tessera_maps), when the
+                caller already read them; otherwise they are read from tessera_dir.
+
+        Raises:
+            RuntimeError: if the split has no fires or windows, or a TESSERA file is missing.
+            ValueError: if tessera_dir is given without tessera_stats.
+        """
         # [ours] data and labels live together in version-2 archives, or in
         # unzipped p<id>/ folders of the same members.
-        # 1. Find the split's fires (archives or unzipped folders).
         self.npz_dir = Path(npz_dir)
         self.npz_files = find_fire_sources(self.npz_dir)
-
         if not self.npz_files:
-            raise RuntimeError(
-                f"No .npz archives or unzipped fire folders found in {self.npz_dir}"
-            )
+            raise RuntimeError(f"No .npz archives or unzipped fire folders found in {self.npz_dir}")
 
-        # [ours] optional TESSERA mode. Each fire archive p<id>.npz pairs with
-        # <tessera_dir>/p<id>.npz; None keeps the 27-channel behavior.
-        # 2. Optional TESSERA: load every fire's embedding map once, up front.
+        # [ours] optional TESSERA mode: each p<id>.npz pairs with <tessera_dir>/p<id>.npz.
+        # Every fire's map is read here, once, rather than in every __getitem__;
+        # DataLoader workers forked later (Linux, including Kaggle) share the arrays.
         self.tessera_dir = Path(tessera_dir) if tessera_dir is not None else None
         self.tessera_stats = tessera_stats
-        # Each fire's TESSERA map is read here, once, rather than in every
-        # __getitem__. DataLoader workers forked later (Linux, including
-        # Kaggle) share these arrays instead of copying them.
         self.tessera_maps = {}
         if self.tessera_dir is not None:
             if tessera_stats is None:
                 raise ValueError("tessera_stats is required with tessera_dir")
             if tessera_maps is None:
                 tessera_maps = load_tessera_maps(self.tessera_dir, self.npz_files)
-            for path in self.npz_files:
-                name = fire_name(path)
-                embedding, coverage = tessera_maps[name]
-                valid = (
-                    coverage.astype(np.float32) >= tessera_stats["min_coverage"]
-                )
-                self.tessera_maps[name] = (embedding, valid)
+            self.tessera_maps = valid_tessera_maps(tessera_maps, self.npz_files, tessera_stats["min_coverage"])
 
-        # 3. Settings used when loading each window.
         self.n_channel = n_channel
         self.ts_length = ts_length
         self.target_is_single_day = target_is_single_day
         self.use_augmentations = use_augmentations
 
-        # [released] angles in degrees, transformed with sine after augmentation.
-        self.indices_of_degree_features = list(DEGREE_CHANNELS)
-
-        # 4. [ours] The global index: one (fire, window number) entry per window
+        # [ours] the global index: one (fire, window number) entry per window
         # across all fires (data/archive.index_fires), so PyTorch can shuffle
         # windows across fires.
         self.index = index_fires(self.npz_files)
         if not self.index:
-            raise RuntimeError(
-                f"NPZ files in {self.npz_dir} contain no temporal windows"
-            )
-
-        # [released] the original 27-channel training statistics; angle and
-        # land-cover channels are not normalized.
-        # 5. Fixed preprocessing tools: per-channel standardization and the land-cover
-        # one-hot lookup table.
-        self.normalizer = Normalize(
-            mean=NORMALIZATION_MEAN,
-            std=NORMALIZATION_STD,
-            dont_normalize_idc=self.indices_of_degree_features + [LANDCOVER_CHANNEL],
-        )
-
+            raise RuntimeError(f"NPZ files in {self.npz_dir} contain no temporal windows")
         self.one_hot_matrix = landcover_one_hot_matrix()
 
     def windows_by_fire(self):
-        """{fire id (no "p"): [dataset indices of its windows]}, in index order."""
-        groups = {}
-        for dataset_index, (archive_path, _) in enumerate(self.index):
-            groups.setdefault(fire_name(archive_path).removeprefix("p"), []).append(dataset_index)
-        return groups
+        """Group the dataset's windows by fire.
+
+        The evaluator scores each fire on its own. See group_by_fire.
+
+        Returns:
+            dict[str, list[int]]: {fire id: dataset indices of its windows}, in index order.
+        """
+        return group_by_fire(self.index)
 
     def __len__(self):
-        """The number of windows across all fires."""
+        """Count the windows across all fires.
+
+        This is the dataset length PyTorch uses. It is the number of windows, not
+        the number of fires.
+
+        Returns:
+            int: the number of windows.
+        """
         return len(self.index)
 
     def __getitem__(self, idx):
-        """Window `idx` as {"data", "labels"[, "static"]}, ready for the model."""
-        # DataLoader supplies a global window index; load_data maps it to one
-        # member pair inside one fire archive.
-        # One training example, in pipeline order: read the window from disk,
-        # standardize, (training only) flip/rotate, then encode angles and land cover.
-        x, y = self.load_data(idx)
+        """Return window idx ready for the model.
 
-        # [released] normalize before augmentation.
-        x = self.normalizer(x)
+        The window is read from its fire archive, then prepared (standardized,
+        augmented in training, encoded). In TESSERA mode the fire's map is
+        normalized and added; it is returned once as (129, H, W), and the trainer
+        repeats it across the days on the GPU.
 
-        # [ours] the fire's TESSERA map is static, so it is returned once as
-        # (129, H, W). Repeating it across the T days here cost T times its
-        # size in host RAM; the trainer repeats it on the GPU.
-        static = self.load_tessera(idx) if self.tessera_dir is not None else None
+        Args:
+            idx (int): the window's position in the index.
 
-        # [released] augment training examples but leave validation unchanged.
-        if self.use_augmentations:
-            x, y, static = augment(x, y, static, self.indices_of_degree_features)
-
-        # [released] degrees -> sine, land cover -> one-hot.
-        x = preprocess(x, self.one_hot_matrix, self.indices_of_degree_features)
-
-        sample = {
-            "data": x,
-            "labels": y,
-        }
-        if static is not None:
-            sample["static"] = static
-        return sample
-
-    def load_data(self, idx):
-        """Load and decode exactly one temporal window.
-
-        Opening the archive reads its ZIP index; accessing data_###/label_###
-        decompresses only those two members into RAM.
+        Returns:
+            dict[str, torch.Tensor]: {"data": (43, T, H, W), "labels": (2, H, W)}, plus
+            "static": (129, H, W) in TESSERA mode.
         """
-        # Find which fire and which window this index refers to.
-        npz_path, window_idx = self.index[idx]
-        suffix = f"{window_idx:03d}"
-        data_key = f"data_{suffix}"
-        label_key = f"label_{suffix}"
-
-        with open_fire(npz_path) as archive:
-            data_array = archive[data_key]
-            label_array = archive[label_key]
-
-        # No squeeze(): it could remove a real temporal dimension when T == 1.
-        x = torch.from_numpy(data_array).to(dtype=torch.float32)
-        label = torch.from_numpy(label_array)
-
-        # Validate the stored input instead of letting a later model layer
-        # fail with a less informative shape error.
-        expected_x_shape = (
-            self.n_channel,
-            self.ts_length,
-            CROP_SIZE,
-            CROP_SIZE,
-        )
-        if tuple(x.shape) != expected_x_shape:
-            raise ValueError(
-                f"{npz_path}:{data_key} has shape {tuple(x.shape)}; "
-                f"expected {expected_x_shape}"
-            )
-
-        # [released] target_is_single_day: one map, or a temporal sequence.
-        # Prediction targets are one 256 x 256 map (the newly burned pixels of the next day).
-        if self.target_is_single_day:
-            # Accept a harmless leading singleton left by older exports.
-            if label.ndim == 3 and label.shape[0] == 1:
-                label = label[0]
-
-            if label.ndim != 2:
-                raise ValueError(
-                    f"target_is_single_day=True requires (H, W), but "
-                    f"{npz_path}:{label_key} has shape {tuple(label.shape)}"
-                )
-        else:
-            if label.ndim != 3:
-                raise ValueError(
-                    f"target_is_single_day=False requires (T, H, W), but "
-                    f"{npz_path}:{label_key} has shape {tuple(label.shape)}"
-                )
-
-            if label.shape[0] != self.ts_length:
-                raise ValueError(
-                    f"{npz_path}:{label_key} contains {label.shape[0]} "
-                    f"target frames; expected {self.ts_length}"
-                )
-
-        if tuple(label.shape[-2:]) != (CROP_SIZE, CROP_SIZE):
-            raise ValueError(
-                f"{npz_path}:{label_key} has spatial shape "
-                f"{tuple(label.shape[-2:])}; expected ({CROP_SIZE}, {CROP_SIZE})"
-            )
-
-        # [released] the binary target as two channels: 0 background, 1 fire.
-        # stack infers either (2,H,W) or (2,T,H,W).
-        # Two-channel target for the two output channels: background (0) and fire (1).
-        y = torch.stack(
-            (
-                label == 0,
-                label > 0,
-            ),
-            dim=0,
-        ).long()
-
-        return x, y
-
-    def load_tessera(self, idx):
-        """Return (129, H, W): this window's fire map, normalized, plus its validity mask (tessera_archive.static_map)."""
-        npz_path, _ = self.index[idx]
-        # The stored map was read in __init__; only normalization runs per window.
-        embedding, valid = self.tessera_maps[fire_name(npz_path)]
-        return torch.from_numpy(static_map(embedding, valid, self.tessera_stats))
+        source, window_idx = self.index[idx]
+        x, y = read_window(source, window_idx, self.n_channel, self.ts_length, self.target_is_single_day)
+        static = None
+        if self.tessera_dir is not None:
+            embedding, valid = self.tessera_maps[fire_name(source)]
+            static = torch.from_numpy(static_map(embedding, valid, self.tessera_stats))
+        return prepare_window(x, y, self.one_hot_matrix, static, self.use_augmentations)
 
 
 # ----- Loaders and batches ----- #
 
 
 def make_dataloader(dataset, batch_size, shuffle, num_workers, pin_memory, generator=None):
-    """Create a conservative loader that can be tuned after RAM is measured.
+    """Create the DataLoader that batches a dataset's windows.
 
-    `generator` (a torch.Generator) gives the loader its own random stream for
-    shuffling and worker seeds; None draws from the global torch generator.
+    Training shuffles; validation and test keep a fixed order. With workers,
+    each keeps only one batch ready ahead (not PyTorch's two) to save RAM, and
+    workers persist across epochs. A generator gives the loader its own random
+    stream, so loading never draws from the global random numbers.
+
+    Args:
+        dataset (torch.utils.data.Dataset): the windows to batch.
+        batch_size (int): windows per batch.
+        shuffle (bool): reshuffle every epoch.
+        num_workers (int): loading processes (0 = in the main process).
+        pin_memory (bool): pin batches in host memory for faster GPU copies.
+        generator (torch.Generator | None): the loader's own random generator.
+
+    Returns:
+        torch.utils.data.DataLoader: the loader.
     """
     # Batches of windows; training shuffles, validation and test keep a fixed order.
     loader_options = {
@@ -295,7 +357,24 @@ def make_dataloader(dataset, batch_size, shuffle, num_workers, pin_memory, gener
 
 
 def validate_dataset_output(dataset, expected_model_channels, dataset_name):
-    """Fail before model construction if the Dataset/model shapes disagree."""
+    """Check that a dataset produces what the model expects, before any training.
+
+    One window is loaded and its channel count (including TESSERA) compared
+    with the model's input width. A mismatch therefore fails at once instead
+    of deep inside a training step. The shapes are printed.
+
+    Args:
+        dataset (FireDataset): the dataset to check.
+        expected_model_channels (int): the model's input channels (43 or 172).
+        dataset_name (str): a name for messages, e.g. "validation".
+
+    Returns:
+        tuple: the sample's data shape.
+
+    Raises:
+        RuntimeError: if the dataset is empty.
+        ValueError: if the shape or channel count is wrong.
+    """
     if len(dataset) == 0:
         raise RuntimeError(f"{dataset_name} dataset contains no windows")
 
@@ -326,15 +405,22 @@ def validate_dataset_output(dataset, expected_model_channels, dataset_name):
         f"data shape={data_shape}, label shape={label_shape}"
         + (f", static TESSERA channels={static_channels}" if static_channels else "")
     )
+    return data_shape
 
 
 def batch_inputs(batch, device):
-    """Model input on `device`: the 43 stored channels, then (TESSERA mode)
-    the static (129, H, W) map repeated across the T days.
+    """Assemble a batch into the model's input tensor on the device.
 
-    The repeat happens here on the GPU, not in the loader, so host RAM holds
-    the TESSERA map once per sample instead of once per day. The channel
-    order matches appending TESSERA after the base channels.
+    The batch's 43 channels are moved to the device. In TESSERA mode the static
+    (129, H, W) map is copied onto every day there and appended, giving 172
+    channels; doing the copy on the GPU keeps host RAM at one map per sample.
+
+    Args:
+        batch (dict[str, torch.Tensor]): a DataLoader batch with "data" (and "static").
+        device (torch.device | str): where the model runs.
+
+    Returns:
+        torch.Tensor: shape (B, C, T, H, W) on device.
     """
     # Move the batch to the GPU; in TESSERA mode, copy the per-fire map onto every
     # day there and append it after the 43 regular channels.

@@ -30,12 +30,13 @@ from firepred.models.blocks.window_ops import compute_mask, get_window_size, win
 
 
 class SwinTransformerBlock(nn.Module):
-    '''
-    Swin Transformer block based on: 'Liu et al.,
-    Swin Transformer: Hierarchical Vision Transformer using Shifted Windows
-    <https://arxiv.org/abs/2103.14030>'
-    https://github.com/microsoft/Swin-Transformer
-    '''
+    """One Swin transformer block: window attention and an MLP, each with a shortcut.
+
+    The volume is cut into small windows and every token attends only to the
+    tokens of its own window. Odd blocks first shift the windows by half a
+    window, so information crosses window borders over two blocks (Liu et al.,
+    Swin Transformer, ICCV 2021).
+    """
 
     def __init__(
         self,
@@ -53,21 +54,29 @@ class SwinTransformerBlock(nn.Module):
         norm_layer:     Type[LayerNorm] = nn.LayerNorm,
         use_checkpoint: bool = False,
     ) -> None:
-        '''
+        """Build the block's normalizations, window attention and MLP.
+
+        The attention version picks Swin V1 (window_attention.py, the default) or
+        Swin V2 (window_attention_v2.py). Drop rates are all 0 for SwinUNETR-3D.
+
         Args:
-            dim: number     of feature channels.
-            num_heads:      number of attention heads.
-            window_size:    local window size.
-            shift_size:     window shift size.
-            mlp_ratio:      ratio of mlp hidden dim to embedding dim.
-            qkv_bias:       add a learnable bias to query, key, value.
-            drop:           dropout rate.
-            attn_drop:      attention dropout rate.
-            drop_path:      stochastic depth rate.
-            act_layer:      activation layer.
-            norm_layer:     normalization layer.
-            use_checkpoint: use gradient checkpointing for reduced memory usage.
-        '''
+            dim (int): feature channels.
+            num_heads (int): attention heads.
+            window_size (Sequence[int]): window size per axis.
+            shift_size (Sequence[int]): window shift per axis (0 for unshifted blocks).
+            mlp_ratio (float): MLP hidden width as a multiple of dim.
+            qkv_bias (bool): learnable bias on queries, keys and values.
+            drop (float): dropout rate.
+            attn_drop (float): attention dropout rate.
+            attn_version (str): "v1" or "v2".
+            drop_path (float): stochastic depth rate.
+            act_layer (str): MLP activation.
+            norm_layer (type[nn.Module]): normalization layer class.
+            use_checkpoint (bool): recompute activations to save memory.
+
+        Raises:
+            ValueError: on an unknown attn_version.
+        """
 
         super().__init__()
         self.dim = dim
@@ -115,7 +124,19 @@ class SwinTransformerBlock(nn.Module):
         )
 
     def forward_part1(self, x, mask_matrix):
-        """Attention half of the block: norm, pad, (shift), window attention, unshift, unpad."""
+        """Run the attention half: normalize, pad, shift, attend inside windows, undo.
+
+        The volume is padded to whole windows, rolled for shifted blocks, cut into
+        windows, attended, stitched back, rolled back and unpadded. The mask stops
+        tokens from attending across the seams the roll creates.
+
+        Args:
+            x (torch.Tensor): features of shape (B, D, H, W, C).
+            mask_matrix (torch.Tensor | None): the shifted-window mask (window_ops.compute_mask).
+
+        Returns:
+            torch.Tensor: the attention output, same shape as x.
+        """
         x_shape = x.size()
         # LayerNorm, then pad the volume so each axis is a whole number of windows.
         x = self.norm1(x)
@@ -177,11 +198,32 @@ class SwinTransformerBlock(nn.Module):
         return x
 
     def forward_part2(self, x):
-        """MLP half of the block: norm, MLP, drop path."""
+        """Run the MLP half: normalize, MLP, stochastic depth.
+
+        Each token is processed on its own, without looking at others. The caller
+        adds the result to its input.
+
+        Args:
+            x (torch.Tensor): features of shape (B, D, H, W, C).
+
+        Returns:
+            torch.Tensor: the MLP output, same shape as x.
+        """
         return self.drop_path(self.mlp(self.norm2(x)))
 
     def forward(self, x, mask_matrix):
-        """One Swin block with residual connections: x + attention(x), then x + MLP(x)."""
+        """Run the whole block: x + attention(x), then x + MLP(x).
+
+        Each half's result is added to its input (a residual connection). This
+        keeps deep stacks of blocks trainable.
+
+        Args:
+            x (torch.Tensor): features of shape (B, D, H, W, C).
+            mask_matrix (torch.Tensor | None): the shifted-window mask.
+
+        Returns:
+            torch.Tensor: same shape as x.
+        """
         # Residual connections: each half adds a correction to its input,
         # x + attention(...) then x + MLP(...), which keeps deep stacks trainable.
         shortcut = x
@@ -197,12 +239,12 @@ class SwinTransformerBlock(nn.Module):
         return x
 
 class BasicLayer(nn.Module):
-    '''
-    Basic Swin Transformer layer in one stage based on: 'Liu et al.,
-    Swin Transformer: Hierarchical Vision Transformer using Shifted Windows
-    <https://arxiv.org/abs/2103.14030>'
-    https://github.com/microsoft/Swin-Transformer
-    '''
+    """One Swin stage: a stack of blocks, alternately unshifted and shifted, then patch merging.
+
+    Each stage sees the volume at one scale. Alternating plain and shifted
+    windows lets information spread across window borders. The optional patch
+    merging at the end moves to the next, coarser scale.
+    """
 
     def __init__(
         self,
@@ -221,22 +263,27 @@ class BasicLayer(nn.Module):
         downsample:       Optional[nn.Module] = None,
         use_checkpoint:   bool = False,
     ) -> None:
-        '''
+        """Build the stage's blocks and its optional downsampling.
+
+        Even-numbered blocks use plain windows and odd ones shifted windows. The
+        shift is half a window on every axis.
+
         Args:
-            input_resolution: resolution of input feature maps.
-            dim:              number of feature channels.
-            depth:            number of layers in each stage.
-            num_heads:        number of attention heads.
-            window_size:      local window size.
-            drop_path:        stochastic depth rate.
-            mlp_ratio:        ratio of mlp hidden dim to embedding dim.
-            qkv_bias:         add a learnable bias to query, key, value.
-            drop:             dropout rate.
-            attn_drop:        attention dropout rate.
-            norm_layer:       normalization layer.
-            downsample:       an optional downsampling layer at the end of the layer.
-            use_checkpoint:   use gradient checkpointing for reduced memory usage.
-        '''
+            input_resolution (tuple[int, ...]): the feature grid size (kept for reference).
+            dim (int): feature channels.
+            depth (int): number of blocks.
+            num_heads (int): attention heads.
+            window_size (Sequence[int]): window size per axis.
+            drop_path (list[float] | float): stochastic depth rate per block.
+            mlp_ratio (float): MLP hidden width as a multiple of dim.
+            qkv_bias (bool): learnable bias on queries, keys and values.
+            drop (float): dropout rate.
+            attn_drop (float): attention dropout rate.
+            attn_version (str): "v1" or "v2".
+            norm_layer (type[nn.Module]): normalization layer class.
+            downsample (Callable | None): a patch-merging layer factory, or None.
+            use_checkpoint (bool): recompute activations to save memory.
+        """
 
         super().__init__()
         self.window_size = window_size
@@ -276,7 +323,17 @@ class BasicLayer(nn.Module):
             )
 
     def forward(self, x):
-        """Run every block of the stage on (B, C, D, H, W) with the shifted-window mask, then merge patches."""
+        """Run every block of the stage, then patch merging.
+
+        The shifted-window mask is computed once for the stage. Input and output
+        are channels-first.
+
+        Args:
+            x (torch.Tensor): features of shape (B, C, D, H, W).
+
+        Returns:
+            torch.Tensor: shape (B, C', D', H', W') after merging (unchanged without it).
+        """
         x_shape = x.size()
         if len(x_shape) == 5:
             b, c, d, h, w = x_shape

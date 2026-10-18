@@ -43,7 +43,17 @@ from firepred.data.tessera import build_fire_tessera, has_prior_year_tessera, mi
 
 @dataclass(frozen=True)
 class TesseraBuildReport:
-    """process_tessera's result: fires built, fires skipped (with reasons), files uploaded."""
+    """Report what process_tessera built, skipped and uploaded.
+
+    The master returns this instead of only printing, so a notebook or test
+    can inspect the outcome. Skipped fires carry the reason.
+
+    Attributes:
+        repo (str): the TESSERA repo.
+        built (tuple[str, ...]): fire ids whose file was built.
+        skipped (dict[str, str]): {fire id: why it got no file}.
+        uploaded (tuple[str, ...]): file names uploaded.
+    """
 
     repo: str
     built: tuple
@@ -51,7 +61,14 @@ class TesseraBuildReport:
     uploaded: tuple = ()
 
     def summary(self):
-        """Counts plus one line per skipped fire."""
+        """Summarize the build: counts and one line per skipped fire.
+
+        The master prints this at the end. Skipped fires are listed with their
+        reasons.
+
+        Returns:
+            str: the summary, one item per line.
+        """
         lines = [f"TESSERA done in {self.repo}: built {len(self.built)}, skipped {len(self.skipped)}"]
         lines += [f"  {fire_id}: {reason}" for fire_id, reason in self.skipped.items()]
         return "\n".join(lines)
@@ -59,7 +76,18 @@ class TesseraBuildReport:
 
 @dataclass(frozen=True)
 class TesseraZipReport:
-    """upload_tessera_zip's result: the zip, what it holds, and kept fires still missing a file."""
+    """Report what upload_tessera_zip bundled and uploaded.
+
+    The report also lists kept fires that still have no TESSERA file. Those
+    would fail later in training, so the summary warns about them.
+
+    Attributes:
+        zip_path (Path): the local tessera.zip.
+        embeddings (int): TESSERA files in the zip.
+        excluded (tuple[str, ...]): window archives TESSERA runs leave out.
+        missing (tuple[str, ...]): kept fires still without a file.
+        repo (str): the TESSERA repo the zip went to.
+    """
 
     zip_path: Path
     embeddings: int
@@ -68,7 +96,14 @@ class TesseraZipReport:
     repo: str
 
     def summary(self):
-        """One line, plus a warning when kept fires have no TESSERA file yet."""
+        """Summarize the upload, with a warning when kept fires lack a file.
+
+        The first line gives the counts. A second line warns about fires that
+        still need a TESSERA file.
+
+        Returns:
+            str: the summary.
+        """
         text = (f"Uploaded {self.zip_path.name} to {self.repo}: {self.embeddings} embeddings, "
                 f"{len(self.excluded)} excluded window archives")
         if self.missing:
@@ -78,14 +113,30 @@ class TesseraZipReport:
 
 @dataclass(frozen=True)
 class TesseraPull:
-    """pull_tessera_zip's result: the unpacked tessera/ folder and the window archives removed."""
+    """Report what pull_tessera_zip unpacked and removed.
+
+    The removed archives are the fires without prior-year TESSERA. Removing
+    them keeps TESSERA and matched no-TESSERA runs on the same fires.
+
+    Attributes:
+        tessera_dir (Path): the unpacked tessera/ folder.
+        excluded (tuple[str, ...]): archives listed in excluded_npz.txt.
+        removed (tuple[str, ...]): archives actually deleted.
+    """
 
     tessera_dir: Path
     excluded: tuple
     removed: tuple
 
     def summary(self):
-        """One line."""
+        """Summarize the pull in one line.
+
+        The line names the TESSERA folder and how many window archives were
+        removed. The master prints it.
+
+        Returns:
+            str: the summary.
+        """
         return (f"TESSERA in {self.tessera_dir}; removed {len(self.removed)} window archives "
                 "of fires without prior-year TESSERA")
 
@@ -94,7 +145,22 @@ class TesseraPull:
 
 
 def fires_to_build(roi, splits, only_fires=None):
-    """Fire IDs of `splits`, de-duplicated in order, narrowed to `only_fires` if given."""
+    """List the fire ids of the chosen splits, each once and in order.
+
+    A fire is listed once even if it appears in two splits. With only_fires the
+    list is narrowed to those ids, e.g. for a short timing test.
+
+    Args:
+        roi (RoiTable): the fires of every split.
+        splits (tuple[str, ...]): the splits to include.
+        only_fires (list[str] | None): restrict to these ids.
+
+    Returns:
+        list[str]: the fire ids.
+
+    Raises:
+        ValueError: if only_fires names a fire outside the splits.
+    """
     ids = roi.ids_by_split()
     fire_ids = list(dict.fromkeys(str(fire_id) for split in splits for fire_id in ids[split]))
     if only_fires is None:
@@ -107,7 +173,21 @@ def fires_to_build(roi, splits, only_fires=None):
 
 
 def skip_reason(fire_id, day_files, years, available_years):
-    """Why `fire_id` cannot get a TESSERA file, or "" when it can."""
+    """Explain why a fire cannot get a TESSERA file, or return "" when it can.
+
+    A fire needs daily images in the source repo, a start date in the ROI CSVs,
+    and published embeddings for the year before it started. The first missing
+    requirement is the reason.
+
+    Args:
+        fire_id (str): the fire id.
+        day_files (list[str]): its VIIRS_Day GeoTIFF paths.
+        years (dict[str, int]): {fire id: start year}.
+        available_years (Iterable[int]): years the TESSERA store publishes.
+
+    Returns:
+        str: the reason, or "" when the fire can be built.
+    """
     if not day_files:
         return "no VIIRS_Day files in source repo"
     if fire_id not in years:
@@ -119,7 +199,16 @@ def skip_reason(fire_id, day_files, years, available_years):
 
 @dataclass(frozen=True)
 class TesseraJob:
-    """One fire to build: its first and last VIIRS_Day GeoTIFF (repo paths) and its start year."""
+    """Describe one fire that process_tessera will build.
+
+    Only the first and last daily image are downloaded. They share the fire's
+    grid, and the grid decides which TESSERA pixels are needed.
+
+    Attributes:
+        fire_id (str): the fire id.
+        day_files (tuple[str, ...]): the first and last VIIRS_Day repo paths.
+        start_year (int): the year the fire started.
+    """
 
     fire_id: str
     day_files: tuple
@@ -128,7 +217,18 @@ class TesseraJob:
 
 @dataclass(frozen=True)
 class TesseraPlan:
-    """What process_tessera will build, the fires it skips (with why) and those already uploaded."""
+    """Describe what process_tessera will do before it downloads anything.
+
+    The plan lists the fires to build, the fires it skips (with reasons) and
+    the fires already uploaded. Building it touches no file or network, so it
+    can be tested on its own.
+
+    Attributes:
+        fire_ids (tuple[str, ...]): every fire considered, in order.
+        jobs (tuple[TesseraJob, ...]): the fires to build.
+        skipped (dict[str, str]): {fire id: why it is skipped}.
+        already_built (tuple[str, ...]): fires already in the repo.
+    """
 
     fire_ids: tuple
     jobs: tuple
@@ -136,16 +236,36 @@ class TesseraPlan:
     already_built: tuple = ()
 
     def summary(self):
-        """One line: fires to build, skipped, already uploaded."""
+        """Summarize the plan in one line.
+
+        The line counts the fires to build, the fires skipped and those already
+        uploaded. The master prints it before starting.
+
+        Returns:
+            str: the summary.
+        """
         return (f"Plan: build {len(self.jobs)} TESSERA files; skip {len(self.skipped)}; "
                 f"{len(self.already_built)} already in the repo")
 
 
 def plan_tessera(roi, splits, locations, existing, available_years, overwrite=False, only_fires=None):
-    """The TesseraPlan for `splits`: which fires get a TESSERA file now, and why the others do not.
+    """Plan which fires get a TESSERA file now, and why the others do not.
 
-    `locations` is the source repo's GeoTIFFs by fire, `existing` the TESSERA
-    repo's file paths, `available_years` the store's published years.
+    Fires already in the repo are skipped unless overwrite is set; every other
+    fire is checked with skip_reason. This is pure: it reads and writes
+    nothing, so the plan is the same for the same inputs.
+
+    Args:
+        roi (RoiTable): the fires and their start years.
+        splits (tuple[str, ...]): the splits to cover.
+        locations (dict): the source repo's GeoTIFFs by fire (hub.list_fire_files).
+        existing (set[str]): file paths already in the TESSERA repo.
+        available_years (Iterable[int]): years the TESSERA store publishes.
+        overwrite (bool): rebuild fires already in the repo.
+        only_fires (list[str] | None): restrict to these ids.
+
+    Returns:
+        TesseraPlan: the jobs, the skipped fires and those already built.
     """
     fire_ids = fires_to_build(roi, splits, only_fires)
     jobs, skipped, already = [], {}, []
@@ -166,16 +286,41 @@ def plan_tessera(roi, splits, locations, existing, available_years, overwrite=Fa
 
 
 def excluded_fires(token=None, src_repo=SRC_REPO, roi_dir=ROI_CACHE_DIR):
-    """The window archives TESSERA mode drops (fires without prior-year TESSERA)."""
+    """List the window archives TESSERA mode leaves out, from the source repo's ROI CSVs.
+
+    These are the fires without prior-year embeddings. The CSVs are downloaded
+    and read once.
+
+    Args:
+        token (str | None): a Hugging Face token.
+        src_repo (str): the raw GeoTIFF repo.
+        roi_dir (str | Path): the local folder for the CSVs.
+
+    Returns:
+        list[str]: sorted "split/p<id>.npz" names.
+    """
     return tessera_excluded_npz(read_roi(hub.download_roi_csvs(src_repo, token, roi_dir)))
 
 
 def build_one(gt, fire_id, day_files, start_year, src_repo, token, staging_dir, strip_rows, temp_root):
-    """Download a fire's `day_files` (first and last VIIRS_Day GeoTIFF), build its TESSERA file; return a FireTessera.
+    """Download one fire's two day images and build its TESSERA file.
 
-    The two days must share one grid, and that grid decides which TESSERA
-    pixels the fire's crop covers. Downloads go to a temporary folder that is
-    deleted afterwards.
+    The images go into a temporary folder that is deleted afterwards. The file
+    is written into staging_dir, ready to upload.
+
+    Args:
+        gt (geotessera.GeoTesseraZarr): the TESSERA store client.
+        fire_id (str): the fire id.
+        day_files (tuple[str, ...]): the first and last VIIRS_Day repo paths.
+        start_year (int): the year the fire started.
+        src_repo (str): the raw GeoTIFF repo.
+        token (str | None): a Hugging Face token.
+        staging_dir (str | Path): where finished files wait for upload.
+        strip_rows (int): TESSERA rows read per request.
+        temp_root (str | Path): where the temporary download folder is made.
+
+    Returns:
+        FireTessera: the written file and its coverage.
     """
     with tempfile.TemporaryDirectory(dir=temp_root) as temp_dir:
         day_paths = {
@@ -200,14 +345,28 @@ def process_tessera(
     strip_rows=STRIP_ROWS,
     only_fires=None,
 ):
-    """Build tessera/p<id>.npz for every fire in `splits` and upload them to `tessera_repo`.
+    """Build a TESSERA file for every fire of the chosen splits and upload them.
 
-    `only_fires` restricts the run to those fire IDs, e.g. a short timing test.
-    Only the first and last VIIRS_Day GeoTIFF of each fire are downloaded;
-    embeddings are streamed into RAM. Finished files are staged in
-    <work_dir>/staging/tessera and uploaded in batches, so an interrupted run
-    resumes by skipping fires already uploaded. A failing fire is recorded in
-    the report's `skipped` and the run goes on.
+    The ROI CSVs are read once, a plan decides which fires to build, then each
+    fire's file is built and uploaded in batches. An interrupted run resumes by
+    skipping fires already uploaded. A fire that fails is recorded with its
+    error and the run goes on.
+
+    Args:
+        token (str | None): a token with write access to tessera_repo.
+        src_repo (str): the raw GeoTIFF repo.
+        tessera_repo (str): where the TESSERA files go (created private if new).
+        splits (tuple[str, ...]): the splits to cover.
+        batch_size (int): files per upload commit.
+        work_dir (str | Path): where temporary and staged files go.
+        roi_dir (str | Path): the local folder for the ROI CSVs.
+        overwrite (bool): rebuild fires already uploaded.
+        store_url (str | None): another TESSERA store (default: geotessera's).
+        strip_rows (int): TESSERA rows read per request.
+        only_fires (list[str] | None): restrict to these ids (a timing test).
+
+    Returns:
+        TesseraBuildReport: what was built, skipped and uploaded.
     """
     from geotessera import GeoTesseraZarr
 
@@ -253,7 +412,19 @@ def process_tessera(
 
 
 def upload_staged(staging_dir, tessera_repo, token):
-    """Upload the staged TESSERA files to tessera_repo/tessera, then empty the folder; return their names."""
+    """Upload the staged TESSERA files, then empty the staging folder.
+
+    All files go to tessera_repo/tessera in one commit. The folder is emptied so
+    the next batch starts clean.
+
+    Args:
+        staging_dir (str | Path): the folder of finished files.
+        tessera_repo (str): the TESSERA repo.
+        token (str | None): a token with write access.
+
+    Returns:
+        list[str]: the uploaded file names.
+    """
     print(f"Uploading staged TESSERA files to {tessera_repo}")
     names = hub.upload_folder(staging_dir, tessera_repo, "tessera", token)
     shutil.rmtree(staging_dir, ignore_errors=True)
@@ -269,11 +440,25 @@ def upload_tessera_zip(
     roi_dir=ROI_CACHE_DIR,
     zip_name=TESSERA_ZIP,
 ):
-    """Bundle tessera/*.npz from `tessera_repo` into `zip_name` and upload it there.
+    """Bundle every TESSERA file and the drop list into one zip and upload it.
 
-    The zip holds tessera/p<id>.npz plus tessera/excluded_npz.txt, the window
-    archives of fires without prior-year TESSERA. Window data is not copied:
-    training pulls data.zip from the window repo and this zip into the same folder.
+    The zip holds tessera/p<id>.npz plus excluded_npz.txt, the window archives
+    of fires without prior-year TESSERA. Training downloads one zip instead of
+    hundreds of files. Kept fires still missing a file are reported.
+
+    Args:
+        token (str | None): a token with write access to tessera_repo.
+        src_repo (str): the raw GeoTIFF repo (for the ROI CSVs).
+        tessera_repo (str): the TESSERA repo.
+        work_dir (str | Path): where the bundle is assembled.
+        roi_dir (str | Path): the local folder for the ROI CSVs.
+        zip_name (str): the zip's name in the repo.
+
+    Returns:
+        TesseraZipReport: the zip, its contents and any missing fires.
+
+    Raises:
+        RuntimeError: if the repo has no TESSERA files yet.
     """
     bundle_root = Path(work_dir) / "tessera_bundle"
     tessera_dir = bundle_root / "tessera"
@@ -304,11 +489,21 @@ def upload_tessera_zip(
 
 
 def pull_tessera_zip(data_root, token=None, tessera_repo=TESSERA_REPO, zip_name=TESSERA_ZIP, drop_excluded=True):
-    """Unpack tessera.zip into <data_root>/tessera; with `drop_excluded`, delete the excluded window archives.
+    """Download and unpack tessera.zip next to the window data, then drop excluded fires.
 
-    Run after pulling data.zip into the same `data_root`. Deleting the
-    archives listed in tessera/excluded_npz.txt makes the TESSERA run and the
-    matched no-TESSERA run see the same fires.
+    Run this after pulling data.zip into the same data root. With
+    drop_excluded the window archives listed in excluded_npz.txt are deleted,
+    so the TESSERA run and its matched baseline see the same fires.
+
+    Args:
+        data_root (str | Path): the data root to unpack into.
+        token (str | None): a Hugging Face token.
+        tessera_repo (str): the TESSERA repo.
+        zip_name (str): the zip's name in the repo.
+        drop_excluded (bool): delete the excluded window archives.
+
+    Returns:
+        TesseraPull: the TESSERA folder and what was removed.
     """
     hub.pull_zip(tessera_repo, zip_name, data_root, token)
     tessera_dir = Path(data_root) / "tessera"
@@ -320,12 +515,23 @@ def pull_tessera_zip(data_root, token=None, tessera_repo=TESSERA_REPO, zip_name=
 
 
 def stage_tessera(data_root, work, token=None, tessera_repo=TESSERA_REPO, attached_dir=None, attached_zip=None):
-    """Training notebooks: find (or download and extract) the TESSERA files and build the training view.
+    """Prepare TESSERA for a training notebook and build the training view.
 
-    `work` is a windows_master.Workspace. Priority: an attached folder, an
-    attached tessera.zip, else tessera.zip from `tessera_repo`. Returns a
-    tessera.TesseraView whose root is the training root (window archives of
-    excluded fires left out, tessera/ linked in).
+    The TESSERA files come from an attached folder, an attached tessera.zip, or
+    a download from the repo, in that order. The view links the kept window
+    archives plus tessera/, leaving out excluded fires without modifying the
+    data.
+
+    Args:
+        data_root (str | Path): the extracted window data.
+        work (Workspace): the notebook's paths (windows_master.workspace).
+        token (str | None): a Hugging Face token.
+        tessera_repo (str): the TESSERA repo.
+        attached_dir (str | Path | None): an attached folder of TESSERA files.
+        attached_zip (str | Path | None): an attached tessera.zip.
+
+    Returns:
+        TesseraView: the training root and the archives left out.
     """
     if attached_dir:
         tessera_dir = Path(attached_dir)
@@ -341,7 +547,19 @@ def stage_tessera(data_root, work, token=None, tessera_repo=TESSERA_REPO, attach
 
 
 def download_tessera_files(data_root, tessera_repo, token):
-    """Download tessera/* into <data_root>/tessera; return window archives that have no TESSERA file."""
+    """Download every TESSERA file into a data root and list archives still without one.
+
+    Files already present are kept. Every window archive needs a TESSERA file
+    of the same name; the ones without are returned so the caller can warn.
+
+    Args:
+        data_root (str | Path): the data root (files go to data_root/tessera).
+        tessera_repo (str): the TESSERA repo.
+        token (str | None): a Hugging Face token.
+
+    Returns:
+        list[str]: "split/p<id>.npz" archives that have no TESSERA file.
+    """
     data_root = Path(data_root)
     for name in hub.list_repo_files(tessera_repo, token):
         if name.startswith("tessera/") and not (data_root / name).exists():

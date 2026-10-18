@@ -41,10 +41,23 @@ WIDTH = 16  # feature channels at full resolution; override with --model-option 
 
 
 class Model(nn.Module):
-    """A two-level 3-D U-Net: the smallest useful example, built line by line."""
+    """A two-level 3-D U-Net, the smallest useful example of a zoo model.
+
+    One block extracts features, one halves the image (never the days), one
+    upsamples and joins the skip connection, and a 1x1x1 convolution gives the
+    logits. Copy it with `python -m firepred.cli.new_model NAME` and edit.
+    """
 
     def __init__(self, in_channels, num_classes, width):
-        """A residual stem, one downsampling block, one upsampling block with a skip, and a 1x1x1 head."""
+        """Build the four blocks of the template model.
+
+        All blocks come from MONAI. Widths are width and 2 x width.
+
+        Args:
+            in_channels (int): input channels per day.
+            num_classes (int): output channels.
+            width (int): base feature width.
+        """
         super().__init__()
         self.stem = UnetrBasicBlock(3, in_channels, width, kernel_size=3, stride=1,
                                     norm_name="batch", res_block=True)
@@ -55,7 +68,17 @@ class Model(nn.Module):
         self.head = UnetOutBlock(3, width, num_classes)
 
     def forward(self, x):                 # (B, C,  T, H,   W)
-        """(B, C, T, H, W) input -> (B, K, T, H, W) per-day logits."""
+        """Run the template model on one batch.
+
+        The days are kept throughout, so the output is one map per day.
+        The trainer averages them into one next-day map.
+
+        Args:
+            x (torch.Tensor): input of shape (B, C, T, H, W).
+
+        Returns:
+            torch.Tensor: per-day logits of shape (B, K, T, H, W).
+        """
         skip = self.stem(x)               # (B, W,  T, H,   W)    3x3x3 convs, same size
         x = self.down(skip)               # (B, 2W, T, H/2, W/2)  halve space, keep the days
         x = self.up(x, skip)              # (B, W,  T, H,   W)    upsample, concat skip, convs
@@ -64,5 +87,15 @@ class Model(nn.Module):
 
 @register_model(NAME)
 def build(spec):
-    """Build the template model for a ModelSpec (options['width'] sets the feature width)."""
+    """Build the template model for a ModelSpec.
+
+    Only in_channels and num_classes are used. options["width"] sets the
+    feature width.
+
+    Args:
+        spec (ModelSpec): what the model is built for.
+
+    Returns:
+        Model: the new model.
+    """
     return Model(spec.in_channels, spec.num_classes, spec.options.get("width", WIDTH))

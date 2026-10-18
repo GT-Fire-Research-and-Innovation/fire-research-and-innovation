@@ -45,11 +45,13 @@ DEPTHS = (2, 2, 2, 2)       # Swin blocks per stage
 
 
 class SwinUNETR(nn.Module):
-    '''
-    Swin UNETR based on: 'Hatamizadeh et al.,
-    Swin UNETR: Swin Transformers for Semantic Segmentation of Brain Tumors in MRI Images
-    <https://arxiv.org/abs/2201.01266>'
-    '''
+    """SwinUNETR-3D: a Swin transformer encoder with a U-Net-style convolutional decoder.
+
+    The Swin encoder looks at the fire volume at five scales; convolutional
+    blocks turn each scale into a skip connection, and the decoder climbs back
+    to full size. This is the main model of the project (Hatamizadeh et al.,
+    Swin UNETR, 2022, as adapted for time series by TS-SatFire).
+    """
 
     def __init__(
         self,
@@ -71,26 +73,34 @@ class SwinUNETR(nn.Module):
         spatial_dims:   int = 3,
         temporal_downsample: bool = True
     ) -> None:
-        '''
+        """Build the Swin encoder, the convolutional skip blocks and the decoder.
+
+        Layer creation order is the random-initialization order, and attribute
+        names are checkpoint keys, so neither may change. The paper's settings come
+        from build().
+
         Args:
-            image_size:     dimension of input image.
-            patch_size:     dimension of patch.
-            window_size:    dimension of window.
-            in_channels:    dimension of input channels.
-            out_channels:   dimension of output channels.
-            feature_size:   dimension of network feature size.
-            depths:         number of layers in each stage.
-            num_heads:      number of attention heads.
-            norm_name:      feature normalization type and arguments.
-            drop_rate:      dropout rate.
-            attn_drop_rate: attention dropout rate.
-            drop_path_rate: drop path rate.
-            attn_version:   version of attention in swin transformer.
-            normalize:      normalize output intermediate features in each stage.
-            use_checkpoint: use gradient checkpointing for reduced memory usage.
-            spatial_dims:   number of spatial dims.
-            temporal_downsample: patch merging also halves the first (temporal) dim when it is even.
-        '''
+            image_size (Sequence[int]): (T, H, W) of the input.
+            patch_size (Sequence[int]): patch size per axis.
+            window_size (Sequence[int]): attention window per axis.
+            in_channels (int): input channels.
+            out_channels (int): output channels.
+            depths (Sequence[int]): Swin blocks per stage.
+            num_heads (Sequence[int]): attention heads per stage.
+            feature_size (int): base feature width.
+            norm_name (str): decoder normalization, e.g. "batch".
+            drop_rate (float): dropout rate.
+            attn_drop_rate (float): attention dropout rate.
+            drop_path_rate (float): stochastic depth rate.
+            attn_version (str): "v1" or "v2" Swin attention.
+            normalize (bool): normalize each encoder output over its channels.
+            use_checkpoint (bool): recompute activations to save memory.
+            spatial_dims (int): 3 for this model.
+            temporal_downsample (bool): patch merging also halves an even number of days.
+
+        Raises:
+            ValueError: on invalid rates or an unknown attn_version.
+        """
 
         super().__init__()
 
@@ -266,7 +276,18 @@ class SwinUNETR(nn.Module):
 
 
     def forward(self, x_in):
-        """(B, C, T, H, W) input -> (B, K, T, H, W) per-day logits: Swin encoder, conv skips, U-Net decoder."""
+        """Run SwinUNETR-3D on one batch.
+
+        The encoder gives five scales, convolutional blocks turn them into skips,
+        and the decoder upsamples step by step, joining each skip. The output is
+        one map per day; the trainer averages them.
+
+        Args:
+            x_in (torch.Tensor): input of shape (B, C, T, H, W).
+
+        Returns:
+            torch.Tensor: per-day logits of shape (B, K, T, H, W).
+        """
         # Shapes for the paper setup: B windows, C=43, T=6, 256x256, F=feature_size=36,
         # no temporal downsampling. docs/swinunetr3d/shapes.md lists them all.
         hidden_states_out = self.swinViT(x_in, self.normalize)   # 5 scales: (B, F*2^i, T, 128/2^i, 128/2^i)
@@ -290,12 +311,18 @@ class SwinUNETR(nn.Module):
 
 @register_model("swinunetr3d")
 def build(spec):
-    """SwinUNETR-3D for `spec`; option swin_temporal_downsample (default False).
+    """Build SwinUNETR-3D with the paper's settings for a ModelSpec.
 
-    swin_temporal_downsample=False follows the TS-SatFire paper ("we do not
-    use downsampling in the temporal dimension in any of our models"); True
-    is the released code, whose Swin patch merging also halves an even
-    number of days (6 -> 3).
+    Patch (1, 2, 2) splits only space, and the window (T, 4, 4) covers every day.
+    swin_temporal_downsample False follows the paper ("we do not use
+    downsampling in the temporal dimension"); True is the released code. The
+    option attn_version picks Swin V1 (default) or V2 attention.
+
+    Args:
+        spec (ModelSpec): what the model is built for.
+
+    Returns:
+        SwinUNETR: the new model.
     """
     return SwinUNETR(
         image_size=spec.input_size,

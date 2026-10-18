@@ -43,21 +43,53 @@ from firepred.data.tessera_archive import save_tessera_npz
 
 @dataclass(frozen=True)
 class FireTessera:
-    """One built TESSERA file: where it went, the year used and its coverage map."""
+    """Describe one TESSERA file that was just built.
+
+    The master prints its summary and uploads the file. The coverage map shows
+    how much of the fire's square the embeddings covered.
+
+    Attributes:
+        path (Path): the written tessera/p<id>.npz.
+        tessera_year (int): the embedding year (the year before the fire).
+        coverage (np.ndarray): (256, 256) fraction of 10 m pixels with data.
+    """
 
     path: Path
     tessera_year: int
     coverage: np.ndarray
 
     def summary(self):
-        """One line: year, mean coverage, cells without data."""
+        """Summarize the build in one line.
+
+        The line gives the embedding year, the mean coverage and how many cells had
+        no data. The master prints it.
+
+        Returns:
+            str: e.g. "TESSERA 2018, mean coverage 0.981, cells without data 0/65536".
+        """
         empty = int(np.count_nonzero(self.coverage == 0))
         return (f"TESSERA {self.tessera_year}, mean coverage {self.coverage.mean():.3f}, "
                 f"cells without data {empty}/{self.coverage.size}")
 
 
 def crop_grid(profile, offset=CROP_OFFSET, size=CROP_SIZE):
-    """Return (crs, transform) of the crop data/windows.py takes from a GeoTIFF."""
+    """Find the georeference of the fire's 256 x 256 crop of a GeoTIFF.
+
+    data/windows.py crops rows/columns 128:384 of every image. Shifting the
+    GeoTIFF's geotransform by that offset maps crop pixels to map coordinates,
+    so TESSERA can be averaged onto exactly the same square.
+
+    Args:
+        profile (dict): a rasterio profile (crs, transform, height, width).
+        offset (int): first row/column of the crop.
+        size (int): crop size in pixels.
+
+    Returns:
+        tuple: (crs, affine transform) of the crop.
+
+    Raises:
+        ValueError: if the crop does not fit inside the image.
+    """
     from rasterio.transform import Affine
 
     if profile["height"] < offset + size or profile["width"] < offset + size:
@@ -71,7 +103,19 @@ def crop_grid(profile, offset=CROP_OFFSET, size=CROP_SIZE):
 
 
 def utm_zones(west, east):
-    """UTM zone numbers spanned by a longitude range (no antimeridian wrap)."""
+    """List the UTM zones a longitude range crosses.
+
+    TESSERA is stored per UTM zone (6 degrees of longitude each), so a crop on
+    a zone seam is read from both zones. Ranges across the antimeridian are not
+    handled.
+
+    Args:
+        west (float): western longitude in degrees.
+        east (float): eastern longitude in degrees.
+
+    Returns:
+        list[int]: zone numbers (1..60) from west to east.
+    """
     # UTM zones are 6 degrees of longitude wide, numbered 1..60 from 180 W.
     # TESSERA tiles are stored per UTM zone, so a crop may need more than one zone.
     first = int(np.floor((west + 180) / 6)) + 1
@@ -80,17 +124,26 @@ def utm_zones(west, east):
 
 
 def grid_tessera(gt, dst_crs, dst_transform, year, size=CROP_SIZE, strip_rows=STRIP_ROWS):
-    """Area-average one year of TESSERA onto a size x size raster grid.
+    """Average one year of TESSERA onto the fire's size x size grid.
 
-    `gt` is a geotessera.GeoTesseraZarr. The region is streamed in row strips
-    so a full-resolution crop (about 9600 x 9600 x 128 values) never sits in
-    memory at once. Each 10 m pixel is assigned to the grid cell containing
-    its centre; pixels without data (water, gaps) are left out of the mean.
+    Every 10 m TESSERA pixel is assigned to the 375 m crop cell that contains
+    its centre, and each cell gets the mean of its pixels. The region is read
+    in row strips, so the full-resolution crop (about 9600 x 9600 x 128 values)
+    never sits in memory at once. Pixels without data (water, gaps) are left
+    out of the mean.
 
-    Returns (embedding, coverage, source_pixels, bounds_lonlat):
-        embedding      (128, size, size) float32, NaN where coverage is 0
-        coverage       (size, size) float32, valid / total 10 m pixels
-        source_pixels  (size, size) int64, total 10 m pixels per cell
+    Args:
+        gt (geotessera.GeoTesseraZarr): the TESSERA store client.
+        dst_crs (rasterio.crs.CRS): the crop's coordinate system.
+        dst_transform (affine.Affine): the crop's geotransform.
+        year (int): the embedding year.
+        size (int): grid size in cells.
+        strip_rows (int): rows read per request.
+
+    Returns:
+        tuple: (embedding (128, size, size) float32 with NaN where empty,
+        coverage (size, size) float32, source_pixels (size, size) int64,
+        bounds_lonlat (west, south, east, north)).
     """
     from pyproj import Transformer
     from rasterio.transform import array_bounds
@@ -194,11 +247,26 @@ def grid_tessera(gt, dst_crs, dst_transform, year, size=CROP_SIZE, strip_rows=ST
 
 
 def build_fire_tessera(gt, fire_id, day_paths, fire_year, save_path, strip_rows=STRIP_ROWS):
-    """Build tessera/p<fire_id>.npz from local VIIRS_Day GeoTIFFs; returns a FireTessera.
+    """Build and save one fire's TESSERA file from two of its VIIRS_Day GeoTIFFs.
 
-    `day_paths` maps source repo names to local paths. Every given file must
-    share one georeference, otherwise the fixed crop would cover different
-    ground on different days and no single embedding could match it.
+    All given days must share one georeference, otherwise the fixed crop would
+    cover different ground on different days. The embeddings come from the
+    year before the fire, so the burn scar cannot leak into the inputs. The
+    file also records where and how it was made.
+
+    Args:
+        gt (geotessera.GeoTesseraZarr): the TESSERA store client.
+        fire_id (str): the fire id.
+        day_paths (dict[str, str]): {source repo path: local path} of the day GeoTIFFs.
+        fire_year (int): the year the fire started.
+        save_path (str | Path): where to write tessera/p<id>.npz.
+        strip_rows (int): rows read per request.
+
+    Returns:
+        FireTessera: the written path, the year used and the coverage map.
+
+    Raises:
+        ValueError: if the GeoTIFFs do not share one georeference.
     """
     import rasterio
     from rasterio.transform import array_bounds
@@ -255,16 +323,33 @@ def build_fire_tessera(gt, fire_id, day_paths, fire_year, save_path, strip_rows=
 
 
 def has_prior_year_tessera(fire_year, first_year=FIRST_TESSERA_YEAR):
-    """True if the year before `fire_year` has published TESSERA embeddings."""
+    """Say whether TESSERA embeddings exist for the year before a fire.
+
+    Embeddings are published from 2017, so a 2017 fire has no prior-year
+    embedding. Such fires are left out of TESSERA runs.
+
+    Args:
+        fire_year (int | None): the year the fire started.
+        first_year (int): the first published TESSERA year.
+
+    Returns:
+        bool: True when the prior year is published.
+    """
     return fire_year is not None and int(fire_year) - 1 >= first_year
 
 
 def tessera_excluded_npz(roi):
-    """Window archives to drop in TESSERA mode, e.g. ['train/p20778153.npz', ...].
+    """List the window archives TESSERA runs leave out.
 
-    These are the fires with no prior-year TESSERA (all 2017 fires). Dropping
-    them from both the TESSERA and the matched no-TESSERA runs keeps the
-    comparison on the same fires.
+    These are the fires without prior-year embeddings (all 2017 fires).
+    Dropping them from both the TESSERA run and its matched no-TESSERA baseline
+    keeps the comparison on the same fires.
+
+    Args:
+        roi (RoiTable): the fires and their start years.
+
+    Returns:
+        list[str]: sorted "split/p<id>.npz" names.
     """
     return sorted(
         f"{split}/p{fire_id}.npz"
@@ -275,7 +360,19 @@ def tessera_excluded_npz(roi):
 
 
 def missing_tessera(roi, present_names, excluded):
-    """Kept window archives ('split/p<id>.npz') whose fire has no TESSERA file in `present_names`."""
+    """List kept fires that still have no TESSERA file.
+
+    Every fire that is not excluded needs an embedding before training. This
+    compares the planned fires with the files that exist.
+
+    Args:
+        roi (RoiTable): the fires of every split.
+        present_names (set[str]): TESSERA file names that exist, e.g. {"p123.npz"}.
+        excluded (list[str]): archives left out on purpose (tessera_excluded_npz).
+
+    Returns:
+        list[str]: sorted "split/p<id>.npz" names of fires still missing a file.
+    """
     return sorted(
         f"{split}/p{fire_id}.npz"
         for split, fire_ids in roi.ids_by_split().items()
@@ -289,31 +386,78 @@ def missing_tessera(roi, present_names, excluded):
 
 @dataclass(frozen=True)
 class TesseraView:
-    """A symlinked training root with fires lacking TESSERA left out."""
+    """Describe a training folder that leaves out fires without TESSERA.
+
+    The view is made of symbolic links to the real archives, so the extracted
+    data is never changed. The same extraction can serve TESSERA and
+    no-TESSERA runs.
+
+    Attributes:
+        root (Path): the view folder (use it as the training data root).
+        dropped (tuple[str, ...]): "split/p<id>.npz" archives left out.
+    """
 
     root: Path
     dropped: tuple
 
     def summary(self):
-        """One line: where the view is and how many archives it leaves out."""
+        """Summarize the view in one line.
+
+        The line names the view folder and how many archives it leaves out. The
+        notebooks print it.
+
+        Returns:
+            str: the summary.
+        """
         return f"TESSERA view {self.root}: dropped {len(self.dropped)} archives without prior-year TESSERA"
 
 
 def read_excluded_list(tessera_dir):
-    """The window archives listed in tessera_dir/excluded_npz.txt, e.g. ['train/p1.npz']."""
+    """Read the list of window archives TESSERA runs leave out.
+
+    The list ships inside tessera.zip as excluded_npz.txt, one archive per line,
+    so every training run drops the same fires.
+
+    Args:
+        tessera_dir (str | Path): the folder holding excluded_npz.txt.
+
+    Returns:
+        list[str]: e.g. ["train/p20778153.npz", ...].
+    """
     path = Path(tessera_dir) / TESSERA_EXCLUDED_LIST
     return [line.strip() for line in path.read_text().splitlines() if line.strip()]
 
 
 def write_excluded_list(tessera_dir, excluded):
-    """Write the drop list into tessera_dir/excluded_npz.txt; return its path."""
+    """Write the list of window archives TESSERA runs leave out.
+
+    The file is bundled into tessera.zip. It holds one archive name per line.
+
+    Args:
+        tessera_dir (str | Path): the folder to write excluded_npz.txt into.
+        excluded (list[str]): the archive names.
+
+    Returns:
+        Path: the written file.
+    """
     path = Path(tessera_dir) / TESSERA_EXCLUDED_LIST
     path.write_text("\n".join(excluded) + "\n")
     return path
 
 
 def drop_excluded_archives(data_root, excluded):
-    """Delete the listed window archives under `data_root`; return the names removed."""
+    """Delete the listed window archives from a data root.
+
+    This is the one place window data is deleted, and only when asked (pulling
+    tessera.zip with drop_excluded). Names that do not exist are ignored.
+
+    Args:
+        data_root (str | Path): the data root.
+        excluded (list[str]): "split/p<id>.npz" names to delete.
+
+    Returns:
+        list[str]: the names actually deleted.
+    """
     removed = []
     for name in excluded:
         path = Path(data_root) / name
@@ -324,7 +468,20 @@ def drop_excluded_archives(data_root, excluded):
 
 
 def clear_view(view_dir):
-    """Remove an old symlink view; refuse a folder that holds real files. Returns view_dir."""
+    """Remove an old view folder before building a new one, but never real data.
+
+    A view holds only symbolic links. If the folder holds any real file, it is
+    not a view and is left untouched with an error.
+
+    Args:
+        view_dir (str | Path): the view folder.
+
+    Returns:
+        Path: view_dir.
+
+    Raises:
+        RuntimeError: if the folder holds real files.
+    """
     view_dir = Path(view_dir)
     if not view_dir.exists():
         return view_dir
@@ -337,11 +494,22 @@ def clear_view(view_dir):
 
 
 def build_tessera_view(data_root, tessera_dir, view_dir):
-    """Symlink the kept window archives and tessera/ into view_dir; return a TesseraView.
+    """Build a training folder of links to the kept archives plus tessera/.
 
-    Fires listed in tessera_dir/excluded_npz.txt (no prior-year TESSERA) are
-    left out; the extracted data itself is never modified, so the TESSERA run
-    and its matched no-TESSERA baseline read the same fires. [ours]
+    Fires listed in excluded_npz.txt are left out, and the extracted data
+    itself is never modified. Every kept archive must have its TESSERA file, so
+    a missing file fails here, before training.
+
+    Args:
+        data_root (str | Path): the extracted data root.
+        tessera_dir (str | Path): the folder of TESSERA files and excluded_npz.txt.
+        view_dir (str | Path): where to build the view.
+
+    Returns:
+        TesseraView: the view folder and the archives left out.
+
+    Raises:
+        RuntimeError: if a kept archive has no TESSERA file, or view_dir holds real files.
     """
     data_root, tessera_dir, view_dir = Path(data_root), Path(tessera_dir), Path(view_dir)
     excluded = set(read_excluded_list(tessera_dir))

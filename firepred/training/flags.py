@@ -21,7 +21,7 @@ from firepred.config.dataset import DEFAULT_TEST_CSV
 from firepred.config.training import LOSSES, LR_SCHEDULES, PAPER_CE_WEIGHT
 from firepred.models.registry import parse_model_option
 from firepred.training.accelerator import DEVICES
-from firepred.training.config import LossConfig, RunConfig, ScheduleConfig, default_loss
+from firepred.training.config import LossConfig, RunConfig, ScheduleConfig
 
 FROM_FIELD = object()   # default: the RunConfig field's own default
 OMIT = object()         # a converted value that leaves the field at its default
@@ -30,7 +30,19 @@ NESTED = {"loss": LossConfig, "schedule": ScheduleConfig}
 
 @dataclass(frozen=True)
 class Flag:
-    """One command-line option: its spellings, the RunConfig field it sets, argparse settings."""
+    """Describe one training flag: how it is written, which RunConfig field it sets, its argparse settings.
+
+    The table of these is the single place a training flag is defined. The
+    parser, the conversion to a RunConfig and the conversion back to a command
+    line are all built from it.
+
+    Attributes:
+        flags (tuple[str, ...]): spellings, e.g. ("-b",).
+        target (str): the RunConfig field, or "loss.<field>" / "schedule.<field>".
+        options (dict): argparse keywords (help, type, choices, ...).
+        default (object): the argparse default, or FROM_FIELD for the field's own.
+        to_config (Callable | None): turns the parsed value into the field value (or OMIT).
+    """
 
     flags: tuple
     target: str                       # RunConfig field, or "loss.<field>" / "schedule.<field>"
@@ -40,17 +52,40 @@ class Flag:
 
     @property
     def dest(self):
-        """The argparse attribute name."""
+        """Give the argparse attribute name of the flag.
+
+        It is the explicit dest when given. Otherwise it is derived from the last
+        spelling ("--lr-min" becomes "lr_min").
+
+        Returns:
+            str: the attribute name.
+        """
         return self.options.get("dest") or self.flags[-1].lstrip("-").replace("-", "_")
 
     @property
     def action(self):
-        """The argparse action (None for a plain value)."""
+        """Give the flag's argparse action.
+
+        Plain value flags have none. Switches use "store_true", lists use "append".
+
+        Returns:
+            object: the action, or None.
+        """
         return self.options.get("action")
 
 
 def path_or_omit(value):
-    """A path from the command line, or OMIT when the flag was not given."""
+    """Turn an optional path flag into a Path, or OMIT when it was not given.
+
+    OMIT leaves the RunConfig field at its default. A given path has ~
+    expanded.
+
+    Args:
+        value (str | None): the parsed value.
+
+    Returns:
+        Path | object: the path, or OMIT.
+    """
     return OMIT if value is None else Path(value).expanduser()
 
 
@@ -143,7 +178,17 @@ BY_TARGET = {flag.target: flag for flag in FLAGS}
 
 
 def field_default(target):
-    """The default of the RunConfig (or nested LossConfig / ScheduleConfig) field `target`."""
+    """Look up the default of a RunConfig field, or of a nested LossConfig/ScheduleConfig field.
+
+    Flag defaults come from here, so a default is written only once: on the
+    field. A required field (the model name) has none.
+
+    Args:
+        target (str): the field, e.g. "batch_size" or "loss.lambda_dice".
+
+    Returns:
+        object: the default, or None.
+    """
     owner, _, name = target.rpartition(".")
     cls = NESTED[owner] if owner else RunConfig
     spec = next(f for f in dataclasses.fields(cls) if f.name == name)
@@ -155,10 +200,18 @@ def field_default(target):
 
 
 def add_flags(parser, targets=None, overrides=None):
-    """Add the flags for `targets` (default: every flag, in FLAGS order) to `parser`; return the parser.
+    """Add training flags to a parser, from the flag table.
 
-    `overrides` maps a target to argparse keywords that replace the table's
-    (e.g. a default for a flag that training requires).
+    Without targets every flag is added, in table order. cli.check adds a
+    subset with overrides (defaults where training requires a value).
+
+    Args:
+        parser (argparse.ArgumentParser): the parser.
+        targets (list[str] | None): the fields whose flags to add, or None for all.
+        overrides (dict | None): {field: argparse keywords that replace the table's}.
+
+    Returns:
+        argparse.ArgumentParser: parser.
     """
     overrides = overrides or {}
     for flag in FLAGS if targets is None else [BY_TARGET[t] for t in targets]:
@@ -170,13 +223,33 @@ def add_flags(parser, targets=None, overrides=None):
 
 
 def build_parser(prog="python -m firepred.cli.train"):
-    """The training ArgumentParser, built from FLAGS."""
+    """Build the training command-line parser from the flag table.
+
+    Every training flag is added. cli.train parses with it.
+
+    Args:
+        prog (str): the program name shown in --help.
+
+    Returns:
+        argparse.ArgumentParser: the parser.
+    """
     parser = argparse.ArgumentParser(prog=prog, description="Train or test spatial-temporal fire prediction models")
     return add_flags(parser)
 
 
 def config_from_args(args):
-    """The frozen RunConfig of parsed training flags."""
+    """Turn parsed training flags into one frozen RunConfig.
+
+    Each flag fills its field, converted when needed; nested loss and schedule
+    fields become a LossConfig and a ScheduleConfig. Without --loss the model
+    gets the paper's loss, still with any loss flags given.
+
+    Args:
+        args (argparse.Namespace): the parsed flags.
+
+    Returns:
+        RunConfig: the run's settings.
+    """
     values = {"": {}, "loss": {}, "schedule": {}}
     for flag in FLAGS:
         value = getattr(args, flag.dest)
@@ -187,12 +260,23 @@ def config_from_args(args):
         owner, _, name = flag.target.rpartition(".")
         values[owner][name] = value
     # Without --loss: the paper's loss for the model, still with any loss flags given.
-    values["loss"]["name"] = values["loss"].get("name") or default_loss(values[""]["model"])
+    values["loss"]["name"] = values["loss"].get("name") or LossConfig.paper_loss(values[""]["model"])
     return RunConfig(**values[""], loss=LossConfig(**values["loss"]), schedule=ScheduleConfig(**values["schedule"]))
 
 
 def config_value(config, target):
-    """The value of field `target` in a RunConfig (nested fields through loss / schedule)."""
+    """Read a field of a RunConfig, following nested loss and schedule fields.
+
+    argv_for uses this to read every flag's value. A dotted target goes one
+    level down.
+
+    Args:
+        config (RunConfig): the settings.
+        target (str): the field, e.g. "loss.ce_weight".
+
+    Returns:
+        object: the value.
+    """
     value = config
     for part in target.split("."):
         value = getattr(value, part)
@@ -200,12 +284,31 @@ def config_value(config, target):
 
 
 def text(value):
-    """A value as command-line text (floats exactly, via repr)."""
+    """Write a value as command-line text.
+
+    Floats use repr so they come back exactly. Everything else uses str.
+
+    Args:
+        value (object): the value.
+
+    Returns:
+        str: the text.
+    """
     return repr(value) if isinstance(value, float) else str(value)
 
 
 def argv_for(config):
-    """Training flags that reproduce `config` (config_from_args(parse(argv_for(c))) == c)."""
+    """Write the training flags that reproduce a RunConfig.
+
+    Parsing the result gives back the same RunConfig. Notebooks use it to build
+    a RunConfig in Python and launch the run in a fresh process.
+
+    Args:
+        config (RunConfig): the settings.
+
+    Returns:
+        list[str]: the flags.
+    """
     argv = []
     for flag in FLAGS:
         value = config_value(config, flag.target)

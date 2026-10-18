@@ -9,69 +9,99 @@ training/trainer.py (it reports to it). Nothing else imports wandb.
         tracker.log_final(scores)
     # leaving the block finishes the run
 
-Chart names are what the dashboards are built on; they never change.
+Chart names (Tracker.chart_labels) are what the dashboards are built on; they
+never change. Tracker.check_access checks a W&B key before a long run.
 """
 
 import os
 from pathlib import Path
 
 from firepred.config.training import WANDB_PROJECT
-
-
-def chart_labels(loss_name):
-    """{internal name: W&B chart name} for a run with `loss_name`; the names never change."""
-    loss_title = {
-        "dice": "Dice Loss",
-        "dicece": "Weighted Dice + Cross-Entropy Loss",
-        "dicefocal": "Dice + Focal Loss",
-    }[loss_name]
-    labels = {
-        "epoch": "Training Epoch (Starting at 0)",
-        "train_loss": f"Training {loss_title} — Next-Day Fire Growth",
-        "val_loss": f"Validation {loss_title} — Next-Day Fire Growth",
-        "miou": "Validation Mean IoU — Background & Fire Growth",
-        "mdice": "Validation Mean Dice (F1) — Background & Fire Growth",
-        "train_fire_f1": "Training F1 — Next-Day Fire Growth",
-        "train_background_f1": "Training F1 — Background",
-        "val_fire_f1": "Validation F1 — Next-Day Fire Growth",
-        "val_background_f1": "Validation F1 — Background",
-        # The paper's IoU (Equation 2) for the fire class; logged, never trained on.
-        "train_fire_iou": "Training IoU — Next-Day Fire Growth",
-        "val_fire_iou": "Validation IoU — Next-Day Fire Growth",
-        # [ours] test fires scored with the current weights every --test-every
-        # epochs (logging only).
-        "periodic_test_f1": "Test F1 — Next-Day Fire Growth (periodic, current weights)",
-        "periodic_test_iou": "Test IoU — Next-Day Fire Growth (periodic, current weights)",
-        # Constant unless the [ours] --lr-schedule is used.
-        "learning_rate": "Learning Rate",
-    }
-    if loss_name == "dicece":
-        for prefix, split in (("train", "Training"), ("val", "Validation")):
-            labels[f"{prefix}_dice_loss"] = (
-                f"{split} Weighted Dice Loss — Next-Day Fire Growth"
-            )
-            labels[f"{prefix}_ce_loss"] = (
-                f"{split} Weighted Cross-Entropy Loss — Next-Day Fire Growth"
-            )
-    if loss_name == "dicefocal":
-        for prefix, split in (("train", "Training"), ("val", "Validation")):
-            labels[f"{prefix}_dice_loss"] = f"{split} Dice Loss — Next-Day Fire Growth"
-            labels[f"{prefix}_focal_loss"] = f"{split} Focal Loss — Next-Day Fire Growth"
-    return labels
+from firepred.training.accelerator import Device
 
 
 class Tracker:
-    """One W&B run: set up on entry, finished on exit; every log goes through it."""
+    """One W&B run: set up when the `with` block starts, finished when it ends.
+
+    Every log of the run goes through this class, and no other module imports
+    W&B. It also decides where checkpoints are written (the run folder).
+    """
+
+    @staticmethod
+    def chart_labels(loss_name):
+        """Give the W&B chart name of every logged value for a loss.
+
+        Dashboards are built on these names, so they never change. Dice+CE and
+        Dice+focal also chart their two parts.
+
+        Args:
+            loss_name (str): "dice", "dicece" or "dicefocal".
+
+        Returns:
+            dict[str, str]: {internal name: chart name}.
+        """
+        loss_title = {
+            "dice": "Dice Loss",
+            "dicece": "Weighted Dice + Cross-Entropy Loss",
+            "dicefocal": "Dice + Focal Loss",
+        }[loss_name]
+        labels = {
+            "epoch": "Training Epoch (Starting at 0)",
+            "train_loss": f"Training {loss_title} — Next-Day Fire Growth",
+            "val_loss": f"Validation {loss_title} — Next-Day Fire Growth",
+            "miou": "Validation Mean IoU — Background & Fire Growth",
+            "mdice": "Validation Mean Dice (F1) — Background & Fire Growth",
+            "train_fire_f1": "Training F1 — Next-Day Fire Growth",
+            "train_background_f1": "Training F1 — Background",
+            "val_fire_f1": "Validation F1 — Next-Day Fire Growth",
+            "val_background_f1": "Validation F1 — Background",
+            # The paper's IoU (Equation 2) for the fire class; logged, never trained on.
+            "train_fire_iou": "Training IoU — Next-Day Fire Growth",
+            "val_fire_iou": "Validation IoU — Next-Day Fire Growth",
+            # [ours] test fires scored with the current weights every --test-every
+            # epochs (logging only).
+            "periodic_test_f1": "Test F1 — Next-Day Fire Growth (periodic, current weights)",
+            "periodic_test_iou": "Test IoU — Next-Day Fire Growth (periodic, current weights)",
+            # Constant unless the [ours] --lr-schedule is used.
+            "learning_rate": "Learning Rate",
+        }
+        if loss_name == "dicece":
+            for prefix, split in (("train", "Training"), ("val", "Validation")):
+                labels[f"{prefix}_dice_loss"] = (
+                    f"{split} Weighted Dice Loss — Next-Day Fire Growth"
+                )
+                labels[f"{prefix}_ce_loss"] = (
+                    f"{split} Weighted Cross-Entropy Loss — Next-Day Fire Growth"
+                )
+        if loss_name == "dicefocal":
+            for prefix, split in (("train", "Training"), ("val", "Validation")):
+                labels[f"{prefix}_dice_loss"] = f"{split} Dice Loss — Next-Day Fire Growth"
+                labels[f"{prefix}_focal_loss"] = f"{split} Focal Loss — Next-Day Fire Growth"
+        return labels
 
     def __init__(self, config, device):
-        """Remember the run's settings; nothing is sent until the block is entered."""
+        """Remember the run's settings; nothing is sent to W&B yet.
+
+        The chart names follow from the loss. W&B is imported on entering the block.
+
+        Args:
+            config (RunConfig): the run's settings.
+            device (Device | torch.device): the training device.
+        """
         self.config = config
-        self.device = device
-        self.labels = chart_labels(config.loss.name)
+        self.device = Device.of(device)
+        self.labels = self.chart_labels(config.loss.name)
         self.wandb = None
 
     def __enter__(self):
-        """Log in, start the run, declare the charts (training only), name it, record its config."""
+        """Log in, start the run, declare the charts, name the run and record its config.
+
+        Test runs declare no charts. The run name and config come from the
+        RunConfig.
+
+        Returns:
+            Tracker: this tracker.
+        """
         import wandb
 
         self.wandb = wandb
@@ -84,28 +114,62 @@ class Tracker:
                 if key != "epoch":
                     wandb.define_metric(label, step_metric=epoch)
         wandb.run.name = self.config.run_name
-        wandb.config.update(self.config.wandb_config(on_tpu=getattr(self.device, "type", "") == "xla"))
+        wandb.config.update(self.config.wandb_config(on_tpu=self.device.is_xla))
         return self
 
     def __exit__(self, *exc_info):
-        """Finish the run (also after an error); errors are not swallowed."""
+        """Finish the W&B run, also after an error.
+
+        The run is closed whether the block ended normally or with an error.
+        Errors raised inside the block are not swallowed.
+
+        Args:
+            *exc_info: the exception details, if any.
+
+        Returns:
+            bool: False, so exceptions propagate.
+        """
         self.wandb.finish()
         return False
 
     @property
     def run_id(self):
-        """The W&B run id."""
+        """Give the W&B run id.
+
+        The artifact name includes it. It is set once the run starts.
+
+        Returns:
+            str: the run id.
+        """
         return self.wandb.run.id
 
     @property
     def checkpoint_dir(self):
-        """This run's folder (the W&B run directory), created if needed."""
+        """Give the run's folder, where checkpoints are written.
+
+        It is the W&B run directory. It is created if needed, because W&B does not
+        create it when disabled.
+
+        Returns:
+            Path: the folder.
+        """
         # With WANDB_MODE=disabled the run folder is not created for us.
         os.makedirs(self.wandb.run.dir, exist_ok=True)
         return Path(self.wandb.run.dir)
 
     def log_train(self, epoch, scores):
-        """Chart one epoch's training EpochScores; returns them unchanged."""
+        """Chart one epoch's training scores.
+
+        The scores are returned unchanged. The trainer can therefore log and keep
+        them in one line.
+
+        Args:
+            epoch (int): the 0-based epoch.
+            scores (EpochScores): the training scores.
+
+        Returns:
+            EpochScores: scores.
+        """
         labels = self.labels
         self.wandb.log({
             labels["epoch"]: epoch,
@@ -118,7 +182,19 @@ class Tracker:
         return scores
 
     def log_validation(self, epoch, scores, learning_rate):
-        """Chart one epoch's validation EpochScores and the learning rate; returns the scores unchanged."""
+        """Chart one epoch's validation scores and the learning rate.
+
+        The scores are returned unchanged. The learning rate shows the schedule's
+        effect.
+
+        Args:
+            epoch (int): the 0-based epoch.
+            scores (EpochScores): the validation scores.
+            learning_rate (float): the optimizer's current rate.
+
+        Returns:
+            EpochScores: scores.
+        """
         labels = self.labels
         self.wandb.log({
             labels["epoch"]: epoch,
@@ -134,7 +210,18 @@ class Tracker:
         return scores
 
     def log_periodic_test(self, epoch, scores):
-        """Chart test-fire scores with the current weights (logging only). [ours]"""
+        """Chart test-fire scores computed with the current weights.
+
+        This is ours, not the paper's [ours]. These are for watching progress only; the kept checkpoint is still chosen
+        by validation loss. The scores are returned unchanged.
+
+        Args:
+            epoch (int): the 0-based epoch.
+            scores (TestScores): the test scores.
+
+        Returns:
+            TestScores: scores.
+        """
         self.wandb.log({
             self.labels["epoch"]: epoch,
             self.labels["periodic_test_f1"]: scores.f1,
@@ -143,10 +230,19 @@ class Tracker:
         return scores
 
     def log_checkpoint(self, path, epoch, val_loss, settings):
-        """Store a saved checkpoint as a new version of the run's W&B model Artifact; return its name.
+        """Upload a saved checkpoint as a new version of the run's W&B model artifact.
 
-        Online, wait for the upload so a later best checkpoint cannot replace
-        the file first; offline runs log it locally for a later `wandb sync`.
+        The version is tagged best, latest and epoch-N. Online, the upload is
+        waited for, so a later checkpoint cannot replace the file first.
+
+        Args:
+            path (str | Path): the checkpoint file.
+            epoch (int): the 0-based epoch.
+            val_loss (float): its validation loss.
+            settings (dict): the run settings stored in it.
+
+        Returns:
+            str: the artifact name.
         """
         metadata = {"epoch": epoch + 1, "validation_loss": float(val_loss)}
         for key in ("use_tessera", "model_input_channels"):
@@ -162,7 +258,17 @@ class Tracker:
         return name
 
     def log_final(self, scores):
-        """Log the test scores of the tested checkpoint (the paper's metrics) and put them in the run summary."""
+        """Log the final test scores and put them in the run summary.
+
+        These are the paper's metrics for the tested checkpoint. They appear both
+        as charts and in the run overview.
+
+        Args:
+            scores (TestScores): the final test scores.
+
+        Returns:
+            dict: the logged values.
+        """
         metrics = {
             "test_f1": scores.f1,
             "test_iou": scores.iou,
@@ -175,34 +281,46 @@ class Tracker:
         self.wandb.run.summary.update(metrics)
         return metrics
 
+    @staticmethod
+    def check_access(entity, project, name="permission-check", attempts=5):
+        """Check that the W&B key can write to a project: log a tiny run, then delete it.
 
-def check_wandb_access(entity, project, name="permission-check", attempts=5):
-    """Prove the logged-in key can write to entity/project: log one tiny run, then delete it.
+        Notebooks run this before a long training run, so a permission problem
+        shows at once. A run that cannot be deleted right away (the API can lag) is
+        reported and left for the W&B UI.
 
-    For notebooks, before a long run. Returns the check run's URL. A run that
-    cannot be deleted right away (the API can lag) is left for the W&B UI and
-    reported in a printed note.
-    """
-    import time
+        Args:
+            entity (str): the W&B team.
+            project (str): the W&B project.
+            name (str): the check run's name.
+            attempts (int): delete attempts, 3 seconds apart.
 
-    import wandb
+        Returns:
+            str: the check run's URL.
 
-    with wandb.init(entity=entity, project=project, name=name, mode="online") as run:
-        run.log({"permission_check": 1})
-        url = run.url
-    path = f"{entity}/{project}/{run.id}"
-    for attempt in range(attempts):
-        try:
-            check_run = wandb.Api().run(path)
-            if check_run.name != name:
-                raise RuntimeError(f"{path} is not the permission-check run; not deleting it")
-            check_run.delete()
-            break
-        except RuntimeError:
-            raise
-        except Exception as error:  # a just-finished run can take a few seconds to appear in the API
-            if attempt == attempts - 1:
-                print(f"Could not delete {path} ({error}); delete it in the W&B UI if needed.")
-            else:
-                time.sleep(3)
-    return url
+        Raises:
+            RuntimeError: if the run found is not the check run.
+        """
+        import time
+
+        import wandb
+
+        with wandb.init(entity=entity, project=project, name=name, mode="online") as run:
+            run.log({"permission_check": 1})
+            url = run.url
+        path = f"{entity}/{project}/{run.id}"
+        for attempt in range(attempts):
+            try:
+                check_run = wandb.Api().run(path)
+                if check_run.name != name:
+                    raise RuntimeError(f"{path} is not the permission-check run; not deleting it")
+                check_run.delete()
+                break
+            except RuntimeError:
+                raise
+            except Exception as error:  # a just-finished run can take a few seconds to appear in the API
+                if attempt == attempts - 1:
+                    print(f"Could not delete {path} ({error}); delete it in the W&B UI if needed.")
+                else:
+                    time.sleep(3)
+        return url

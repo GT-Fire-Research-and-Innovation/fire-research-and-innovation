@@ -28,3 +28,104 @@ def test_everything_has_a_docstring():
     """No module, class, function or method is left without a docstring."""
     missing = missing_docstrings()
     assert not missing, f"{len(missing)} without a docstring:\n" + "\n".join(missing)
+
+
+# ----- The docstring format of the package and tools ----- #
+
+API_FOLDERS = ("firepred", "tools")
+SECTIONS = ("Args:", "Returns:", "Yields:", "Raises:", "Attributes:", "Example:")
+
+
+def parameters(node):
+    """The parameter names a function's Args section must list (self/cls and *args/**kwargs excluded)."""
+    args = node.args
+    names = [a.arg for a in args.posonlyargs + args.args + args.kwonlyargs]
+    return [name for name in names if name not in ("self", "cls")]
+
+
+def returns_value(node):
+    """True when the function itself (not a nested one) returns something other than None."""
+    stack = list(node.body)
+    while stack:
+        item = stack.pop()
+        if isinstance(item, ast.Return) and item.value is not None:
+            if not (isinstance(item.value, ast.Constant) and item.value.value is None):
+                return True
+        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+            continue
+        stack.extend(ast.iter_child_nodes(item))
+    return False
+
+
+def yields(node):
+    """True when the function itself is a generator."""
+    stack = list(node.body)
+    while stack:
+        item = stack.pop()
+        if isinstance(item, (ast.Yield, ast.YieldFrom)):
+            return True
+        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+            continue
+        stack.extend(ast.iter_child_nodes(item))
+    return False
+
+
+def is_dataclass(node):
+    """True for a class decorated with @dataclass(...)."""
+    return any(getattr(getattr(d, "func", d), "id", None) == "dataclass" for d in node.decorator_list)
+
+
+def format_problems(node, doc):
+    """What a definition's docstring is missing from the format (an empty list when it complies)."""
+    problems = []
+    lines = doc.splitlines()
+    summary = lines[0].strip() if lines else ""
+    if not summary.endswith(".") or summary.count(". ") > 0:
+        problems.append("first line must be one sentence ending in '.'")
+    if len(lines) < 3 or lines[1].strip():
+        problems.append("needs a blank line, then a plain-language explanation")
+        return problems
+    paragraph = []
+    for line in lines[2:]:
+        if line.strip() in SECTIONS:
+            break
+        paragraph.append(line)
+    if sum(text.count(".") for text in paragraph) < 2:
+        problems.append("explanation must be at least two sentences")
+    if isinstance(node, ast.ClassDef):
+        if is_dataclass(node):
+            fields = [s.target.id for s in node.body if isinstance(s, ast.AnnAssign) and isinstance(s.target, ast.Name)]
+            if fields and "Attributes:" not in doc:
+                problems.append("dataclass needs an Attributes: section")
+            problems += [f"Attributes: missing {name}" for name in fields if f"{name} (" not in doc]
+        return problems
+    names = parameters(node)
+    if names and "Args:" not in doc:
+        problems.append("needs an Args: section")
+    problems += [f"Args: missing '{name} (type)'" for name in names if f"{name} (" not in doc]
+    if returns_value(node) and node.name != "__init__" and "Returns:" not in doc:
+        problems.append("needs a Returns: section")
+    if "Returns:" in doc and not returns_value(node):
+        problems.append("documents a Returns: section but returns nothing")
+    if yields(node) and "Yields:" not in doc:
+        problems.append("needs a Yields: section")
+    return problems
+
+
+def api_docstring_problems():
+    """'path:line name: problem' for every package or tool definition whose docstring breaks the format."""
+    found = []
+    for folder in API_FOLDERS:
+        for path in sorted((ROOT / folder).rglob("*.py")):
+            for node in ast.walk(ast.parse(path.read_text())):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    doc = ast.get_docstring(node) or ""
+                    for problem in format_problems(node, doc):
+                        found.append(f"{path.relative_to(ROOT)}:{node.lineno} {node.name}: {problem}")
+    return found
+
+
+def test_api_docstrings_follow_the_format():
+    """Every package and tool docstring: one-sentence summary, a plain explanation, typed Args and Returns."""
+    problems = api_docstring_problems()
+    assert not problems, f"{len(problems)} problems:\n" + "\n".join(problems[:60])

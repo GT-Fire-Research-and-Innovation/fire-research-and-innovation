@@ -44,13 +44,27 @@ def write_fire_archive(
     label_sel=None,
     compresslevel=NPZ_COMPRESSLEVEL,
 ):
-    """Save each temporal window as its own compressed NPZ member.
+    """Write one fire's windows into a single archive, one member per window.
 
-    `data` is (windows, C, T, H, W), `labels` (windows, H, W). Unlike saving
-    `data` as one five-dimensional member, this layout lets a Dataset
-    decompress only the requested window. The dictionary values below are
-    views, so building `payload` does not duplicate the fire in memory.
-    Returns the path written (its `num_windows` member holds the count).
+    The archive is a zip of .npy members: a format version, the window count,
+    the label rule, then data_000/label_000, data_001/label_001, and so on.
+    Storing each window separately lets training read one window without
+    unpacking the whole fire. The file is read back once to check it is complete.
+
+    Args:
+        save_path (str | Path): where to write p<id>.npz.
+        data (np.ndarray): inputs, shape (windows, 27, T, 256, 256).
+        labels (np.ndarray): next-day targets, shape (windows, 256, 256).
+        label_sel (int | None): the label rule that built the targets, recorded
+            in the archive; None leaves it out.
+        compresslevel (int): zlib level (1 = fastest).
+
+    Returns:
+        Path: save_path.
+
+    Raises:
+        ValueError: if data and labels have different window counts.
+        RuntimeError: if the written file does not read back correctly.
     """
     if len(data) != len(labels):
         raise ValueError(
@@ -120,7 +134,17 @@ def write_fire_archive(
 
 
 def fire_name(source):
-    """Return p<id> for either a p<id>.npz archive or a p<id>/ folder."""
+    """Name a fire by its archive or folder: p<id>.
+
+    A fire is stored either as p<id>.npz or, after unzipping, as a p<id>/
+    folder. Both give the same name, which also names its TESSERA file.
+
+    Args:
+        source (str | Path): the archive or folder.
+
+    Returns:
+        str: "p<id>".
+    """
     source = Path(source)
     return source.stem if source.suffix == ".npz" else source.name
 
@@ -128,8 +152,15 @@ def fire_name(source):
 def find_fire_sources(split_dir):
     """List a split's fires, each as its archive or its unzipped folder.
 
-    A folder counts once it holds num_windows.npy and is used instead of an
-    archive of the same name. Hidden names (unzip work folders) are skipped.
+    An unzipped folder is used instead of an archive of the same name once it
+    holds num_windows.npy (it is faster to read). Hidden names are half-finished
+    unzips and are skipped. The order matches sorting the archive names.
+
+    Args:
+        split_dir (str | Path): a split folder such as data/train.
+
+    Returns:
+        list[Path]: one entry per fire, sorted by fire name ([] if the folder is missing).
     """
     split_dir = Path(split_dir)
     if not split_dir.is_dir():
@@ -150,32 +181,85 @@ def find_fire_sources(split_dir):
 
 
 class _FireFolder:
-    """Read an unzipped p<id>/ folder through np.load's NpzFile interface."""
+    """Read an unzipped fire folder exactly like an open .npz archive.
+
+    np.load returns an object that answers archive["data_000"] and
+    archive.files. This class gives an unzipped p<id>/ folder (one .npy file per
+    member) the same interface, so the reading code works for both.
+    """
 
     def __init__(self, folder):
-        """Read members from `folder` (one .npy file per member)."""
+        """Point the reader at one unzipped fire folder.
+
+        Nothing is read yet. Members are loaded one at a time when asked for.
+
+        Args:
+            folder (str | Path): the p<id>/ folder.
+        """
         self.folder = Path(folder)
 
     @cached_property
     def files(self):
-        """Member names, like NpzFile.files (the .npy file stems)."""
+        """List the folder's member names, like NpzFile.files.
+
+        Each member is one .npy file. The names are the file names without .npy.
+
+        Returns:
+            list[str]: e.g. ["num_windows", "data_000", "label_000"].
+        """
         return [path.stem for path in self.folder.glob("*.npy")]
 
     def __getitem__(self, key):
-        """Load member `key` as a numpy array."""
+        """Load one member as a numpy array.
+
+        Only the requested .npy file is read. Pickled objects are refused.
+
+        Args:
+            key (str): the member name, e.g. "data_000".
+
+        Returns:
+            np.ndarray: the member's array.
+        """
         return np.load(self.folder / f"{key}.npy", allow_pickle=False)
 
     def __enter__(self):
-        """Nothing to open: a folder needs no handle."""
+        """Start a `with` block; a folder needs no open file handle.
+
+        This exists so the folder can be used like an open archive. It does nothing
+        but return the reader.
+
+        Returns:
+            _FireFolder: this reader.
+        """
         return self
 
     def __exit__(self, *exc_info):
-        """Nothing to close; exceptions are not swallowed."""
+        """End a `with` block; there is nothing to close.
+
+        This exists so the folder can be used like an open archive. Exceptions
+        raised inside the block are not swallowed.
+
+        Args:
+            *exc_info: the exception details, if any (ignored).
+
+        Returns:
+            bool: False, so exceptions propagate.
+        """
         return False
 
 
 def open_fire(source):
-    """Open a fire archive or unzipped folder for `with ... as archive`."""
+    """Open a fire's archive or unzipped folder for reading.
+
+    Use it as `with open_fire(source) as archive:` and read members with
+    archive["data_000"]. Archives and unzipped folders give the same arrays.
+
+    Args:
+        source (str | Path): a p<id>.npz archive or p<id>/ folder.
+
+    Returns:
+        numpy.lib.npyio.NpzFile | _FireFolder: the open reader.
+    """
     # Both kinds answer archive[key] with the same numpy array.
     if Path(source).is_dir():
         return _FireFolder(source)
@@ -183,13 +267,21 @@ def open_fire(source):
 
 
 def index_fires(sources):
-    """[(fire source, window number)] for every window of every fire in `sources`, in order.
+    """List every window of every fire, checking each archive on the way.
 
-    Checks each archive (or unzipped folder) on the way: the current format,
-    and a data_### and label_### member for every window. Checking member
-    names reads only the ZIP directory, never the window arrays. This list is
-    FireDataset's index: its length is the dataset length, and shuffling it
-    mixes fires.
+    The result is FireDataset's index: entry i says which fire and which window
+    number dataset item i is, so shuffling it mixes windows from all fires. Each
+    archive must use the current format and have a data_### and label_### member
+    for every window. Only the zip directory is read, never the window arrays.
+
+    Args:
+        sources (list[Path]): fire archives or folders (find_fire_sources).
+
+    Returns:
+        list[tuple[Path, int]]: (fire source, window number) for every window, in order.
+
+    Raises:
+        RuntimeError: on an old-format archive, an unknown format version or a missing member.
     """
     index = []
     for npz_path in sources:
@@ -241,7 +333,18 @@ def index_fires(sources):
 
 
 def _archive_signature(archive_path):
-    """Identity of an archive file (resolved path, size, modification time), stored in the unzip marker."""
+    """Describe an archive file so a later unzip can tell whether it changed.
+
+    The description (path, size, modification time) is stored in a marker
+    inside the unzipped folder. A different description means the archive was
+    replaced and must be unzipped again.
+
+    Args:
+        archive_path (str | Path): the archive.
+
+    Returns:
+        dict: {"archive": path, "size": bytes, "mtime_ns": modification time}.
+    """
     archive_path = Path(archive_path).resolve()
     stat = archive_path.stat()
     return {
@@ -252,7 +355,17 @@ def _archive_signature(archive_path):
 
 
 def _read_unzip_marker(folder):
-    """The unzip marker of an unzipped fire folder, or None when it is missing or unreadable."""
+    """Read the marker an unzip left in a fire folder.
+
+    The marker says which archive the folder came from. A missing or broken
+    marker means the folder cannot be trusted and is unzipped again.
+
+    Args:
+        folder (Path): an unzipped p<id>/ folder.
+
+    Returns:
+        dict | None: the marker, or None when it is missing or unreadable.
+    """
     try:
         return json.loads((folder / _UNZIP_MARKER).read_text())
     except (OSError, ValueError):
@@ -260,7 +373,22 @@ def _read_unzip_marker(folder):
 
 
 def _unzip_fire(archive_path, folder):
-    """Unzip one archive into a hidden work folder, then rename it to folder."""
+    """Unzip one fire archive into its folder, safely.
+
+    The archive is first unpacked into a hidden temporary folder, which is
+    renamed into place only when complete. An interrupted unzip therefore never
+    looks finished. Only plain .npy members are accepted.
+
+    Args:
+        archive_path (Path): the p<id>.npz archive.
+        folder (Path): the p<id>/ folder to create.
+
+    Returns:
+        Path: folder.
+
+    Raises:
+        ValueError: if the archive holds anything other than plain .npy members.
+    """
     # Unzip into a hidden temporary folder first, then rename it into place, so an
     # interrupted unzip never looks like a finished one.
     work = folder.with_name(f".{folder.name}.partial")
@@ -284,6 +412,7 @@ def _unzip_fire(archive_path, folder):
     if folder.exists():
         shutil.rmtree(folder)
     work.rename(folder)
+    return folder
 
 
 def unzip_data_root(
@@ -292,15 +421,21 @@ def unzip_data_root(
     splits=("train", "val", "test"),
     workers=None,
 ):
-    """Unzip each split's archives once into unzip_root; return the root to load.
+    """Unzip every split's archives once, so training reads windows faster.
 
-    Returns unzip_root once every data_root/<split>/p<id>.npz has a matching
-    unzip_root/<split>/p<id>/ folder. Folders already unzipped from the same
-    archive (same path, size and modification time) are reused, so this is
-    cheap after the first call. Returns data_root unchanged, and FireDataset
-    reads the archives directly, when data_root holds no archives (it is
-    already unzipped) or when unzip_root is not writable or lacks the space.
-    [ours]
+    Reading an unzipped .npy file skips decompression on every read; the arrays
+    are identical. Archives already unzipped (and unchanged) are skipped, stale
+    folders are removed, and the work runs in parallel threads. If anything is
+    missing or there is too little disk, the original data root is used instead.
+
+    Args:
+        data_root (str | Path): the root with the archives.
+        unzip_root (str | Path): where the unzipped folders go.
+        splits (tuple[str, ...]): which splits to unzip.
+        workers (int | None): unzip threads (None picks a number).
+
+    Returns:
+        Path: unzip_root when every archive is unzipped, else data_root.
     """
     data_root, unzip_root = Path(data_root), Path(unzip_root)
     # Nothing to do when there are no archives, or when the data root is already unzipped.

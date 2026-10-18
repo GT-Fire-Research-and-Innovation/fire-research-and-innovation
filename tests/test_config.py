@@ -46,7 +46,7 @@ def test_training_defaults_are_the_papers():
 
 def test_default_loss_is_still_the_papers():
     """Without --loss, models get the paper's loss (Dice for attunet, Dice+CE otherwise)."""
-    from firepred.training.config import default_loss
+    from firepred.training.config import LossConfig
 
-    assert default_loss("swinunetr3d") == "dicece" and default_loss("attunet") == "dice"
+    assert LossConfig.paper_loss("swinunetr3d") == "dicece" and LossConfig.paper_loss("attunet") == "dice"
     assert training.LR_SCHEDULES[0] == "none"

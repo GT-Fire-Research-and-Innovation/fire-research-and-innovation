@@ -31,7 +31,16 @@ ZIP_REPOS = ("window", "tessera")
 
 @dataclass(frozen=True)
 class Option:
-    """One flag of a subcommand: its spellings and argparse settings; `dest` names the master parameter."""
+    """Describe one flag of a dataset subcommand.
+
+    The flag sets the master function parameter named by dest. Its default is
+    that parameter's default unless options give one.
+
+    Attributes:
+        flags (tuple[str, ...]): spellings, e.g. ("--batch-size",).
+        dest (str): the master parameter it sets.
+        options (dict): argparse keywords.
+    """
 
     flags: tuple
     dest: str
@@ -40,7 +49,18 @@ class Option:
 
 @dataclass(frozen=True)
 class Command:
-    """One subcommand: the master function it runs and its own flags."""
+    """Describe one dataset subcommand: the master function it runs and its flags.
+
+    Every subcommand is one master step. Its flags are passed to the function
+    by name.
+
+    Attributes:
+        name (str): the subcommand, e.g. "process".
+        function (Callable): the master function.
+        help (str): the help line.
+        options (tuple[Option, ...]): its own flags.
+        windows (bool): it takes -ts/-it.
+    """
 
     name: str
     function: object
@@ -50,7 +70,18 @@ class Command:
 
 
 def parameter_default(function, name):
-    """The default of parameter `name` of `function` (None when it has none)."""
+    """Read a function parameter's default.
+
+    The dataset CLI's defaults come from the master signatures, so they are
+    written only once. Required parameters give None.
+
+    Args:
+        function (Callable): the master function.
+        name (str): the parameter name.
+
+    Returns:
+        object: the default, or None.
+    """
     parameter = inspect.signature(function).parameters.get(name)
     if parameter is None or parameter.default is inspect.Parameter.empty:
         return None
@@ -58,7 +89,16 @@ def parameter_default(function, name):
 
 
 def splits_option(help_text):
-    """-mode: which splits to work on."""
+    """Make the -mode flag: which splits to work on.
+
+    Several splits may be given. The default is the master's, all three.
+
+    Args:
+        help_text (str): the flag's help.
+
+    Returns:
+        Option: the flag.
+    """
     return Option(("-mode",), "splits", {"nargs": "+", "choices": SPLITS, "help": help_text})
 
 
@@ -140,7 +180,19 @@ BY_NAME = {command.name: command for command in COMMANDS}
 
 
 def add_option(parser, option, function):
-    """Add one Option to `parser`, defaulting to `function`'s own default for that parameter."""
+    """Add one Option to a parser, defaulting to the master function's own default.
+
+    Switches (store_true/store_false) need no default. An explicit default in
+    the options wins.
+
+    Args:
+        parser (argparse.ArgumentParser): the parser.
+        option (Option): the flag.
+        function (Callable): the master whose parameter it sets.
+
+    Returns:
+        argparse.ArgumentParser: parser.
+    """
     options = dict(option.options)
     if options.get("action") not in ("store_true", "store_false") and "default" not in options:
         options["default"] = parameter_default(function, option.dest)
@@ -149,7 +201,17 @@ def add_option(parser, option, function):
 
 
 def parse_args(argv=None):
-    """Parse the dataset command line (global repo/folder flags, then one subcommand)."""
+    """Parse the dataset command line: global repo and folder flags, then one subcommand.
+
+    The global flags apply to every subcommand. The window flags (-ts/-it)
+    belong to the subcommands that read or write windows.
+
+    Args:
+        argv (list[str] | None): the arguments (default: sys.argv).
+
+    Returns:
+        argparse.Namespace: the parsed flags, named like the master parameters.
+    """
     parser = argparse.ArgumentParser(prog="python -m firepred.cli.dataset", description=__doc__.splitlines()[0])
     # Shared by every subcommand: credentials, the three Hugging Face repos (raw
     # source, windows, TESSERA) and the local working folders. Defaults: process_windows'.
@@ -178,12 +240,32 @@ def parse_args(argv=None):
 
 
 def window_repo_of(args):
-    """--window-repo, or the repo named after -ts/-it (each window shape has its own repo)."""
+    """Give --window-repo, or the repo for -ts/-it when it is not set.
+
+    Each window shape has its own repo. This picks it from the window flags.
+
+    Args:
+        args (argparse.Namespace): the parsed flags.
+
+    Returns:
+        str: the window repo.
+    """
     return args.window_repo or window_repo_for(args.length, args.interval)
 
 
 def call_arguments(command, args):
-    """The keyword arguments for `command.function`: every parsed value whose name is a parameter."""
+    """Collect the keyword arguments for a subcommand's master function.
+
+    Every parsed value whose name is a parameter of the function is passed.
+    --zip-repo becomes repo_id, and `stage` gets the notebook Workspace.
+
+    Args:
+        command (Command): the subcommand.
+        args (argparse.Namespace): the parsed flags.
+
+    Returns:
+        dict: the keyword arguments.
+    """
     values = vars(args)
     if "zip_repo" in values:  # --zip-repo picks between the window repo and the TESSERA repo
         values["repo_id"] = {"window": window_repo_of(args), "tessera": args.tessera_repo}[args.zip_repo]
@@ -195,13 +277,32 @@ def call_arguments(command, args):
 
 
 def run(args):
-    """Run the parsed subcommand through its master function and return the result."""
+    """Run the parsed subcommand through its master function.
+
+    The master prints its own progress. Its report is returned.
+
+    Args:
+        args (argparse.Namespace): the parsed flags.
+
+    Returns:
+        object: the master's report.
+    """
     command = BY_NAME[args.command]
     return command.function(**call_arguments(command, args))
 
 
 def main(argv=None):
-    """Parse the command line and run the subcommand; returns its report."""
+    """Parse the command line and run the subcommand.
+
+    This is `python -m firepred.cli.dataset`. The report is returned for callers
+    that run it in Python.
+
+    Args:
+        argv (list[str] | None): the arguments (default: sys.argv).
+
+    Returns:
+        object: the master's report.
+    """
     return run(parse_args(argv))
 
 

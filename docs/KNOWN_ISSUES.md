@@ -21,7 +21,7 @@ with `--reason`.
 | 10 | `models/blocks/window_ops.compute_mask` | **Fixed.** It built a time mask for the unused 'ar' attention on every forward pass; the 'ar' variant and the mask are gone. Results are identical (golden `models` group). | – |
 | 11 | `-r`, `-it` flags | Required by the CLI but only recorded (`RunConfig.run_number`, `ts_interval`); `-it` is not part of any name. | CLI change. |
 | 12 | Kaggle notebook | `CE_WEIGHT` is assigned three times in the settings cell; the last one wins: `(1.0, 457.1)`, not the paper's `(1.0, 446.7836)` that the markdown describes. | Notebook setting only. |
-| 13 | Checkpoint pickles | Checkpoints written under numpy 2 reference `numpy._core`; full unpickling needs numpy >= 1.26 (which ships a `numpy._core` shim). The restricted loader (`training/checkpoints.read_checkpoint`) maps both names, so it works with any numpy on torch >= 2.4. | Environment, not code. |
+| 13 | Checkpoint pickles | Checkpoints written under numpy 2 reference `numpy._core`; full unpickling needs numpy >= 1.26 (which ships a `numpy._core` shim). The restricted loader (`training/checkpoints.CheckpointLoader.read`) maps both names, so it works with any numpy on torch >= 2.4. | Environment, not code. |
 | 14 | `data/transforms.preprocess` | Angle channels (wind direction, aspect, forecast wind direction) become `sin(angle)` only, so 0° and 180° (north/south) map to the same value. | Adding cos changes input width and results. |
 
 Fixed on this branch earlier (behavior changes, each labelled):
@@ -45,7 +45,7 @@ Fixed on this branch earlier (behavior changes, each labelled):
 - Training with `WANDB_MODE=disabled` (no W&B account, local debugging) no
   longer crashes at the first checkpoint: the trainer creates the W&B run folder
   if W&B did not.
-- Checkpoints load without running pickled code: `read_checkpoint` tries
+- Checkpoints load without running pickled code: `CheckpointLoader.read` tries
   `torch.load(weights_only=True)`, then (torch >= 2.4) the same with numpy's
   array-rebuild functions allowed for the TESSERA statistics. Full unpickling
   happens only for the checkpoint a training run just wrote or with
@@ -65,7 +65,7 @@ Changed in the second restructure (functional dataset building, class-based `tra
   reset (memory only; the numbers are identical, see the golden `training` group).
 - Loss flags (`--ce-weight`, `--lambda-*`, `--focal-*`) apply even without
   `--loss`, to the model's default loss, as they did before RunConfig.
-- `load_checkpoint` also refuses a checkpoint whose `model_input_channels`
+- `CheckpointLoader.load` also refuses a checkpoint whose `model_input_channels`
   differs from the run's.
 - The test path builds no loss, optimizer or gradient scaler, and no longer
   loads the (unused) optimizer state.

@@ -20,18 +20,29 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
-from monai.data import decollate_batch
 from torch.utils.data import Subset
 
 from firepred.config.dataset import EXCLUDED_TEST_FIRES
 from firepred.data.fire_dataset import batch_inputs, make_dataloader
 from firepred.models.registry import forward_model
-from firepred.training.objectives import background_f1, build_post_transform, fire_only_f1, fire_only_iou
+from firepred.training.accelerator import Device
+from firepred.training.objectives import Scorer
 
 
 @dataclass(frozen=True)
 class FireScore:
-    """One test fire's scores: means over its windows."""
+    """Hold one test fire's scores, each a mean over its windows.
+
+    The paper scores every fire on its own and then averages the fires. These
+    are the per-fire numbers.
+
+    Attributes:
+        fire_id (str): the fire id.
+        f1 (float): fire-class F1.
+        iou (float): fire-class IoU (the paper's Equation 2).
+        background_f1 (float): background-class F1.
+        windows (int): the fire's windows.
+    """
 
     fire_id: str
     f1: float
@@ -42,7 +53,18 @@ class FireScore:
 
 @dataclass(frozen=True)
 class TestScores:
-    """The model's test scores (means over fires) and each fire's own."""
+    """Hold a model's test scores: the means over fires, plus each fire's own.
+
+    A long fire counts as much as a short one, because every fire contributes
+    one score. These are the numbers the paper reports.
+
+    Attributes:
+        f1 (float): mean fire-class F1 over fires.
+        iou (float): mean fire-class IoU over fires.
+        background_f1 (float): mean background F1 over fires.
+        fires (int): fires scored.
+        per_fire (tuple[FireScore, ...]): each fire's scores.
+    """
 
     f1: float
     iou: float
@@ -51,11 +73,25 @@ class TestScores:
     per_fire: tuple = ()
 
     def as_dict(self):
-        """{"f1", "iou", "background_f1", "fires"}."""
+        """Give the four headline scores as a plain dict.
+
+        The golden tests and older code compare these keys. Per-fire scores are
+        left out.
+
+        Returns:
+            dict: {"f1", "iou", "background_f1", "fires"}.
+        """
         return {"f1": self.f1, "iou": self.iou, "background_f1": self.background_f1, "fires": self.fires}
 
     def summary(self):
-        """One line per fire, then the model's scores."""
+        """Describe the scores: one block per fire, then the model's means.
+
+        The experiment prints this after the final test. The format follows the
+        released code's printout.
+
+        Returns:
+            str: the summary, one score per line.
+        """
         lines = [f"ID {fire.fire_id} IoU: {fire.iou}\nID {fire.fire_id} F1: {fire.f1}\n"
                  f"ID {fire.fire_id} Background F1: {fire.background_f1}" for fire in self.per_fire]
         lines.append(f"Model F1: {self.f1}; background F1: {self.background_f1}; model IoU: {self.iou}")
@@ -66,95 +102,157 @@ class TestScores:
 PLOT_BACKGROUND_CHANNEL = 3
 
 
-def normalize_for_plot(array):
-    """Min-max scale `array` to [0, 1] (zeros when it is constant)."""
-    minimum = float(array.min())
-    maximum = float(array.max())
-    if maximum == minimum:
-        return np.zeros_like(array, dtype=np.float32)
-    return (array - minimum) / (maximum - minimum)
-
-
-def load_test_ids(test_csv_path, available_ids):
-    """Use CSV order when available; otherwise test every available archive."""
-    test_csv_path = Path(test_csv_path).expanduser()
-    if not test_csv_path.exists():
-        print(
-            f"Test CSV not found at {test_csv_path}; using NPZ filenames"
-        )
-        return sorted(available_ids)
-
-    # Test fires in the CSV's order, minus the excluded ones, keeping only fires
-    # that have an archive.
-    dataframe = pd.read_csv(test_csv_path, dtype={"Id": str})
-    ids = dataframe["Id"].astype(str)
-    ids = ids[~ids.isin(EXCLUDED_TEST_FIRES)]
-    return [fire_id for fire_id in ids if fire_id in available_ids]
-
-
-def save_prediction_plot(background, prediction, label, path):
-    """Overlay TP/FP/FN pixels of one window on its background band and save it to `path`; return path."""
-    plt.imshow(
-        normalize_for_plot(background),
-        cmap="gray",
-    )
-
-    true_positive = np.where(
-        (prediction == 1) & (label == 1),
-        1.0,
-        np.nan,
-    )
-    false_positive = np.where(
-        (prediction == 1) & (label == 0),
-        1.0,
-        np.nan,
-    )
-    false_negative = np.where(
-        (prediction == 0) & (label == 1),
-        1.0,
-        np.nan,
-    )
-
-    plt.imshow(
-        true_positive,
-        cmap="autumn",
-        interpolation="nearest",
-    )
-    plt.imshow(
-        false_positive,
-        cmap="summer",
-        interpolation="nearest",
-    )
-    plt.imshow(
-        false_negative,
-        cmap="brg",
-        interpolation="nearest",
-    )
-    plt.axis("off")
-    plt.savefig(
-        path,
-        bbox_inches="tight",
-    )
-    plt.close()
-    return path
-
-
 class Evaluator:
-    """Scores a model on one test FireDataset, fire by fire."""
+    """Score a model on the test fires, one fire at a time.
+
+    Each fire's score is the mean over its windows, and the model's score is
+    the mean over fires, as in the paper. Scoring runs in eval mode with its
+    own random generator, so it never changes training.
+    """
 
     def __init__(self, config, device, dataset):
-        """Group the dataset's windows by fire and fix the scoring order (CSV order)."""
+        """Group the test windows by fire and fix the scoring order.
+
+        The order is the test CSV's. The fires must have archives.
+
+        Args:
+            config (RunConfig): batch size, workers, test CSV, names.
+            device (Device | torch.device): where the model runs.
+            dataset (FireDataset): the test windows.
+
+        Raises:
+            RuntimeError: if no test fire has an archive.
+        """
         self.config = config
-        self.device = device
+        self.device = Device.of(device)
         self.dataset = dataset
-        self.post_transform = build_post_transform()
+        self.scorer = Scorer()
         self.windows_by_fire = dataset.windows_by_fire()
-        self.fire_ids = load_test_ids(config.test_csv, set(self.windows_by_fire))
+        self.fire_ids = self.load_test_ids(config.test_csv, set(self.windows_by_fire))
         if not self.fire_ids:
             raise RuntimeError("No test fires match the available NPZ archives")
 
+    @staticmethod
+    def normalize_for_plot(array):
+        """Scale an image band to the range 0..1 for plotting.
+
+        The overlay draws the band in gray. A constant band becomes all zeros.
+
+        Args:
+            array (np.ndarray): the band.
+
+        Returns:
+            np.ndarray: the scaled band.
+        """
+        minimum = float(array.min())
+        maximum = float(array.max())
+        if maximum == minimum:
+            return np.zeros_like(array, dtype=np.float32)
+        return (array - minimum) / (maximum - minimum)
+
+
+    @staticmethod
+    def load_test_ids(test_csv_path, available_ids):
+        """List the test fires to score, in the test CSV's order.
+
+        Only fires that have an archive are kept, and the excluded test fire is
+        left out. Without the CSV every available fire is scored, sorted.
+
+        Args:
+            test_csv_path (str | Path): the test CSV.
+            available_ids (set[str]): fire ids that have archives.
+
+        Returns:
+            list[str]: the fire ids to score.
+        """
+        test_csv_path = Path(test_csv_path).expanduser()
+        if not test_csv_path.exists():
+            print(
+                f"Test CSV not found at {test_csv_path}; using NPZ filenames"
+            )
+            return sorted(available_ids)
+
+        # Test fires in the CSV's order, minus the excluded ones, keeping only fires
+        # that have an archive.
+        dataframe = pd.read_csv(test_csv_path, dtype={"Id": str})
+        ids = dataframe["Id"].astype(str)
+        ids = ids[~ids.isin(EXCLUDED_TEST_FIRES)]
+        return [fire_id for fire_id in ids if fire_id in available_ids]
+
+
+    @staticmethod
+    def save_prediction_plot(background, prediction, label, path):
+        """Save an overlay picture of one window's prediction.
+
+        The background band is drawn in gray; correct fire pixels, false alarms and
+        missed pixels are drawn in three colours on top. One picture per test
+        window helps see where the model is wrong.
+
+        Args:
+            background (np.ndarray): (H, W) band to draw underneath.
+            prediction (np.ndarray): (H, W) predicted fire mask.
+            label (np.ndarray): (H, W) true fire mask.
+            path (str | Path): the image file.
+
+        Returns:
+            str | Path: path.
+        """
+        plt.imshow(
+            Evaluator.normalize_for_plot(background),
+            cmap="gray",
+        )
+
+        true_positive = np.where(
+            (prediction == 1) & (label == 1),
+            1.0,
+            np.nan,
+        )
+        false_positive = np.where(
+            (prediction == 1) & (label == 0),
+            1.0,
+            np.nan,
+        )
+        false_negative = np.where(
+            (prediction == 0) & (label == 1),
+            1.0,
+            np.nan,
+        )
+
+        plt.imshow(
+            true_positive,
+            cmap="autumn",
+            interpolation="nearest",
+        )
+        plt.imshow(
+            false_positive,
+            cmap="summer",
+            interpolation="nearest",
+        )
+        plt.imshow(
+            false_negative,
+            cmap="brg",
+            interpolation="nearest",
+        )
+        plt.axis("off")
+        plt.savefig(
+            path,
+            bbox_inches="tight",
+        )
+        plt.close()
+        return path
+
     def loader(self, fire_id):
-        """An unshuffled loader over one fire's windows, on a private random generator."""
+        """Make a loader over one fire's windows.
+
+        The windows stay in order. The loader has its own random generator, so it
+        never draws from the training run's random numbers.
+
+        Args:
+            fire_id (str): the fire.
+
+        Returns:
+            torch.utils.data.DataLoader: the loader.
+        """
         return make_dataloader(
             Subset(self.dataset, self.windows_by_fire[fire_id]),
             batch_size=self.config.batch_size,
@@ -165,29 +263,55 @@ class Evaluator:
         )
 
     def plot_name(self, fire_id, fire_number, batch_number, sample):
-        """File name of one window's overlay image. [released]"""
+        """Name one window's overlay picture.
+
+        The name records the fire, the model settings and the window's position
+        [released]. It is unique within a run.
+
+        Args:
+            fire_id (str): the fire.
+            fire_number (int): the fire's position in the scoring order.
+            batch_number (int): the batch within the fire.
+            sample (int): the window within the batch.
+
+        Returns:
+            str: the file name.
+        """
         return (
             f"id_{fire_id}_nhead_{self.config.num_heads}_hidden_{self.config.feature_size}_"
             f"batch_{batch_number}_sample_{sample}_fire_{fire_number}_nc_{self.config.input_channels}.png"
         )
 
     def score_fire(self, model, fire_id, fire_number, plot_dir=None):
-        """One fire's FireScore (None when it has no windows); saves overlays into plot_dir if given."""
+        """Score one fire and optionally save its overlay pictures.
+
+        Predictions are thresholded and compared with the targets window by
+        window. The fire's scores are the means over its windows.
+
+        Args:
+            model (torch.nn.Module): the model, in eval mode.
+            fire_id (str): the fire.
+            fire_number (int): its position in the scoring order.
+            plot_dir (str | Path | None): where to save pictures, or None.
+
+        Returns:
+            FireScore | None: the fire's scores, or None when it has no windows.
+        """
         f1 = background = iou = 0.0
         windows = 0
         for batch_number, batch in enumerate(self.loader(fire_id)):
             data, labels = batch["data"], batch["labels"]
             with torch.no_grad():
-                outputs = forward_model(model, batch_inputs(batch, self.device))
-                predictions = torch.stack([self.post_transform(item) for item in decollate_batch(outputs)]).cpu()
-            f1 += fire_only_f1(predictions, labels).sum().item()
-            background += background_f1(predictions, labels).sum().item()
-            iou += fire_only_iou(predictions, labels).sum().item()
+                outputs = forward_model(model, batch_inputs(batch, self.device.torch_device))
+                predictions = self.scorer.predictions(outputs).cpu()
+            f1 += self.scorer.fire_f1(predictions, labels).sum().item()
+            background += self.scorer.background_f1(predictions, labels).sum().item()
+            iou += self.scorer.fire_iou(predictions, labels).sum().item()
             windows += data.shape[0]
             if plot_dir is None:
                 continue
             for sample in range(data.shape[0]):
-                save_prediction_plot(
+                self.save_prediction_plot(
                     background=data[sample, PLOT_BACKGROUND_CHANNEL, -1].cpu().numpy(),
                     prediction=predictions.numpy()[sample, 1],
                     label=(labels[sample, 1] > 0).cpu().numpy(),
@@ -198,7 +322,21 @@ class Evaluator:
         return FireScore(fire_id, f1 / windows, iou / windows, background / windows, windows)
 
     def score(self, model, plot_dir=None):
-        """TestScores of `model` over every test fire (eval mode, no gradients)."""
+        """Score the model on every test fire and average over fires.
+
+        The model is put in eval mode and no gradients are computed. Fires without
+        windows are skipped.
+
+        Args:
+            model (torch.nn.Module): the model.
+            plot_dir (str | Path | None): where to save overlay pictures, or None.
+
+        Returns:
+            TestScores: the means over fires and each fire's scores.
+
+        Raises:
+            RuntimeError: if no fire could be scored.
+        """
         if plot_dir is not None:
             Path(plot_dir).mkdir(parents=True, exist_ok=True)
         model.eval()

@@ -45,9 +45,12 @@ KERNEL_SIZE_UP_DOWN = (1, 2, 2)
 
 
 class UNETR(nn.Module):
-    """
-    UNETR based on: "Hatamizadeh et al.,
-    UNETR: Transformers for 3D Medical Image Segmentation <https://arxiv.org/abs/2103.10504>"
+    """UNETR-3D: a plain vision transformer encoder with a U-Net-style convolutional decoder.
+
+    The input is cut into patches (1 day x 16 x 16 pixels), so attention spans
+    all days and the whole image. Features from transformer layers 3, 6 and 9
+    and the last layer are reshaped into volumes and decoded with skips
+    (Hatamizadeh et al., UNETR, WACV 2022, via MONAI).
     """
 
     @deprecated_arg(
@@ -74,41 +77,34 @@ class UNETR(nn.Module):
         qkv_bias: bool = False,
         save_attn: bool = False,
     ) -> None:
-        """
+        """Build the transformer encoder and the decoder blocks.
+
+        The paper's settings come from build(): hidden size 384, MLP size 1536,
+        patch (1, 16, 16). The decoder's upsampling never touches the days.
+
         Args:
-            in_channels: dimension of input channels.
-            out_channels: dimension of output channels.
-            img_size: dimension of input image.
-            feature_size: dimension of network feature size. Defaults to 16.
-            hidden_size: dimension of hidden layer. Defaults to 768.
-            mlp_dim: dimension of feedforward layer. Defaults to 3072.
-            num_heads: number of attention heads. Defaults to 12.
-            patch_size: ViT patch size; (1, 16, 16) splits only space, as the paper does.
-            kernel_size_up_down: upsampling kernel and stride of every decoder step;
-                (1, 2, 2) restores space and never touches the days. [paper]
-            proj_type: patch embedding layer type. Defaults to "conv".
-            norm_name: feature normalization type and arguments. Defaults to "instance".
-            conv_block: if convolutional block is used. Defaults to True.
-            res_block: if residual block is used. Defaults to True.
-            dropout_rate: fraction of the input units to drop. Defaults to 0.0.
-            spatial_dims: number of spatial dims. Defaults to 3.
-            qkv_bias: apply the bias term for the qkv linear layer in self attention block. Defaults to False.
-            save_attn: to make accessible the attention in self attention block. Defaults to False.
+            in_channels (int): input channels.
+            out_channels (int): output channels.
+            img_size (Sequence[int] | int): (T, H, W) of the input.
+            feature_size (int): decoder base feature width.
+            hidden_size (int): transformer width.
+            mlp_dim (int): transformer MLP width.
+            num_heads (int): attention heads.
+            patch_size (tuple | int): ViT patch size; (1, 16, 16) splits only space.
+            kernel_size_up_down (tuple | int): upsampling kernel and stride of every
+                decoder step; (1, 2, 2) restores space and never touches the days.
+            pos_embed (str): deprecated name of proj_type.
+            proj_type (str): patch embedding type.
+            norm_name (tuple | str): decoder normalization.
+            conv_block (bool): convolutional blocks in the decoder.
+            res_block (bool): residual blocks in the decoder.
+            dropout_rate (float): dropout rate.
+            spatial_dims (int): 3 for this model.
+            qkv_bias (bool): bias on queries, keys and values.
+            save_attn (bool): keep the attention maps for inspection.
 
-        .. deprecated:: 1.4
-            ``pos_embed`` is deprecated in favor of ``proj_type``.
-
-        Examples::
-
-            # for single channel input 4-channel output with image size of (96,96,96), feature size of 32 and batch norm
-            >>> net = UNETR(in_channels=1, out_channels=4, img_size=(96,96,96), feature_size=32, norm_name='batch')
-
-             # for single channel input 4-channel output with image size of (96,96), feature size of 32 and batch norm
-            >>> net = UNETR(in_channels=1, out_channels=4, img_size=96, feature_size=32, norm_name='batch', spatial_dims=2)
-
-            # for 4-channel input 3-channel output with image size of (128,128,128), conv position embedding and instance norm
-            >>> net = UNETR(in_channels=4, out_channels=3, img_size=(128,128,128), proj_type='conv', norm_name='instance')
-
+        Raises:
+            ValueError: on an invalid dropout rate or a hidden size not divisible by num_heads.
         """
 
         super().__init__()
@@ -232,14 +228,35 @@ class UNETR(nn.Module):
 
     # Reshape a token sequence back into a (B, C, T, H/16, W/16) feature volume.
     def proj_feat(self, x):
-        """Reshape ViT tokens (B, N, F) back into a (B, F, T', H', W') feature volume."""
+        """Reshape transformer tokens back into a feature volume.
+
+        The ViT outputs one token per patch. The decoder needs them laid out as a
+        (T', H', W') grid with the features as channels.
+
+        Args:
+            x (torch.Tensor): tokens of shape (B, N, F).
+
+        Returns:
+            torch.Tensor: features of shape (B, F, T', H', W').
+        """
         new_view = [x.size(0)] + self.proj_view_shape
         x = x.view(new_view)
         x = x.permute(self.proj_axes).contiguous()
         return x
 
     def forward(self, x_in):
-        """(B, C, T, H, W) input -> logits: ViT encoder, skips from layers 3/6/9, U-Net decoder."""
+        """Run UNETR-3D on one batch.
+
+        The transformer encodes the patches; features from layers 3, 6 and 9 and
+        the last layer become skips, and the decoder upsamples back to full size.
+        The output is one map per day.
+
+        Args:
+            x_in (torch.Tensor): input of shape (B, C, T, H, W).
+
+        Returns:
+            torch.Tensor: per-day logits of shape (B, K, T, H, W).
+        """
         x, hidden_states_out = self.vit(x_in)
         enc1 = self.encoder1(x_in)
         x2 = hidden_states_out[3]
@@ -258,11 +275,18 @@ class UNETR(nn.Module):
 
 @register_model("unetr3d")
 def build(spec):
-    """The paper's UNETR-3D baseline: patch (1, 16, 16), hidden size 384, MLP size 1536. [paper]
+    """Build the paper's UNETR-3D baseline for a ModelSpec.
 
-    Option unetr_version "v0" builds the ViT-Base sizes (768 / 3072) instead.
-    The released code passed `kernel_size_up_down` to a UNETR without that
-    parameter and never built; it is now the decoder's upsampling kernel.
+    Patch (1, 16, 16), hidden size 384 and MLP size 1536 [paper]. Option
+    unetr_version "v0" builds the ViT-Base sizes (768 / 3072) instead. The
+    released code never built this model; the decoder's upsampling kernel is
+    now a real parameter.
+
+    Args:
+        spec (ModelSpec): what the model is built for.
+
+    Returns:
+        UNETR: the new model.
     """
     if spec.options.get("unetr_version", "v1") == "v0":
         hidden_size, mlp_dim = 768, 3072

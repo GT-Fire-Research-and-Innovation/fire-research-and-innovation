@@ -26,7 +26,25 @@ from firepred.data.archive import fire_name
 
 
 def save_tessera_npz(save_path, embedding, coverage, metadata):
-    """Write one fire's embedding, coverage, and metadata, verify it, and return the path."""
+    """Write one fire's TESSERA file and check that it reads back.
+
+    The embedding is stored as float16 (missing cells as 0) to halve the file
+    size, together with the coverage map and provenance metadata. The file is
+    read back once to make sure it is complete.
+
+    Args:
+        save_path (str | Path): where to write tessera/p<id>.npz.
+        embedding (np.ndarray): (128, 256, 256) float32, NaN where there is no data.
+        coverage (np.ndarray): (256, 256), the fraction of 10 m pixels with data.
+        metadata (dict): extra members (fire id, years, grid, versions).
+
+    Returns:
+        Path: save_path.
+
+    Raises:
+        ValueError: on a wrong shape or a value too large for float16.
+        RuntimeError: if the written file does not read back correctly.
+    """
     if embedding.shape != (TESSERA_BANDS, CROP_SIZE, CROP_SIZE):
         raise ValueError(f"Unexpected embedding shape {embedding.shape}")
     if coverage.shape != (CROP_SIZE, CROP_SIZE):
@@ -56,10 +74,20 @@ def save_tessera_npz(save_path, embedding, coverage, metadata):
 
 
 def read_tessera(path):
-    """Read one TESSERA file and return its stored (embedding, coverage).
+    """Read one fire's TESSERA embedding and coverage.
 
-    The arrays are marked read-only: one fire's map is shared by every window
-    of that fire (and by forked DataLoader workers), so nothing may modify it.
+    The arrays are marked read-only, because one fire's map is shared by all of
+    its windows (and by DataLoader worker processes). Nothing may change it.
+
+    Args:
+        path (str | Path): a tessera/p<id>.npz file.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray]: (embedding (128, 256, 256) float16,
+        coverage (256, 256) float16).
+
+    Raises:
+        ValueError: if the embedding has the wrong shape.
     """
     path = Path(path)
     with np.load(path, allow_pickle=False) as archive:
@@ -76,11 +104,20 @@ def read_tessera(path):
 
 
 def load_tessera_maps(tessera_dir, fire_sources):
-    """{fire name: (embedding, coverage)} for every fire archive in `fire_sources`.
+    """Read the TESSERA file of every fire in a list, once each.
 
-    Each file is read once here (about 16 MiB per fire as float16); pass the
-    result to compute_tessera_stats and to FireDataset(tessera_maps=...) so
-    neither reads it again. Raises if any fire has no TESSERA file.
+    Pass the result both to compute_tessera_stats and to FireDataset, so neither
+    reads the files again (about 16 MiB per fire). Every fire must have a file.
+
+    Args:
+        tessera_dir (str | Path): the folder of tessera/p<id>.npz files.
+        fire_sources (list[Path]): the fires' archives or folders.
+
+    Returns:
+        dict[str, tuple[np.ndarray, np.ndarray]]: {"p<id>": (embedding, coverage)}.
+
+    Raises:
+        RuntimeError: if any fire has no TESSERA file.
     """
     tessera_dir = Path(tessera_dir)
     names = [fire_name(path) for path in fire_sources]
@@ -91,11 +128,22 @@ def load_tessera_maps(tessera_dir, fire_sources):
 
 
 def compute_tessera_stats(tessera_maps, min_coverage=0.5):
-    """Per-band mean/std over well-covered pixels of the given (embedding, coverage) maps.
+    """Compute the per-band mean and spread of TESSERA over well-covered pixels.
 
-    Compute this from the training fires only and reuse it for validation and
-    test, so no statistics leak from held-out fires. Returns
-    {"mean": (128,), "std": (128,), "min_coverage": float}.
+    These statistics standardize the embeddings before the model sees them.
+    Compute them from the training fires only and reuse them for validation
+    and test, so nothing is learned from held-out fires. Pixels with less
+    coverage than min_coverage are left out.
+
+    Args:
+        tessera_maps (Iterable[tuple[np.ndarray, np.ndarray]]): (embedding, coverage) pairs.
+        min_coverage (float): the smallest coverage a pixel needs to count.
+
+    Returns:
+        dict: {"mean": (128,) float32, "std": (128,) float32, "min_coverage": float}.
+
+    Raises:
+        RuntimeError: if no pixel has enough coverage.
     """
     # Accumulate sum and sum of squares over all well-covered pixels of the
     # training fires (float64 to avoid rounding drift), then mean and std per band.
@@ -121,11 +169,19 @@ def compute_tessera_stats(tessera_maps, min_coverage=0.5):
 
 
 def static_map(embedding, valid, stats):
-    """(129, H, W) float32 model input for one fire: the normalized embedding plus a validity mask.
+    """Build one fire's TESSERA model input: the normalized embedding plus a validity mask.
 
-    Pixels whose TESSERA coverage is below the training threshold (`valid`
-    False) are zeroed (the normalized mean) and marked 0 in the mask channel.
-    `stats` is compute_tessera_stats() of the training fires.
+    Each band is standardized with the training statistics. Pixels with too
+    little coverage are set to 0 (the normalized mean) and marked 0 in an extra
+    mask channel, so the model can tell real values from filled ones.
+
+    Args:
+        embedding (np.ndarray): (128, H, W) stored embedding.
+        valid (np.ndarray): (H, W) bool, True where coverage is high enough.
+        stats (dict): compute_tessera_stats() of the training fires.
+
+    Returns:
+        np.ndarray: (129, H, W) float32.
     """
     embedding = embedding.astype(np.float32)
     mean = stats["mean"][:, None, None]

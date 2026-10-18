@@ -135,7 +135,18 @@ TESSERA_CHANNELS = TESSERA_BANDS + 1
 
 
 def model_input_channels(use_tessera):
-    """43, or 172 when TESSERA channels are appended."""
+    """Count the channels the model receives for one input day.
+
+    Each stored window has 27 channels; land cover is expanded into 17 one-hot
+    planes, giving 43. TESSERA mode adds 128 embedding bands and one validity
+    mask, giving 172. Use this number wherever a model's input width is needed.
+
+    Args:
+        use_tessera (bool): True when TESSERA embeddings are appended.
+
+    Returns:
+        int: 43 without TESSERA, 172 with it.
+    """
     return BASE_MODEL_CHANNELS + (TESSERA_CHANNELS if use_tessera else 0)
 
 
@@ -171,7 +182,19 @@ WINDOW_REPO_BASE = "SamuelWu318/ts-satfire-processed"
 
 
 def window_repo_for(ts_length=TS_LENGTH, ts_interval=TS_INTERVAL):
-    """Window repo holding windows of `ts_length` days every `ts_interval` days."""
+    """Name the Hugging Face repo that holds windows of one length and stride.
+
+    Window archives do not record how long their windows are, so every
+    (length, stride) pair gets its own repo. This keeps windows built with
+    different settings from ever mixing.
+
+    Args:
+        ts_length (int): input days per window.
+        ts_interval (int): days between the starts of consecutive windows.
+
+    Returns:
+        str: the repo id, e.g. "SamuelWu318/ts-satfire-processed-6-1".
+    """
     return f"{WINDOW_REPO_BASE}-{ts_length}-{ts_interval}"
 
 

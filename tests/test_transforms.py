@@ -4,7 +4,7 @@ import numpy as np
 import torch
 
 from firepred.config.dataset import BASE_MODEL_CHANNELS, LANDCOVER_CHANNEL, NORMALIZATION_MEAN, NORMALIZATION_STD
-from firepred.data.transforms import Normalize, augment, landcover_one_hot_matrix, preprocess
+from firepred.data.transforms import augment, landcover_one_hot_matrix, normalize, preprocess
 
 
 def window(landcover):
@@ -60,8 +60,7 @@ def test_transforms_leave_their_inputs_unchanged():
     x = window(3.0) + torch.arange(27.0)[:, None, None, None]
     x[LANDCOVER_CHANNEL] = 3.0
     original = x.clone()
-    normalize = Normalize(NORMALIZATION_MEAN, NORMALIZATION_STD, dont_normalize_idc=[12, 18, 24, LANDCOVER_CHANNEL])
-    normalized = normalize(x)
+    normalized = normalize(x, NORMALIZATION_MEAN, NORMALIZATION_STD, skip=[12, 18, 24, LANDCOVER_CHANNEL])
     assert torch.equal(x, original) and not torch.equal(normalized, original)
     preprocess(x, landcover_one_hot_matrix())
     assert torch.equal(x, original)

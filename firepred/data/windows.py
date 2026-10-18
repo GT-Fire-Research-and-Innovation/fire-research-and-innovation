@@ -30,9 +30,16 @@ from firepred.config.dataset import CROP_OFFSET, CROP_SIZE, N_STORED_CHANNELS, T
 
 @dataclass(frozen=True)
 class FireWindows:
-    """One fire's windows: inputs (N, 27, T, 256, 256), targets (N, 256, 256), notes.
+    """Hold one fire's input windows, their next-day targets and what happened while building them.
 
-    N may be 0 (too few days, no VIIRS_Day files); `notes` explains what happened.
+    A fire with N+T days of imagery gives N windows. A fire with too few days
+    (or no imagery) gives zero windows, and its notes say why. The notes replace
+    printing, so the caller decides what to show.
+
+    Attributes:
+        inputs (np.ndarray): (N, 27, T, 256, 256) float32 input windows.
+        targets (np.ndarray): (N, 256, 256) float32 next-day targets (1 = newly burned).
+        notes (tuple[str, ...]): progress and warning messages.
     """
 
     inputs: np.ndarray
@@ -41,18 +48,31 @@ class FireWindows:
 
     @property
     def count(self):
-        """The number of windows N."""
+        """Count the windows.
+
+        This is N, the first dimension of inputs. It is 0 for a fire that produced
+        no windows.
+
+        Returns:
+            int: the number of windows.
+        """
         return len(self.inputs)
 
 
 @dataclass(frozen=True)
 class DayFrame:
-    """One day's cropped inputs and label masks.
+    """Hold one day's 27 stored channels, cropped, and that day's fire masks.
 
-    image  (27, 256, 256) float32: day bands 0-5, night 6-7, FirePred 8-26, NaN/Inf -> 0
-    af/ba  (256, 256) bool: active fire / NIFC burned area of that day
-    notes  messages about missing or odd night files
-    debug  full-frame vs crop label counts (only when asked)
+    Each day combines three GeoTIFFs: the VIIRS day bands, the VIIRS night
+    bands and the FirePred weather, terrain and fuel bands. They are cropped to
+    the fire's fixed 256 x 256 square, and missing values become 0.
+
+    Attributes:
+        image (np.ndarray): (27, 256, 256) float32; day bands 0-5, night 6-7, FirePred 8-26.
+        af (np.ndarray): (256, 256) bool, active-fire detections of the day.
+        ba (np.ndarray): (256, 256) bool, the NIFC burned-area perimeter of the day.
+        notes (tuple[str, ...]): messages about missing or unusual night files.
+        debug (str): full-image vs crop label counts, filled only when asked.
     """
 
     image: np.ndarray
@@ -63,7 +83,18 @@ class DayFrame:
 
 
 def read_tiff(file_path):
-    """Return (array (bands, rows, cols), rasterio profile) of one GeoTIFF. [released]"""
+    """Read one GeoTIFF into an array.
+
+    rasterio is imported here, not at module load, so the dataset masters can
+    be imported on a machine without geospatial packages. The profile carries
+    the georeference.
+
+    Args:
+        file_path (str | Path): the GeoTIFF.
+
+    Returns:
+        tuple[np.ndarray, dict]: (array (bands, rows, cols), rasterio profile).
+    """
     import rasterio  # imported here so the dataset masters load without rasterio
 
     with rasterio.open(file_path, "r") as reader:
@@ -73,7 +104,18 @@ def read_tiff(file_path):
 
 
 def empty_windows(length, notes):
-    """A FireWindows with no windows (shape (0, 27, length, 256, 256))."""
+    """Make a FireWindows that holds no windows.
+
+    The arrays still have the right number of dimensions, with zero windows, so
+    callers can treat every result the same. The notes say why there are none.
+
+    Args:
+        length (int): input days per window (the T dimension).
+        notes (list[str]): messages explaining the empty result.
+
+    Returns:
+        FireWindows: inputs (0, 27, length, 256, 256) and targets (0, 256, 256).
+    """
     return FireWindows(
         np.zeros((0, N_STORED_CHANNELS, length, CROP_SIZE, CROP_SIZE), dtype=np.float32),
         np.zeros((0, CROP_SIZE, CROP_SIZE), dtype=np.float32),
@@ -82,15 +124,41 @@ def empty_windows(length, notes):
 
 
 def binary_mask(array):
-    """Treat NaN, infinity, zero, and negative nodata as background."""
+    """Turn a raw label band into a true/false fire mask.
+
+    Only finite values above 0 count as fire. NaN, infinity, 0 and negative
+    no-data values are background. This must happen before masks are combined,
+    because NaN would otherwise count as True.
+
+    Args:
+        array (np.ndarray): a raw label band.
+
+    Returns:
+        np.ndarray: bool mask of the same shape.
+    """
     return np.isfinite(array) & (array > 0)
 
 
 def read_day_frame(file_name, offset=CROP_OFFSET, size=CROP_SIZE, debug=False):
-    """Read one day's VIIRS_Day GeoTIFF plus its VIIRS_Night and FirePred files.
+    """Read one day's three GeoTIFFs and crop them to the fire's square.
 
-    Returns a DayFrame: the 27 stored channels cropped to rows/cols
-    offset:offset+size with NaN/Inf set to 0, and that day's AF/BA masks.
+    The VIIRS_Day file gives bands 0-5 and the fire masks; the matching
+    VIIRS_Night file gives two night bands (zeros when missing or unusable);
+    the FirePred file gives 19 weather, terrain and fuel bands. NaN and
+    infinity become 0 so the model never sees them.
+
+    Args:
+        file_name (str): the local VIIRS_Day GeoTIFF; the night and FirePred
+            files are found next to it by name.
+        offset (int): first row/column of the crop.
+        size (int): crop size in pixels.
+        debug (bool): also count fire pixels in the full image and the crop.
+
+    Returns:
+        DayFrame: the cropped channels, the day's masks and any notes.
+
+    Raises:
+        ValueError: on too few day bands, a day/night grid mismatch or a wrong crop shape.
     """
     notes = []
     array_day, day_profile = read_tiff(file_name)
@@ -192,12 +260,28 @@ def build_fire_windows(
     label_sel=1,
     debug=False,
 ):
-    """Build one fire's windows: a FireWindows with (N, C, T, H, W) inputs and (N, H, W) targets.
+    """Build one fire's input windows and next-day targets from its daily GeoTIFFs.
 
-    `local_map` maps each source file name to a local path. Only entries
-    whose source name contains "VIIRS_Day" are used as frames; the
-    matching VIIRS_Night and FirePred files are found next to them.
-    Progress messages are returned in FireWindows.notes, never printed.
+    A window starting on day i stacks days i .. i+length-1 as the input and uses
+    day i+length as the target; a new window starts every `interval` days. The
+    target is the pixels burned on the target day that were not burned by the
+    last input day (the fire's growth). The heat bands keep a running maximum,
+    so a pixel hot earlier in the window stays hot. Nothing is printed: messages
+    are returned in the result's notes.
+
+    Args:
+        loc_name (str): the fire id, used in messages.
+        local_map (dict[str, str]): {source repo path: local file path} of the fire's GeoTIFFs.
+        length (int): input days per window.
+        interval (int): days between window starts.
+        label_sel (int): 1 = active fire only, 0 = active fire plus NIFC perimeters.
+        debug (bool): add per-day label counts to the notes.
+
+    Returns:
+        FireWindows: the windows (possibly none) and notes.
+
+    Raises:
+        ValueError: if a processed window contains NaN or infinity.
     """
     notes = []
     # Step 1: the fire's daily frames, in date order. Each day has one VIIRS_Day

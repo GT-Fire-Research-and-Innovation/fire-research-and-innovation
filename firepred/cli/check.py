@@ -23,15 +23,26 @@ from firepred.config.dataset import CROP_SIZE, N_STORED_CHANNELS, TS_LENGTH
 from firepred.config.training import NUM_CLASSES
 from firepred.data.fire_dataset import FireDataset, batch_inputs, make_dataloader
 from firepred.models.registry import available_models
-from firepred.training.accelerator import resolve_device
+from firepred.training.accelerator import Device
 from firepred.training.config import LossConfig, RunConfig
 from firepred.training.flags import add_flags
-from firepred.training.experiment import FireData, prepare_model
+from firepred.training.experiment import Experiment, FireData
 from firepred.training.trainer import Trainer
 
 
 def check_config(args):
-    """A RunConfig from the check flags (the same settings training would use)."""
+    """Build a RunConfig from the check flags, as training would.
+
+    The checks use the same settings objects as a real run, so a check that
+    passes means training will start. Settings the check flags lack keep their
+    defaults.
+
+    Args:
+        args (argparse.Namespace): the parsed check flags.
+
+    Returns:
+        RunConfig: the settings.
+    """
     return RunConfig(
         model=args.m,
         learning_rate=args.lr,
@@ -51,7 +62,17 @@ def check_config(args):
 
 # Peak GPU memory is reset before, and printed after, the step being measured.
 def reset_peak_memory(device):
-    """Reset every GPU's peak-memory counter; returns the device."""
+    """Reset every GPU's peak-memory counter before a measured step.
+
+    The peak after the step then shows that step's memory use. Other devices
+    have no counter.
+
+    Args:
+        device (torch.device): the device.
+
+    Returns:
+        torch.device: device.
+    """
     if device.type == "cuda":
         for index in range(torch.cuda.device_count()):
             torch.cuda.reset_peak_memory_stats(index)
@@ -59,7 +80,17 @@ def reset_peak_memory(device):
 
 
 def report_peak_memory(device):
-    """Print and return every GPU's peak allocated memory in GiB ({} on other devices)."""
+    """Print every GPU's peak memory since the last reset.
+
+    This tells whether a batch size fits before a long run. Other devices
+    report nothing.
+
+    Args:
+        device (torch.device): the device.
+
+    Returns:
+        dict[int, float]: {GPU index: peak GiB}.
+    """
     peaks = {}
     if device.type == "cuda":
         for index in range(torch.cuda.device_count()):
@@ -70,10 +101,23 @@ def report_peak_memory(device):
 
 
 def training_step(config, model, inputs, labels, device):
-    """One forward/backward/Adam step with the trainer's own pieces; returns (logits, loss, parts).
+    """Take one training step with the trainer's own loss, optimizer and scaler.
 
-    The same Trainer the real run uses, so a step that passes here means the
-    real loop's first step will run.
+    Using the real Trainer means a step that passes here will also pass in
+    training. A non-finite loss fails the check.
+
+    Args:
+        config (RunConfig): the settings.
+        model (torch.nn.Module): the model.
+        inputs (torch.Tensor): input of shape (B, C, T, H, W).
+        labels (torch.Tensor): one-hot targets of shape (B, 2, H, W).
+        device (torch.device): where it runs.
+
+    Returns:
+        tuple[torch.Tensor, torch.Tensor, dict]: (logits, loss, loss parts).
+
+    Raises:
+        RuntimeError: if the loss is not finite.
     """
     logits, loss, parts = Trainer(config, model, device).step(inputs, labels)
     if not torch.isfinite(loss):
@@ -82,12 +126,22 @@ def training_step(config, model, inputs, labels, device):
 
 
 def check_model(args):
-    """Random input through a registered model: shapes, parameters, one step."""
+    """Check a model with random input: output shape, parameters, one step, time and memory.
+
+    No data is needed. Random labels with about 2% fire pixels exercise the
+    loss. The output must be (B, 2, H, W) after the day average.
+
+    Args:
+        args (argparse.Namespace): the parsed `model` flags.
+
+    Returns:
+        torch.Tensor: the logits.
+    """
     config = check_config(args)
     torch.manual_seed(config.seed)
-    device = resolve_device(config.device)
+    device = Device.resolve(config.device).torch_device
     channels = config.input_channels
-    model = prepare_model(config.model, config.model_spec(image_size=(args.size, args.size)), device)
+    model = Experiment(config).prepare_model(device, config.model_spec(image_size=(args.size, args.size)))
     parameters = sum(p.numel() for p in model.parameters())
     print(f"{args.m}: {parameters:,} parameters; input (B={args.batch}, C={channels}, "
           f"T={args.ts}, H={args.size}, W={args.size}) on {device}")
@@ -114,7 +168,17 @@ def check_model(args):
 
 
 def datasets(config):
-    """Train (augmented) and validation FireDatasets, built exactly as training builds them."""
+    """Build the training and validation datasets exactly as a run does.
+
+    TESSERA statistics come from the training fires only. Training windows are
+    augmented, validation windows are not.
+
+    Args:
+        config (RunConfig): the settings.
+
+    Returns:
+        tuple[FireDataset, FireDataset]: (train, val).
+    """
     data = FireData(config, config.data_root, config.tessera_root)
     stats, maps = None, None
     if config.tessera:
@@ -128,7 +192,21 @@ def datasets(config):
 
 
 def check_data(args):
-    """One training batch and one validation window: shapes and channel counts."""
+    """Check one training batch and one validation window from a data root.
+
+    Their channel counts must match the model's input width, and their shapes
+    the window size. With --train-step one real training step runs on the batch.
+
+    Args:
+        args (argparse.Namespace): the parsed `data` flags.
+
+    Returns:
+        dict: the training batch.
+
+    Raises:
+        AssertionError: on a wrong shape or channel count.
+        RuntimeError: if there are too few windows for one full batch.
+    """
     config = check_config(args)
     channels = config.input_channels
     train, val = datasets(config)
@@ -153,8 +231,8 @@ def check_data(args):
     if batch["data"].shape[0] != args.batch:
         raise RuntimeError("Too few training windows to test the configured full batch.")
     torch.manual_seed(config.seed)
-    device = resolve_device(config.device)
-    model = prepare_model(config.model, config.model_spec(), device)
+    device = Device.resolve(config.device).torch_device
+    model = Experiment(config).prepare_model(device)
     reset_peak_memory(device)
     inputs = batch_inputs(batch, device)
     labels = batch["labels"].float().to(device)
@@ -166,7 +244,17 @@ def check_data(args):
 
 
 def check_timing(args):
-    """Average seconds to load one augmented training window (printed and returned)."""
+    """Time how long one augmented training window takes to load.
+
+    Loading is rarely the bottleneck, but this shows it. The average over a few
+    windows is printed.
+
+    Args:
+        args (argparse.Namespace): the parsed `timing` flags.
+
+    Returns:
+        float: seconds per window.
+    """
     train = FireDataset(npz_dir=args.data_root / "train", ts_length=args.ts, n_channel=N_STORED_CHANNELS,
                         target_is_single_day=True, use_augmentations=True)
     count = min(args.windows, len(train))
@@ -186,7 +274,17 @@ CHECK_FLAGS = ("model", "num_heads", "feature_size", "learning_rate", "loss.name
 
 
 def add_model_arguments(parser):
-    """Add the training flags `model` and `data` share (same names and help as cli.train); return the parser."""
+    """Add the training flags the `model` and `data` checks share.
+
+    They come from the training flag table, so names and help match cli.train.
+    Flags training requires get defaults here.
+
+    Args:
+        parser (argparse.ArgumentParser): a subcommand's parser.
+
+    Returns:
+        argparse.ArgumentParser: parser.
+    """
     overrides = {
         "model": {"required": False, "default": "swinunetr3d",
                   "help": f"Registered model: {', '.join(available_models())}"},
@@ -199,7 +297,17 @@ def add_model_arguments(parser):
 
 
 def parse_args(argv=None):
-    """Parse the check command line (model, data or timing)."""
+    """Parse the check command line: model, data or timing.
+
+    Each check is a subcommand with its own flags. The model and data checks
+    share the training flags.
+
+    Args:
+        argv (list[str] | None): the arguments (default: sys.argv).
+
+    Returns:
+        argparse.Namespace: the parsed flags.
+    """
     from pathlib import Path
 
     parser = argparse.ArgumentParser(prog="python -m firepred.cli.check", description=__doc__.splitlines()[0])
@@ -229,7 +337,16 @@ def parse_args(argv=None):
 
 
 def main(argv=None):
-    """Run the chosen check and return its result."""
+    """Run the chosen check.
+
+    Checks save nothing and log nothing to W&B. They are safe to run at any time.
+
+    Args:
+        argv (list[str] | None): the arguments (default: sys.argv).
+
+    Returns:
+        object: the check's result.
+    """
     args = parse_args(argv)
     return {"model": check_model, "data": check_data, "timing": check_timing}[args.command](args)
 

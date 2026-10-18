@@ -20,16 +20,39 @@ from firepred.models.zoo.swinunetr3d import build as build_swinunetr3d
 
 
 class TemporalPooledSwinUNETR(nn.Module):
-    """SwinUNETR-3D whose per-day maps are averaged with learned day weights (softmax over T)."""
+    """SwinUNETR-3D whose per-day maps are combined with learned day weights.
+
+    The plain model averages its per-day maps equally. This variant learns one
+    weight per input day (a softmax, so they stay positive and sum to 1), so it
+    can rely more on recent days.
+    """
 
     def __init__(self, backbone, ts_length):
-        """Wrap `backbone` and add one learned logit per input day (all zero: a plain mean at start)."""
+        """Wrap a SwinUNETR-3D and add one learned weight per input day.
+
+        The weights start equal (all logits 0). Training therefore begins exactly
+        like the plain average.
+
+        Args:
+            backbone (nn.Module): a SwinUNETR-3D.
+            ts_length (int): input days per window.
+        """
         super().__init__()
         self.backbone = backbone
         self.day_logits = nn.Parameter(torch.zeros(ts_length))
 
     def forward(self, x):                                         # (B, C, T, H, W)
-        """(B, C, T, H, W) input -> (B, K, H, W): the day-weighted average of the backbone's per-day logits."""
+        """Run the backbone and combine its per-day maps with the learned weights.
+
+        The result is one map, not one per day. The weights are a softmax over
+        the days.
+
+        Args:
+            x (torch.Tensor): input of shape (B, C, T, H, W).
+
+        Returns:
+            torch.Tensor: logits of shape (B, K, H, W).
+        """
         per_day = self.backbone(x)                                # (B, K, T, H, W) one map per input day
         weights = torch.softmax(self.day_logits, dim=0)           # (T,) positive, sums to 1
         return torch.einsum("bkthw,t->bkhw", per_day, weights)    # (B, K, H, W) weighted average
@@ -37,5 +60,14 @@ class TemporalPooledSwinUNETR(nn.Module):
 
 @register_model("swinunetr3d_tpool")
 def build(spec):
-    """Build the temporally pooled SwinUNETR-3D for a ModelSpec."""
+    """Build the temporally pooled SwinUNETR-3D for a ModelSpec.
+
+    The backbone is exactly swinunetr3d's. Only the day weights are added.
+
+    Args:
+        spec (ModelSpec): what the model is built for.
+
+    Returns:
+        TemporalPooledSwinUNETR: the new model.
+    """
     return TemporalPooledSwinUNETR(build_swinunetr3d(spec), spec.ts_length)

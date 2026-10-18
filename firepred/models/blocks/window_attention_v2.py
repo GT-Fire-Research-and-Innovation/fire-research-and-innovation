@@ -16,12 +16,13 @@ import torch.nn.functional as F
 
 
 class WindowAttentionV2(nn.Module):
-    '''
-    Window based multi-head self attention module with relative position bias based on: 'Liu et al.,
-    Swin Transformer V2: Scaling Up Capacity and Resolution
-    <https://arxiv.org/abs/2111.09883>'
-    https://github.com/microsoft/Swin-Transformer
-    '''
+    """Self-attention inside each window with scaled cosine similarity (Swin V2).
+
+    Scores are cosines between queries and keys, scaled by a learned
+    temperature, which keeps them in a stable range. The position bias comes
+    from a small network over log-spaced offsets instead of a table (Liu et
+    al., Swin Transformer V2, CVPR 2022).
+    """
 
     def __init__(
         self,
@@ -32,15 +33,18 @@ class WindowAttentionV2(nn.Module):
         attn_drop:   float = 0.0,
         proj_drop:   float = 0.0,
     ) -> None:
-        '''
+        """Build the projections, the learned temperature and the position-bias network.
+
+        Selected with --model-option attn_version=v2. The arguments match Swin V1's.
+
         Args:
-            dim: number  of feature channels.
-            num_heads:   number of attention heads.
-            window_size: local window size.
-            qkv_bias:    add a learnable bias to query, key, value.
-            attn_drop:   attention dropout rate.
-            proj_drop:   dropout rate of output.
-        '''
+            dim (int): feature channels.
+            num_heads (int): attention heads.
+            window_size (Sequence[int]): window size per axis.
+            qkv_bias (bool): learnable bias on queries and values.
+            attn_drop (float): dropout on the attention weights.
+            proj_drop (float): dropout on the output.
+        """
 
         super().__init__()
         self.dim = dim
@@ -135,7 +139,18 @@ class WindowAttentionV2(nn.Module):
         self.softmax = nn.Softmax(dim=-1)
 
     def forward(self, x, mask):
-        """Scaled cosine window attention with continuous position bias: (windows, tokens, C) -> same shape."""
+        """Attend inside every window with scaled cosine scores and the continuous position bias.
+
+        The optional mask blocks pairs across shifted-window seams, as in V1. The
+        output has the same shape as the input.
+
+        Args:
+            x (torch.Tensor): tokens of shape (windows * B, N, C).
+            mask (torch.Tensor | None): additive mask of shape (windows, N, N), or None.
+
+        Returns:
+            torch.Tensor: same shape as x.
+        """
         b, n, c = x.shape
         device = x.device
 

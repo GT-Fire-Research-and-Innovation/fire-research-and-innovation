@@ -28,7 +28,13 @@ from torch.nn import LayerNorm
 
 
 class PatchMerging(nn.Module):
-    '''The `PatchMerging` module previously defined in v0.9.0.'''
+    """Halve the spatial size of a Swin feature volume and double its channels.
+
+    Each 2 x 2 group of neighbouring tokens (and, if asked, 2 days) is
+    concatenated into one token, then a linear layer mixes them. This is how
+    the Swin encoder moves to a coarser scale. It comes from MONAI's v0.9.0
+    PatchMerging.
+    """
 
     def __init__(
         self,
@@ -38,14 +44,18 @@ class PatchMerging(nn.Module):
         spatial_dims: int = 3,
         merge_temporal: bool = True
     ) -> None:
-        '''
+        """Build the normalization and the linear layer that merge neighbouring tokens.
+
+        Whether the days are merged too is fixed here. SwinUNETR-3D merges only
+        space by default, as the paper says.
+
         Args:
-            input_resolution: resolution of input feature maps.
-            dim:              number of feature channels.
-            norm_layer:       normalization layer.
-            spatial_dims:     number of spatial dims.
-            merge_temporal:   also merge along the first (temporal) dim when it is even.
-        '''
+            input_resolution (tuple[int, ...]): the feature grid size (kept for reference).
+            dim (int): channels per input token.
+            norm_layer (type[nn.Module]): the normalization layer class.
+            spatial_dims (int): 2 or 3 spatial dimensions.
+            merge_temporal (bool): also merge pairs of days when their count is even.
+        """
 
         super().__init__()
         assert spatial_dims == 3, 'PatchMerging supports spatial_dims 3 only'
@@ -83,7 +93,16 @@ class PatchMerging(nn.Module):
         self.reduction = nn.Linear(dims_tmp, self.output_dims, bias=False)
 
     def forward(self, x):
-        """Merge neighbouring tokens: (B, D, H, W, C) -> (B, D', H/2, W/2, 2C), D' = D/2 when merging time."""
+        """Merge neighbouring tokens into one, halving H and W (and D when merging time).
+
+        Odd sizes are padded first. The output tokens carry twice the channels.
+
+        Args:
+            x (torch.Tensor): features of shape (B, D, H, W, C).
+
+        Returns:
+            torch.Tensor: shape (B, D', H/2, W/2, 2C), D' = D/2 when merging time, else D.
+        """
         # x: (B, D, H, W, C)
 
         # Gather each group of neighbouring tokens (every other row/column, and day

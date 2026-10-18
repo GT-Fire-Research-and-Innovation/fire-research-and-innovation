@@ -13,7 +13,17 @@ PLACEHOLDER = "__MODEL_NAME__"
 
 
 def render(name):
-    """The template's text for a model called `name`."""
+    """Fill the model template with a new model's name.
+
+    The template's title becomes a placeholder for the author. The note that
+    only applies to the template is removed.
+
+    Args:
+        name (str): the new model's name.
+
+    Returns:
+        str: the new file's text.
+    """
     text = TEMPLATE.read_text()
     # Swap the template's title line for a placeholder the author fills in, drop
     # the note that only applies to the template, and put in the model name.
@@ -24,7 +34,22 @@ def render(name):
 
 
 def create(name, directory=ZOO_DIR):
-    """Write directory/NAME.py from the template and return its path."""
+    """Write a new zoo file for a model from the template.
+
+    The name becomes the module name and the -m value. Names starting with "_"
+    are refused (the zoo skips them), and an existing model is never overwritten.
+
+    Args:
+        name (str): the new model's name (a Python identifier).
+        directory (str | Path): where to write it (default: models/zoo/).
+
+    Returns:
+        Path: the new file.
+
+    Raises:
+        ValueError: if the name is not a valid identifier or starts with "_".
+        FileExistsError: if the model already exists.
+    """
     # The name becomes a module and the -m value. Zoo discovery skips files that
     # start with '_', so such names are refused; an existing model is never overwritten.
     if not name.isidentifier() or name.startswith("_"):
@@ -37,13 +62,24 @@ def create(name, directory=ZOO_DIR):
 
 
 def main(argv=None):
-    """Parse NAME, write models/zoo/NAME.py from the template and print the next step; returns the path."""
+    """Create a new zoo model from the command line and print the next step.
+
+    This is `python -m firepred.cli.new_model NAME`. The next step is to edit
+    the file and run the model check.
+
+    Args:
+        argv (list[str] | None): the arguments (default: sys.argv).
+
+    Returns:
+        Path: the new file.
+    """
     parser = argparse.ArgumentParser(prog="python -m firepred.cli.new_model", description=__doc__.splitlines()[0])
     parser.add_argument("name", help="Model name used with -m, e.g. convlstm_unet")
     args = parser.parse_args(argv)
     path = create(args.name)
     print(f"Created {path}")
     print(f"Next: edit it, then run  python -m firepred.cli.check model -m {args.name}")
+    return path
 
 
 if __name__ == "__main__":

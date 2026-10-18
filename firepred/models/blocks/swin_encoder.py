@@ -28,12 +28,13 @@ from firepred.models.blocks.swin_block import BasicLayer
 
 
 class SwinTransformer(nn.Module):
-    '''
-    Swin Transformer based on: 'Liu et al.,
-    Swin Transformer: Hierarchical Vision Transformer using Shifted Windows
-    <https://arxiv.org/abs/2103.14030>'
-    https://github.com/microsoft/Swin-Transformer
-    '''
+    """The Swin encoder: patch embedding then four stages, each at a coarser scale.
+
+    The input is cut into patches (here only in space, so attention spans all
+    days) and embedded. Four stages of Swin blocks follow, each halving H and
+    W. The output of every scale feeds SwinUNETR's decoder (Liu et al., ICCV
+    2021, via MONAI).
+    """
 
     def __init__(
         self,
@@ -56,26 +57,31 @@ class SwinTransformer(nn.Module):
         spatial_dims:   int = 3,
         temporal_downsample: bool = True,
     ) -> None:
-        '''
+        """Build the patch embedding and the four stages.
+
+        Each stage halves H and W and doubles the channels. The stochastic depth
+        rate grows linearly over all blocks (0 for SwinUNETR-3D).
+
         Args:
-            image_size:     dimension of input image.
-            in_chans:       dimension of input channels.
-            embed_dim:      number of linear projection output channels.
-            window_size:    local window size.
-            patch_size:     patch size.
-            depths:         number of layers in each stage.
-            num_heads:      number of attention heads.
-            mlp_ratio:      ratio of mlp hidden dim to embedding dim.
-            qkv_bias:       add a learnable bias to query, key, value.
-            drop_rate:      dropout rate.
-            attn_drop_rate: attention dropout rate.
-            drop_path_rate: stochastic depth rate.
-            norm_layer:     normalization layer.
-            patch_norm:     add normalization after patch embedding.
-            use_checkpoint: use gradient checkpointing for reduced memory usage.
-            spatial_dims:   spatial dimension.
-            temporal_downsample: patch merging also halves the first (temporal) dim when it is even.
-        '''
+            image_size (Sequence[int]): (T, H, W) of the input.
+            in_chans (int): input channels.
+            embed_dim (int): channels after patch embedding.
+            window_size (Sequence[int]): window size per axis.
+            patch_size (Sequence[int]): patch size per axis.
+            depths (Sequence[int]): blocks per stage.
+            num_heads (Sequence[int]): attention heads per stage.
+            mlp_ratio (float): MLP hidden width as a multiple of the channels.
+            qkv_bias (bool): learnable bias on queries, keys and values.
+            drop_rate (float): dropout rate.
+            attn_drop_rate (float): attention dropout rate.
+            drop_path_rate (float): largest stochastic depth rate.
+            attn_version (str): "v1" or "v2".
+            norm_layer (type[nn.Module]): normalization layer class.
+            patch_norm (bool): normalize after patch embedding.
+            use_checkpoint (bool): recompute activations to save memory.
+            spatial_dims (int): 2 or 3.
+            temporal_downsample (bool): patch merging also halves an even number of days.
+        """
 
         super().__init__()
         self.num_layers = len(depths)
@@ -137,7 +143,18 @@ class SwinTransformer(nn.Module):
         self.num_features = int(embed_dim * 2 ** (self.num_layers - 1))
 
     def proj_out(self, x, normalize=False):
-        """Channels-last LayerNorm (no learned scale) of one stage's output when `normalize`; shape unchanged."""
+        """Normalize one stage's output over its channels before it goes to the decoder.
+
+        The normalization has no learned scale. Without normalize the features are
+        returned unchanged.
+
+        Args:
+            x (torch.Tensor): features, channels-first (N, C, D, H, W) or (N, C, H, W).
+            normalize (bool): apply the normalization.
+
+        Returns:
+            torch.Tensor: same shape as x.
+        """
         # Optional channel-wise LayerNorm (no learned scale) on each stage's output
         # before it goes to the decoder.
         if normalize:
@@ -155,7 +172,18 @@ class SwinTransformer(nn.Module):
         return x
 
     def forward(self, x, normalize=True):
-        """Patch-embed `x`, run the four stages, and return the five scales for the decoder's skips."""
+        """Embed the input into patches, run the four stages and return every scale.
+
+        The five outputs are taken after embedding and then after each stage. They
+        are the decoder's skip connections, from fine to coarse.
+
+        Args:
+            x (torch.Tensor): input of shape (B, C, T, H, W).
+            normalize (bool): normalize each output over its channels.
+
+        Returns:
+            list[torch.Tensor]: five feature volumes, each half the size of the previous one.
+        """
         # Run the stages in order and return all five scales (after patch embedding,
         # then after each stage) for the decoder's skip connections.
         x0 = self.patch_embed(x)

@@ -49,7 +49,11 @@ STRIDES = (1, 2, 2)  # never downsample the T days
 
 
 class ConvBlock(nn.Module):
-    """Two Conv-BatchNorm-ReLU layers; the first applies `strides`."""
+    """Two convolution layers, each followed by batch normalization and ReLU.
+
+    This is one level's feature extractor. The first convolution applies the
+    level's stride, so it can halve the image.
+    """
 
     def __init__(
         self,
@@ -60,7 +64,18 @@ class ConvBlock(nn.Module):
         strides: int = 1,
         dropout=0.0,
     ):
-        """Build the two convolutions (`dropout` after each normalization)."""
+        """Build the two convolutions.
+
+        Dropout comes after each normalization. Only the first one is strided.
+
+        Args:
+            spatial_dims (int): 3 for this model.
+            in_channels (int): input channels.
+            out_channels (int): output channels.
+            kernel_size (int): convolution kernel size.
+            strides (int | Sequence[int]): stride of the first convolution.
+            dropout (float): dropout rate.
+        """
         super().__init__()
         layers = [
             Convolution(
@@ -91,16 +106,40 @@ class ConvBlock(nn.Module):
         self.conv = nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Apply both convolutions."""
+        """Apply both convolutions.
+
+        The output has out_channels channels. Its size is divided by the stride.
+
+        Args:
+            x (torch.Tensor): input features.
+
+        Returns:
+            torch.Tensor: the convolved features.
+        """
         x_c: torch.Tensor = self.conv(x)
         return x_c
 
 
 class UpConv(nn.Module):
-    """Transposed convolution that undoes one level's downsampling (BatchNorm, ReLU)."""
+    """A transposed convolution that undoes one level's downsampling.
+
+    It doubles the image size again (never the days), followed by batch
+    normalization and ReLU. It is the decoder's upsampling step.
+    """
 
     def __init__(self, spatial_dims: int, in_channels: int, out_channels: int, kernel_size=3, strides=2, dropout=0.0):
-        """Build the transposed convolution with `strides` and `kernel_size`."""
+        """Build the transposed convolution.
+
+        The stride decides how much the image grows. Normalization and ReLU follow.
+
+        Args:
+            spatial_dims (int): 3 for this model.
+            in_channels (int): input channels.
+            out_channels (int): output channels.
+            kernel_size (int): kernel size.
+            strides (int | Sequence[int]): upsampling factor per axis.
+            dropout (float): dropout rate.
+        """
         super().__init__()
         self.up = Convolution(
             spatial_dims,
@@ -116,7 +155,16 @@ class UpConv(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Upsample `x` by the level's stride."""
+        """Upsample the features by the level's stride.
+
+        This is the decoder going back up one level. The channels change to out_channels.
+
+        Args:
+            x (torch.Tensor): coarser features.
+
+        Returns:
+            torch.Tensor: upsampled features.
+        """
         x_u: torch.Tensor = self.up(x)
         return x_u
 
@@ -124,10 +172,27 @@ class UpConv(nn.Module):
 # Attention gate: the coarser decoder features (g) decide, per pixel, how much of
 # the skip connection (x) to let through, suppressing irrelevant regions.
 class AttentionBlock(nn.Module):
-    """Attention gate: coarser decoder features `g` weight, per voxel, the skip features `x`."""
+    """An attention gate that decides how much of each skip-connection voxel to pass on.
+
+    The coarser decoder features (g) and the skip features (x) are projected,
+    added, and squeezed into one weight per voxel between 0 and 1. The skip
+    features are multiplied by that weight, which suppresses irrelevant regions
+    (Oktay et al., Attention U-Net, 2018).
+    """
 
     def __init__(self, spatial_dims: int, f_int: int, f_g: int, f_l: int, dropout=0.0):
-        """1x1x1 projections of g and x to `f_int` channels and a sigmoid gate `psi`."""
+        """Build the two projections and the gate.
+
+        The projections are 1x1x1 convolutions to f_int channels. The gate ends in
+        a sigmoid, giving weights between 0 and 1.
+
+        Args:
+            spatial_dims (int): 3 for this model.
+            f_int (int): channels inside the gate.
+            f_g (int): channels of the decoder features.
+            f_l (int): channels of the skip features.
+            dropout (float): dropout rate.
+        """
         super().__init__()
         self.W_g = nn.Sequential(
             Convolution(
@@ -175,7 +240,18 @@ class AttentionBlock(nn.Module):
         self.relu = nn.ReLU()
 
     def forward(self, g: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
-        """Return x * sigmoid(psi(relu(W_g g + W_x x))): the skip, scaled by the gate."""
+        """Weight the skip features by the gate computed from both inputs.
+
+        The gate is sigmoid(psi(relu(W_g g + W_x x))). Voxels the decoder finds
+        irrelevant get weights near 0.
+
+        Args:
+            g (torch.Tensor): decoder features.
+            x (torch.Tensor): skip features of the same size.
+
+        Returns:
+            torch.Tensor: x scaled by the gate.
+        """
         g1 = self.W_g(g)
         x1 = self.W_x(x)
         psi: torch.Tensor = self.relu(g1 + x1)
@@ -186,7 +262,11 @@ class AttentionBlock(nn.Module):
 
 # One U-Net level: down -> deeper levels -> up, then the gated skip is concatenated.
 class AttentionLayer(nn.Module):
-    """One U-Net level: run the deeper levels, upsample, gate the skip, merge both."""
+    """One level of the Attention U-Net: deeper levels, upsampling, a gated skip and a merge.
+
+    The levels are nested: each holds the next deeper one as its submodule.
+    Its output combines the upsampled deeper result with the gated skip.
+    """
 
     def __init__(
         self,
@@ -198,7 +278,20 @@ class AttentionLayer(nn.Module):
         strides=2,
         dropout=0.0,
     ):
-        """Build the gate, the upsampling and the merge convolution around `submodule` (the deeper levels)."""
+        """Build the gate, the upsampling and the merge convolution around the deeper levels.
+
+        The submodule is everything below this level. The merge convolution mixes
+        the gated skip with the upsampled result.
+
+        Args:
+            spatial_dims (int): 3 for this model.
+            in_channels (int): channels at this level.
+            out_channels (int): channels at the next deeper level.
+            submodule (nn.Module): the deeper levels.
+            up_kernel_size (int): upsampling kernel size.
+            strides (int | Sequence[int]): downsampling factor between this level and the next.
+            dropout (float): dropout rate.
+        """
         super().__init__()
         self.attention = AttentionBlock(
             spatial_dims=spatial_dims, f_g=in_channels, f_l=in_channels, f_int=in_channels // 2
@@ -216,7 +309,16 @@ class AttentionLayer(nn.Module):
         self.submodule = submodule
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Deeper levels -> upsample -> gate the skip with them -> concatenate -> merge convolution."""
+        """Run the deeper levels, upsample, gate the skip with the result and merge.
+
+        The skip is this level's own input. The output has this level's channels.
+
+        Args:
+            x (torch.Tensor): this level's input features.
+
+        Returns:
+            torch.Tensor: the merged features.
+        """
         fromlower = self.upconv(self.submodule(x))
         att = self.attention(g=fromlower, x=x)
         att_m: torch.Tensor = self.merge(torch.cat((att, fromlower), dim=1))
@@ -224,20 +326,11 @@ class AttentionLayer(nn.Module):
 
 
 class AttentionUnet(nn.Module):
-    """
-    Attention Unet based on
-    Otkay et al. "Attention U-Net: Learning Where to Look for the Pancreas"
-    https://arxiv.org/abs/1804.03999
+    """Attention U-Net in 3-D: a U-Net whose skip connections pass through attention gates.
 
-    Args:
-        spatial_dims: number of spatial dimensions of the input image.
-        in_channels: number of the input channel.
-        out_channels: number of the output classes.
-        channels (Sequence[int]): sequence of channels. Top block first. The length of `channels` should be no less than 2.
-        strides (Sequence[int]): stride to use for convolutions.
-        kernel_size: convolution kernel size.
-        up_kernel_size: convolution kernel size for transposed convolution layers.
-        dropout: dropout ratio. Defaults to no dropout.
+    It is the paper's Attention-U-Net-3D baseline (Oktay et al., Attention U-Net,
+    2018, via MONAI). Strides never downsample the days, so the output keeps one
+    map per day.
     """
 
     def __init__(
@@ -251,7 +344,21 @@ class AttentionUnet(nn.Module):
         up_kernel_size: Sequence[int] | int = 3,
         dropout: float = 0.0,
     ):
-        """Build the input block, the nested gated encoder-decoder and the 1x1x1 output convolution."""
+        """Build the input block, the nested gated encoder-decoder and the output convolution.
+
+        The levels are created recursively from the channel list, top first.
+        Each level gets an attention gate on its skip connection.
+
+        Args:
+            spatial_dims (int): 3 for this model.
+            in_channels (int): input channels.
+            out_channels (int): output channels.
+            channels (Sequence[int]): channels per level, top first.
+            strides (Sequence[int]): downsampling factor between levels.
+            kernel_size (int): convolution kernel size.
+            up_kernel_size (int): upsampling kernel size.
+            dropout (float): dropout rate.
+        """
         super().__init__()
         self.dimensions = spatial_dims
         self.in_channels = in_channels
@@ -274,7 +381,18 @@ class AttentionUnet(nn.Module):
         self.up_kernel_size = up_kernel_size
 
         def _create_block(channels: Sequence[int], strides: Sequence[int]) -> nn.Module:
-            """Build the nested levels for `channels` recursively, deepest last."""
+            """Build the nested levels for a channel list, recursively.
+
+            Each call builds one level and recurses for the rest. The last two
+            channels make the bottom level.
+
+            Args:
+                channels (Sequence[int]): channels from this level down.
+                strides (Sequence[int]): downsampling factor between levels.
+
+            Returns:
+                nn.Module: this level with all deeper ones inside it.
+            """
             if len(channels) > 2:
                 subblock = _create_block(channels[1:], strides)
                 return AttentionLayer(
@@ -305,7 +423,18 @@ class AttentionUnet(nn.Module):
         self.model = nn.Sequential(head, encdec, reduce_channels)
 
     def _get_bottom_layer(self, in_channels: int, out_channels: int, strides: int) -> nn.Module:
-        """The deepest level: one ConvBlock wrapped as an AttentionLayer."""
+        """Build the deepest level: one ConvBlock wrapped as an AttentionLayer.
+
+        It has no deeper levels below it. It still upsamples and gates like the others.
+
+        Args:
+            in_channels (int): channels at this level.
+            out_channels (int): channels inside the bottom block.
+            strides (int | Sequence[int]): downsampling factor.
+
+        Returns:
+            AttentionLayer: the bottom level.
+        """
         return AttentionLayer(
             spatial_dims=self.dimensions,
             in_channels=in_channels,
@@ -323,14 +452,34 @@ class AttentionUnet(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """(B, C, T, H, W) input -> (B, K, T, H, W) logits."""
+        """Run the whole Attention U-Net on one batch.
+
+        The days are kept throughout, so the output is one map per day.
+        The trainer averages them.
+
+        Args:
+            x (torch.Tensor): input of shape (B, C, T, H, W).
+
+        Returns:
+            torch.Tensor: per-day logits of shape (B, K, T, H, W).
+        """
         x_m: torch.Tensor = self.model(x)
         return x_m
 
 
 @register_model("attunet")
 def build(spec):
-    """The paper's Attention-U-Net-3D baseline. [released]"""
+    """Build the paper's Attention-U-Net-3D baseline for a ModelSpec.
+
+    Channels are (64, 128, 256, 512, 1024) and strides (1, 2, 2), so the days are
+    never downsampled [released]. Heads, feature size and options are ignored.
+
+    Args:
+        spec (ModelSpec): what the model is built for.
+
+    Returns:
+        AttentionUnet: the new model.
+    """
     return AttentionUnet(
         spatial_dims=3,
         in_channels=spec.in_channels,

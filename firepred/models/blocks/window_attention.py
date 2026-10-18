@@ -19,12 +19,13 @@ from monai.networks.layers import trunc_normal_
 
 
 class WindowAttentionV1(nn.Module):
-    '''
-    Liu et al.,
-    Swin Transformer: Hierarchical Vision Transformer using Shifted Windows
-    <https://arxiv.org/abs/2103.14030>
-    https://github.com/microsoft/Swin-Transformer
-    '''
+    """Self-attention inside each window, with a learned bias for relative position (Swin V1).
+
+    Every token in a window scores every other token, and the scores weight a
+    mix of their values. A learned number per head for each relative offset
+    (days, rows, columns) is added to the scores: it is attention's only sense
+    of where and when tokens are (Liu et al., ICCV 2021).
+    """
 
     def __init__(
         self,
@@ -35,15 +36,19 @@ class WindowAttentionV1(nn.Module):
         attn_drop:   float = 0.0,
         proj_drop:   float = 0.0,
     ) -> None:
-        '''
+        """Build the query/key/value projection, the relative position table and the output projection.
+
+        The table holds one learned bias per head for every possible offset inside a
+        window. It starts from small random values.
+
         Args:
-            dim: number  of feature channels.
-            num_heads:   number of attention heads.
-            window_size: local window size.
-            qkv_bias:    add a learnable bias to query, key, value.
-            attn_drop:   attention dropout rate.
-            proj_drop:   dropout rate of output.
-        '''
+            dim (int): feature channels.
+            num_heads (int): attention heads.
+            window_size (Sequence[int]): window size per axis.
+            qkv_bias (bool): learnable bias on queries, keys and values.
+            attn_drop (float): dropout on the attention weights.
+            proj_drop (float): dropout on the output.
+        """
 
         super().__init__()
         self.dim = dim
@@ -111,9 +116,18 @@ class WindowAttentionV1(nn.Module):
         self.softmax = nn.Softmax(dim=-1)
 
     def forward(self, x, mask):
-        """Window self-attention with relative position bias: (windows, tokens, C) -> (windows, tokens, C).
-        
-        `mask` (or None) keeps shifted windows from attending across their seams."""
+        """Attend inside every window: score token pairs, add the position bias, mix values.
+
+        The optional mask adds -100 to pairs that must not attend (across the seams
+        of shifted windows). After the softmax their weight is effectively 0.
+
+        Args:
+            x (torch.Tensor): tokens of shape (windows * B, N, C).
+            mask (torch.Tensor | None): additive mask of shape (windows, N, N), or None.
+
+        Returns:
+            torch.Tensor: same shape as x.
+        """
         b, n, c = x.shape
         # x: (windows, tokens, channels). Split into per-head queries, keys and values.
         qkv = self.qkv(x).reshape(b, n, 3, self.num_heads, c // self.num_heads).permute(2, 0, 3, 1, 4)

@@ -26,15 +26,18 @@ import torch
 
 
 def window_partition(x, window_size):
-    '''window partition operation based on: 'Liu et al.,
-    Swin Transformer: Hierarchical Vision Transformer using Shifted Windows
-    <https://arxiv.org/abs/2103.14030>'
-    https://github.com/microsoft/Swin-Transformer
+    """Cut a feature volume into non-overlapping windows of tokens.
+
+    Attention runs inside each window on its own, so the volume is reshaped
+    into a batch of windows (Liu et al., Swin Transformer).
 
     Args:
-        x:           input tensor.
-        window_size: local window size.
-    '''
+        x (torch.Tensor): features of shape (B, D, H, W, C) or (B, H, W, C).
+        window_size (Sequence[int]): window size per axis.
+
+    Returns:
+        torch.Tensor: windows of shape (B * windows, tokens per window, C).
+    """
     x_shape = x.size()
     if len(x_shape) == 5:
         # 3-D case: cut (B, D, H, W, C) into blocks of window_size tokens and list every
@@ -62,16 +65,19 @@ def window_partition(x, window_size):
 
 
 def window_reverse(windows, window_size, dims):
-    '''window reverse operation based on: 'Liu et al.,
-    Swin Transformer: Hierarchical Vision Transformer using Shifted Windows
-    <https://arxiv.org/abs/2103.14030>'
-    https://github.com/microsoft/Swin-Transformer
+    """Stitch windows back into a feature volume (the reverse of window_partition).
+
+    After attention the windows are reassembled in their original places. The
+    result has the volume's original layout.
 
     Args:
-        windows:     windows tensor.
-        window_size: local window size.
-        dims:        dimension values.
-    '''
+        windows (torch.Tensor): windows of shape (B * windows, wd, wh, ww, C).
+        window_size (Sequence[int]): window size per axis.
+        dims (Sequence[int]): (B, D, H, W) or (B, H, W) of the volume.
+
+    Returns:
+        torch.Tensor: the volume, (B, D, H, W, C) or (B, H, W, C).
+    """
     # Inverse of window_partition: put the window rows back into a (B, D, H, W, C) volume.
     if len(dims) == 4:
         b, d, h, w = dims
@@ -94,16 +100,19 @@ def window_reverse(windows, window_size, dims):
     return x
 
 def get_window_size(x_size, window_size, shift_size=None):
-    '''Computing window size based on: 'Liu et al.,
-    Swin Transformer: Hierarchical Vision Transformer using Shifted Windows
-    <https://arxiv.org/abs/2103.14030>'
-    https://github.com/microsoft/Swin-Transformer
+    """Shrink the window (and shift) on any axis where the volume is smaller.
+
+    A window cannot be larger than the volume. Where it would be, it becomes
+    the volume's size and the shift on that axis becomes 0.
 
     Args:
-        x_size:      input size.
-        window_size: local window size.
-        shift_size:  window shifting size.
-    '''
+        x_size (Sequence[int]): the volume size per axis.
+        window_size (Sequence[int]): the requested window size.
+        shift_size (Sequence[int] | None): the requested shift, or None.
+
+    Returns:
+        tuple: the window size, or (window size, shift size) when shift_size is given.
+    """
 
     # A window can't be larger than the volume: where an axis is smaller than the
     # window (e.g. all 6 days), the window shrinks to it and that axis is not shifted.
@@ -122,17 +131,22 @@ def get_window_size(x_size, window_size, shift_size=None):
         return tuple(use_window_size), tuple(use_shift_size)
 
 def compute_mask(dims, window_size, shift_size, device):
-    '''Computing region masks based on: 'Liu et al.,
-    Swin Transformer: Hierarchical Vision Transformer using Shifted Windows
-    <https://arxiv.org/abs/2103.14030>'
-    https://github.com/microsoft/Swin-Transformer
+    """Build the mask that stops shifted windows from attending across their seams.
+
+    After the cyclic shift, a window at the volume's edge holds tokens that
+    wrapped around from the far side. Each token is labelled with the region it
+    came from; pairs from different regions get -100, which makes their
+    attention weight effectively 0.
 
     Args:
-        dims:        dimension values.
-        window_size: local window size.
-        shift_size:  shift size.
-        device:      device.
-    '''
+        dims (Sequence[int]): the padded volume size, (D, H, W) or (H, W).
+        window_size (Sequence[int]): window size per axis.
+        shift_size (Sequence[int]): window shift per axis.
+        device (torch.device): where to build the mask.
+
+    Returns:
+        torch.Tensor: additive mask of shape (windows, N, N).
+    """
 
     # Shifted-window mask. After the cyclic shift, a window at the volume's edge
     # contains tokens that wrapped around from the far side. Label every token with

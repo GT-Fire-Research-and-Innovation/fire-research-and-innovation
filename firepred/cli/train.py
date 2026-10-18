@@ -19,15 +19,33 @@ from firepred.training.flags import argv_for, build_parser, config_from_args
 
 
 def parse_args(argv=None):
-    """Parse the training command line (training/flags.py defines every flag)."""
+    """Parse the training command line.
+
+    Every flag is defined in training/flags.py. The parsed flags are never
+    modified afterwards.
+
+    Args:
+        argv (list[str] | None): the arguments (default: sys.argv).
+
+    Returns:
+        argparse.Namespace: the parsed flags.
+    """
     return build_parser().parse_args(argv)
 
 
 def write_run_record(output_dir, config, code=None):
-    """Save the training command, the resolved settings and the library versions in output_dir; return the paths.
+    """Save what a run is about to do: its command, its settings and the library versions.
 
-    `code` is extra provenance (repo, branch, commit, data repo); no secrets or
-    environment values are written.
+    The files sit beside the checkpoints, so a run can be repeated later.
+    Secrets and environment values are never written.
+
+    Args:
+        output_dir (str | Path): the folder to write into.
+        config (RunConfig): the run's settings.
+        code (dict | None): extra provenance (repo, branch, commit, data repo).
+
+    Returns:
+        list[Path]: the written files.
     """
     import torch
 
@@ -52,7 +70,17 @@ def write_run_record(output_dir, config, code=None):
 
 
 def main(argv=None):
-    """Parse the flags, build the RunConfig and run the experiment; returns its RunResult."""
+    """Train or test as the command line says.
+
+    The flags become a RunConfig and Experiment(config).run() does the rest. The
+    W&B run is finished when it returns.
+
+    Args:
+        argv (list[str] | None): the arguments (default: sys.argv).
+
+    Returns:
+        RunResult: the tested checkpoint and the final scores.
+    """
     from firepred.training.experiment import Experiment
 
     return Experiment(config_from_args(parse_args(argv))).run()

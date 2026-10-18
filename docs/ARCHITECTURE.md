@@ -111,15 +111,16 @@ The ROI CSVs are read once per master call into a `RoiTable` and passed down.
 `cli/train.py: parse_args → config_from_args → Experiment(config).run()` (the flags are `training/flags.py`)
 (`training/experiment.py`):
 
-1. **Seed** numpy, torch and Python's random (`seed_everything`).
+1. **Device** (`training/accelerator.Device.resolve`): `--device auto` is the
+   GPU when visible, else the CPU; `--device tpu` is one TPU device through
+   PyTorch/XLA. Then **seed** numpy, torch, Python's random and (TPU) XLA
+   (`Experiment.seed`).
 2. **FireData.locate(config)**: where train/, val/, test/ are; with
    `--unzip-dir`, the archives are unpacked once (`data/archive.unzip_data_root`).
-3. **Device** (`training/accelerator.resolve_device`): `--device auto` is the
-   GPU when visible, else the CPU; `--device tpu` is one TPU device through
-   PyTorch/XLA. Then **`with Tracker(config, device)`** (`training/tracker.py`)
+3. **`with Tracker(config, device)`** (`training/tracker.py`)
    starts the W&B run: charts, the run name and config all come from the
    RunConfig, and leaving the block finishes the run.
-4. **Model**: `prepare_model` → `models/registry.build_model("swinunetr3d", config.model_spec())`,
+4. **Model**: `Experiment.prepare_model` → `models/registry.build_model("swinunetr3d", config.model_spec())`,
    wrapped in `nn.DataParallel`.
 5. **Training** (skipped with `-test`):
    - `FireData.training()` builds the augmented training and plain validation
@@ -131,16 +132,18 @@ The ROI CSVs are read once per master call into a `RoiTable` and passed down.
      (`training/trainer.py`). Each epoch: `train_epoch` → `tracker.log_train`;
      `validate` → `tracker.log_validation`; `store.offer` saves the checkpoint
      if its validation loss is among the best (and `tracker.log_checkpoint`
-     uploads it with `--upload-checkpoints`); the LR schedule steps; every
+     uploads it with `--upload-checkpoints`); the `LearningRateSchedule` steps; every
      `--test-every` epochs `evaluator.score` → `tracker.log_periodic_test`.
      `fit` returns the best checkpoint.
-6. **Testing**: `load_checkpoint` (refuses a checkpoint trained with other
+6. **Testing**: `CheckpointLoader(device, config).load` (refuses a checkpoint trained with other
    inputs, and runs no pickled code unless trusted), then
    `Evaluator(config, device, test_dataset).score(model, plot_dir)` scores
    each 2021 test fire, averages over fires, and `tracker.log_final` logs it.
 
-Inside a step: a window is read by `data/archive.open_fire` and turned into
-`{"data": (43, 6, 256, 256), "labels": (2, 256, 256)}` by
+Inside a step: `FireDataset[i]` is a thin adapter over two plain functions:
+`data/fire_dataset.read_window` reads the window (via `data/archive.open_fire`)
+and `prepare_window` turns it into
+`{"data": (43, 6, 256, 256), "labels": (2, 256, 256)}` with
 `data/transforms.py` (normalize → augment → preprocess, all returning new
 tensors). `data/fire_dataset.batch_inputs` appends the TESSERA map on the GPU,
 `models/registry.forward_model` averages the per-day logits over the days,

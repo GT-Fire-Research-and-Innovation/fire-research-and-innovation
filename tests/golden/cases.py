@@ -136,7 +136,8 @@ def dataset_values(ctx):
     import torch
 
     from firepred.data.archive import fire_name, find_fire_sources, unzip_data_root
-    from firepred.data.fire_dataset import FireDataset, batch_inputs, make_dataloader
+    from firepred.config.dataset import NORMALIZATION_MEAN, NORMALIZATION_STD
+    from firepred.data.fire_dataset import NORMALIZE_SKIP, FireDataset, batch_inputs, make_dataloader
     from firepred.data.tessera_archive import compute_tessera_stats, load_tessera_maps
 
     work = ctx.work
@@ -154,7 +155,7 @@ def dataset_values(ctx):
     plain_ds = FireDataset(npz_dir=root / "train", use_augmentations=False, **kwargs)
     out["len"] = len(plain_ds)
     out["index"] = [(fire_name(path), window) for path, window in plain_ds.index]
-    out["normalizer"] = (plain_ds.normalizer.mean, plain_ds.normalizer.std, sorted(plain_ds.normalizer.dont_normalize_idc))
+    out["normalizer"] = (NORMALIZATION_MEAN, NORMALIZATION_STD, sorted(NORMALIZE_SKIP))  # what every item is normalized with
     out["items.plain"] = items(plain_ds)
     out["items.augmented"] = items(FireDataset(npz_dir=root / "train", use_augmentations=True, **kwargs), seed=123)
     out["items.folders"] = items(
@@ -189,15 +190,14 @@ def transform_values(ctx):
     import torch
 
     from firepred.config.dataset import NORMALIZATION_MEAN, NORMALIZATION_STD
-    from firepred.data.transforms import Normalize, augment, landcover_one_hot_matrix, preprocess
+    from firepred.data.transforms import augment, landcover_one_hot_matrix, normalize, preprocess
 
     rng = np.random.default_rng(4)
     x = rng.normal(20.0, 10.0, size=(27, 3, 16, 16)).astype(np.float32)
     x[[12, 18, 24]] = rng.uniform(0, 360, size=(3, 3, 16, 16)).astype(np.float32)
     x[21] = rng.integers(0, 18, size=(3, 16, 16)).astype(np.float32)
     out = {"landcover": landcover_one_hot_matrix()}
-    normalize = Normalize(NORMALIZATION_MEAN, NORMALIZATION_STD, dont_normalize_idc=[21])
-    normalized = normalize(x.copy())
+    normalized = normalize(x.copy(), NORMALIZATION_MEAN, NORMALIZATION_STD, skip=[21])
     out["normalize"] = normalized
     one_hot = landcover_one_hot_matrix()
     out["preprocess"] = preprocess(torch.from_numpy(normalized.copy()), one_hot)
@@ -418,7 +418,7 @@ def model_values(ctx):
 
     from firepred.models.registry import build_model, forward_model
     from firepred.training.config import LossConfig
-    from firepred.training.objectives import build_criterion
+    from firepred.training.objectives import TrainingLoss
 
     out = {}
     cases = [
@@ -446,7 +446,7 @@ def model_values(ctx):
         optimizer = optim.Adam(model.parameters(), lr=1e-3)
         model.train()
         outputs = forward_model(model, x)
-        loss, parts = build_criterion(LossConfig("dicece"))(outputs, y)
+        loss, parts = TrainingLoss(LossConfig("dicece"))(outputs, y)
         loss.backward()
         optimizer.step()
         out[key + ".train_out"] = outputs
@@ -466,16 +466,12 @@ def model_values(ctx):
 def objective_values(ctx):
     """Losses (with parts), per-window metrics, MONAI validation metrics, LR schedules, chart labels."""
     import torch
-    from monai.data import decollate_batch
     from torch import nn, optim
 
     from firepred.training.config import LossConfig, ScheduleConfig
-    from firepred.training.objectives import (
-        background_f1, build_criterion, build_post_transform, fire_only_f1, fire_only_iou, validation_dice,
-        validation_iou,
-    )
-    from firepred.training.tracker import chart_labels
-    from firepred.training.trainer import build_lr_scheduler, step_lr_scheduler
+    from firepred.training.objectives import Scorer, TrainingLoss
+    from firepred.training.tracker import Tracker
+    from firepred.training.trainer import LearningRateSchedule
 
     torch.manual_seed(11)
     logits = torch.randn(3, 2, 32, 32) * 3
@@ -487,30 +483,30 @@ def objective_values(ctx):
         ("dice",), ("dicece",), ("dicece", (1.0, 457.1), 0.7, 1.3),
         ("dicefocal",), ("dicefocal", (1.0, 446.7836), 1.0, 1.0, 2.0, 1.5, 0.25),
     ):
-        criterion = build_criterion(LossConfig(*loss_args))
+        criterion = TrainingLoss(LossConfig(*loss_args))
         out[f"loss.{loss_args}"] = criterion(logits, labels)
         out[f"loss_name.{loss_args}"] = criterion.name
-    post = build_post_transform()
-    predictions = torch.stack([post(item) for item in decollate_batch(logits)])
+    scorer = Scorer()
+    predictions = scorer.predictions(logits)
     out["post_transform"] = predictions
     predictions[2] = 0
-    out["metric.fire_only_f1"] = fire_only_f1(predictions, labels)
-    out["metric.background_f1"] = background_f1(predictions, labels)
-    out["metric.fire_only_iou"] = fire_only_iou(predictions, labels)
-    out["metric.mean_iou"] = validation_iou(predictions, labels)
-    out["metric.dice"] = validation_dice(predictions, labels)
+    out["metric.fire_only_f1"] = scorer.fire_f1(predictions, labels)
+    out["metric.background_f1"] = scorer.background_f1(predictions, labels)
+    out["metric.fire_only_iou"] = scorer.fire_iou(predictions, labels)
+    out["metric.mean_iou"] = scorer.mean_iou(predictions, labels)
+    out["metric.dice"] = scorer.mean_dice(predictions, labels)
 
     for schedule in ("none", "plateau", "cosine"):
         parameter = nn.Parameter(torch.zeros(1))
         optimizer = optim.Adam([parameter], lr=1e-3)
-        scheduler = build_lr_scheduler(optimizer, ScheduleConfig(schedule, 0.5, 1, 1e-4), 6)
+        lr_schedule = LearningRateSchedule(optimizer, ScheduleConfig(schedule, 0.5, 1, 1e-4), 6)
         rates = []
         for val_loss in (1.0, 0.9, 0.95, 0.96, 0.97, 0.5):
-            step_lr_scheduler(scheduler, val_loss)
+            lr_schedule.step(val_loss)
             rates.append(optimizer.param_groups[0]["lr"])
-        out[f"lr.{schedule}"] = (type(scheduler).__name__, rates)
+        out[f"lr.{schedule}"] = (type(lr_schedule.scheduler).__name__, rates)
     for loss in ("dice", "dicece", "dicefocal"):
-        out[f"chart_labels.{loss}"] = chart_labels(loss)
+        out[f"chart_labels.{loss}"] = Tracker.chart_labels(loss)
     return out
 
 
@@ -561,7 +557,7 @@ def checkpoint_values(ctx):
     import torch
     from torch import nn, optim
 
-    from firepred.training.checkpoints import CheckpointStore, read_checkpoint, save_checkpoint
+    from firepred.training.checkpoints import CheckpointLoader, CheckpointStore
 
     torch.manual_seed(3)
     model = nn.DataParallel(nn.Conv3d(4, 2, 1))
@@ -572,10 +568,10 @@ def checkpoint_values(ctx):
     stats = {"mean": np.arange(128, dtype=np.float32), "std": np.ones(128, dtype=np.float32), "min_coverage": 0.5}
     for label, extra in (("plain", {"use_tessera": False}), ("tessera", {"use_tessera": True, "tessera_stats": stats})):
         path = ctx.work / f"{label}.pth"
-        save_checkpoint(model, optimizer, 4, 0.25, str(path), extra=extra)
+        CheckpointStore(ctx.work, path.name, extra).save(str(path), 4, 0.25, model, optimizer)
         for trusted in (False, True):
             try:
-                out[f"roundtrip.{label}.{trusted}"] = read_checkpoint(str(path), "cpu", trusted=trusted)
+                out[f"roundtrip.{label}.{trusted}"] = CheckpointLoader("cpu").read(str(path), trusted=trusted)
             except RuntimeError as error:  # a restricted load may refuse numpy objects
                 out[f"roundtrip.{label}.{trusted}.error"] = type(error).__name__
     store = CheckpointStore(ctx.work, "best_{epoch}.pth", {}, keep=2)
