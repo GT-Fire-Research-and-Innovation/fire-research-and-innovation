@@ -12,7 +12,9 @@ data/tessera_archive.py.
 data/windows.py crops rows/cols 128:384 of every VIIRS_Day GeoTIFF, so one
 256 x 256 grid covers all of a fire's windows. build_fire_tessera() reads that
 grid's georeference, streams the TESSERA embeddings covering it, and averages
-every 10 m TESSERA pixel into the crop pixel containing its centre.
+every 10 m TESSERA pixel into the crop pixel containing its centre. With
+cells_per_pixel=k each VIIRS pixel is split into k x k cells first (k = 5 gives
+75 m cells and a 1280 x 1280 map); the default 1 is one vector per VIIRS pixel.
 
 Embeddings come from the year before the fire: an annual embedding for the
 fire year is built partly from post-fire imagery and would leak the burn scar
@@ -35,6 +37,7 @@ from firepred.config.dataset import (
     SPLITS,
     STRIP_ROWS,
     TESSERA_BANDS,
+    TESSERA_CELLS_PER_PIXEL,
     TESSERA_EXCLUDED_LIST,
 )
 from firepred.data.files import code_version
@@ -51,7 +54,7 @@ class FireTessera:
     Attributes:
         path (Path): the written tessera/p<id>.npz.
         tessera_year (int): the embedding year (the year before the fire).
-        coverage (np.ndarray): (256, 256) fraction of 10 m pixels with data.
+        coverage (np.ndarray): (256 k, 256 k) fraction of 10 m pixels with data.
     """
 
     path: Path
@@ -72,25 +75,31 @@ class FireTessera:
                 f"cells without data {empty}/{self.coverage.size}")
 
 
-def crop_grid(profile, offset=CROP_OFFSET, size=CROP_SIZE):
-    """Find the georeference of the fire's 256 x 256 crop of a GeoTIFF.
+def crop_grid(profile, offset=CROP_OFFSET, size=CROP_SIZE, cells_per_pixel=TESSERA_CELLS_PER_PIXEL):
+    """Find the georeference of the fire's 256 x 256 crop of a GeoTIFF, optionally subdivided.
 
     data/windows.py crops rows/columns 128:384 of every image. Shifting the
     GeoTIFF's geotransform by that offset maps crop pixels to map coordinates,
-    so TESSERA can be averaged onto exactly the same square.
+    so TESSERA can be averaged onto exactly the same square. With k cells per
+    pixel the transform is also shrunk by k, so the same square holds
+    256 k x 256 k cells and VIIRS pixel (r, c) covers cells k r .. k r + k - 1.
 
     Args:
         profile (dict): a rasterio profile (crs, transform, height, width).
         offset (int): first row/column of the crop.
         size (int): crop size in pixels.
+        cells_per_pixel (int): TESSERA cells along each side of one VIIRS pixel.
 
     Returns:
-        tuple: (crs, affine transform) of the crop.
+        tuple: (crs, affine transform) of the crop grid.
 
     Raises:
-        ValueError: if the crop does not fit inside the image.
+        ValueError: if the crop does not fit inside the image, or cells_per_pixel < 1.
     """
     from rasterio.transform import Affine
+
+    if int(cells_per_pixel) != cells_per_pixel or cells_per_pixel < 1:
+        raise ValueError(f"cells_per_pixel must be a positive whole number, got {cells_per_pixel}")
 
     if profile["height"] < offset + size or profile["width"] < offset + size:
         raise ValueError(
@@ -99,7 +108,10 @@ def crop_grid(profile, offset=CROP_OFFSET, size=CROP_SIZE):
         )
     # Shift the GeoTIFF's geotransform by the crop offset: the result maps crop
     # pixel (row, col) to map coordinates, the same square data/windows.py uses.
-    return profile["crs"], profile["transform"] * Affine.translation(offset, offset)
+    transform = profile["transform"] * Affine.translation(offset, offset)
+    if cells_per_pixel > 1:
+        transform = transform * Affine.scale(1 / cells_per_pixel)
+    return profile["crs"], transform
 
 
 def utm_zones(west, east):
@@ -246,7 +258,8 @@ def grid_tessera(gt, dst_crs, dst_transform, year, size=CROP_SIZE, strip_rows=ST
     )
 
 
-def build_fire_tessera(gt, fire_id, day_paths, fire_year, save_path, strip_rows=STRIP_ROWS):
+def build_fire_tessera(gt, fire_id, day_paths, fire_year, save_path, strip_rows=STRIP_ROWS,
+                       cells_per_pixel=TESSERA_CELLS_PER_PIXEL):
     """Build and save one fire's TESSERA file from two of its VIIRS_Day GeoTIFFs.
 
     All given days must share one georeference, otherwise the fixed crop would
@@ -261,6 +274,8 @@ def build_fire_tessera(gt, fire_id, day_paths, fire_year, save_path, strip_rows=
         fire_year (int): the year the fire started.
         save_path (str | Path): where to write tessera/p<id>.npz.
         strip_rows (int): rows read per request.
+        cells_per_pixel (int): TESSERA cells along each side of one VIIRS pixel
+            (1: one averaged vector per pixel; 5: 5 x 5 cells of 75 m).
 
     Returns:
         FireTessera: the written path, the year used and the coverage map.
@@ -290,13 +305,15 @@ def build_fire_tessera(gt, fire_id, day_paths, fire_year, save_path, strip_rows=
 
     # Use the year BEFORE the fire: an embedding of the fire year itself is built
     # partly from post-fire images and would leak the burn scar into the inputs.
-    dst_crs, dst_transform = crop_grid(reference)
+    dst_crs, dst_transform = crop_grid(reference, cells_per_pixel=cells_per_pixel)
     tessera_year = int(fire_year) - 1
+    grid_size = CROP_SIZE * cells_per_pixel
     embedding, coverage, _, bounds_lonlat = grid_tessera(
         gt,
         dst_crs,
         dst_transform,
         tessera_year,
+        size=grid_size,
         strip_rows=strip_rows,
     )
 
@@ -307,7 +324,7 @@ def build_fire_tessera(gt, fire_id, day_paths, fire_year, save_path, strip_rows=
         "tessera_year": np.int16(tessera_year),
         "crs": dst_crs.to_wkt(),
         "transform": np.asarray(tuple(dst_transform)[:6], dtype=np.float64),
-        "bounds": np.asarray(array_bounds(CROP_SIZE, CROP_SIZE, dst_transform), dtype=np.float64),
+        "bounds": np.asarray(array_bounds(grid_size, grid_size, dst_transform), dtype=np.float64),
         "bounds_lonlat": np.asarray(bounds_lonlat, dtype=np.float64),
         "source_store": str(gt.url),
         "model_version": str(getattr(gt, "model_version", "")),
@@ -315,6 +332,9 @@ def build_fire_tessera(gt, fire_id, day_paths, fire_year, save_path, strip_rows=
         "code_version": code_version(),
         "day_files": np.asarray(sorted(day_paths), dtype=str),
     }
+    if cells_per_pixel > 1:
+        # Files without this member have one cell per VIIRS pixel (all files built before the option).
+        metadata["cells_per_pixel"] = np.int16(cells_per_pixel)
     path = save_tessera_npz(save_path, embedding, coverage, metadata)
     return FireTessera(path, tessera_year, coverage)
 

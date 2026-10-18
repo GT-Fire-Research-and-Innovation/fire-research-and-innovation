@@ -130,7 +130,8 @@ class Trainer:
         caller can score them.
 
         Args:
-            inputs (torch.Tensor): input of shape (B, C, T, H, W).
+            inputs (torch.Tensor | tuple[torch.Tensor, torch.Tensor]): input of shape
+                (B, C, T, H, W), or (data, static) for a model with a TESSERA stem.
             labels (torch.Tensor): one-hot targets of shape (B, 2, H, W).
 
         Returns:
@@ -181,10 +182,10 @@ class Trainer:
                 totals["background_f1"] += self.scorer.background_f1(predictions, labels).sum().item()
                 totals["fire_iou"] += self.scorer.fire_iou(predictions, labels).sum().item()
             # Losses weighted by batch size, so the epoch value is a per-window mean.
-            totals["loss"] += loss.detach().item() * inputs.size(0)
+            totals["loss"] += loss.detach().item() * labels.size(0)
             for name, value in parts.items():
-                components[name] = components.get(name, 0.0) + value.item() * inputs.size(0)
-            bar.set_postfix(loss=f"{totals['loss'] / ((batch_idx + 1) * inputs.size(0)):.4f}")
+                components[name] = components.get(name, 0.0) + value.item() * labels.size(0)
+            bar.set_postfix(loss=f"{totals['loss'] / ((batch_idx + 1) * labels.size(0)):.4f}")
             # Stop immediately if the loss blows up instead of training on garbage.
             if not np.isfinite(totals["loss"]):
                 raise RuntimeError(f"Training loss became non-finite at step {batch_idx}")
@@ -222,16 +223,16 @@ class Trainer:
                 outputs = forward_model(self.model, inputs)
                 loss, parts = self.criterion(outputs, labels)
                 self.device.mark_step()  # TPU only: run the forward graph once for loss and scores.
-                totals["loss"] += loss.detach().item() * inputs.size(0)
+                totals["loss"] += loss.detach().item() * labels.size(0)
                 for name, value in parts.items():
-                    components[name] = components.get(name, 0.0) + value.item() * inputs.size(0)
+                    components[name] = components.get(name, 0.0) + value.item() * labels.size(0)
                 predictions = self.scorer.predictions(outputs)
                 totals["fire_f1"] += self.scorer.fire_f1(predictions, labels).sum().item()
                 totals["background_f1"] += self.scorer.background_f1(predictions, labels).sum().item()
                 totals["fire_iou"] += self.scorer.fire_iou(predictions, labels).sum().item()
                 iou_values.append(self.scorer.mean_iou(predictions, labels).mean().item())
                 dice_values.append(self.scorer.mean_dice(predictions, labels).mean().item())
-                bar.set_postfix(loss=f"{totals['loss'] / ((batch_idx + 1) * inputs.size(0)):.4f}")
+                bar.set_postfix(loss=f"{totals['loss'] / ((batch_idx + 1) * labels.size(0)):.4f}")
         return EpochScores(
             split="val",
             loss=totals["loss"] / windows,

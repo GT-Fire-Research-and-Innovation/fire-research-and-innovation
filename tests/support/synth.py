@@ -48,13 +48,23 @@ def fire_archive(path, rng, ts_length, n_windows, compressed=False, empty_window
     _write_npz(path, arrays, compressed)
 
 
-def tessera_file(path, rng):
-    """Write one fire's TESSERA file: (128, 256, 256) float16 embedding, coverage, top rows empty."""
+def tessera_file(path, rng, cells_per_pixel=1):
+    """Write one fire's TESSERA file: (128, 256 k, 256 k) float16 embedding, coverage, top rows empty.
+
+    k > 1 repeats each VIIRS pixel's values over its k x k cells, then perturbs
+    the cells so they differ, and writes the file uncompressed (fast to write).
+    """
     embedding = rng.normal(0.0, 0.3, size=(128, SIZE, SIZE)).astype(np.float16)
     coverage = rng.random((SIZE, SIZE)).astype(np.float16)
     coverage[:20] = 0
     embedding[:, :20] = 0
-    _write_npz(path, {"embedding": embedding, "coverage": coverage}, compressed=True)
+    if cells_per_pixel > 1:
+        k = cells_per_pixel
+        embedding = embedding.repeat(k, axis=1).repeat(k, axis=2)
+        embedding += (0.05 * rng.standard_normal(embedding.shape[1:])).astype(np.float16)
+        coverage = coverage.repeat(k, axis=0).repeat(k, axis=1)
+        coverage[: 20 * k + 1, : 2 * k] = 0  # some cells empty inside otherwise covered pixels
+    _write_npz(path, {"embedding": embedding, "coverage": coverage}, compressed=cells_per_pixel == 1)
 
 
 # Fire layout of a data root: split -> [(fire name, number of windows)].
@@ -72,7 +82,7 @@ E2E_FIRES = {
 TEST_CSV_IDS = ["20210002", "US_2021_MISSING", "US_2021_AA0001"]
 
 
-def data_root(root, fires, ts_length=6, seed=0):
+def data_root(root, fires, ts_length=6, seed=0, cells_per_pixel=1):
     """Write <root>/{train,val,test}/p<id>.npz, <root>/tessera/p<id>.npz and a test CSV."""
     root = Path(root)
     rng = np.random.default_rng(seed)
@@ -88,7 +98,7 @@ def data_root(root, fires, ts_length=6, seed=0):
                 compressed=position % 2 == 1,
                 empty_window=0 if split == "val" else None,
             )
-            tessera_file(root / "tessera" / f"{name}.npz", rng)
+            tessera_file(root / "tessera" / f"{name}.npz", rng, cells_per_pixel)
     csv_path = root.parent / f"{root.name}_test.csv"
     csv_path.write_text("Id,area\n" + "".join(f"{fire_id},1\n" for fire_id in TEST_CSV_IDS))
     return root, csv_path

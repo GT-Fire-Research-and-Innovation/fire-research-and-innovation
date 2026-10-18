@@ -19,7 +19,7 @@ import time
 
 import torch
 
-from firepred.config.dataset import CROP_SIZE, N_STORED_CHANNELS, TS_LENGTH
+from firepred.config.dataset import BASE_MODEL_CHANNELS, CROP_SIZE, N_STORED_CHANNELS, TESSERA_CHANNELS, TS_LENGTH
 from firepred.config.training import NUM_CLASSES
 from firepred.data.fire_dataset import FireDataset, batch_inputs, make_dataloader
 from firepred.models.registry import available_models
@@ -53,6 +53,7 @@ def check_config(args):
         device=args.device,
         data_root=getattr(args, "data_root", RunConfig.data_root),
         tessera=args.tessera,
+        tessera_cells_per_pixel=args.tessera_cells_per_pixel,
         loss=LossConfig(args.loss, tuple(args.ce_weight), args.lambda_dice, args.lambda_ce,
                         args.lambda_focal, args.focal_gamma, args.focal_alpha),
         extra_model_options=tuple(dict(args.model_option or ()).items()),
@@ -109,7 +110,8 @@ def training_step(config, model, inputs, labels, device):
     Args:
         config (RunConfig): the settings.
         model (torch.nn.Module): the model.
-        inputs (torch.Tensor): input of shape (B, C, T, H, W).
+        inputs (torch.Tensor | tuple[torch.Tensor, torch.Tensor]): input of shape
+            (B, C, T, H, W), or (data, static) for a model with a TESSERA stem.
         labels (torch.Tensor): one-hot targets of shape (B, 2, H, W).
         device (torch.device): where it runs.
 
@@ -148,7 +150,14 @@ def check_model(args):
 
     # Random inputs (B, C, T, H, W) and random labels with ~2% fire pixels, one-hot
     # as (B, 2, H, W) like real targets: enough to exercise shapes and the loss.
-    inputs = torch.randn(args.batch, channels, args.ts, args.size, args.size, device=device)
+    cells = config.tessera_cells
+    if cells > 1:
+        # A finer TESSERA map goes beside the 43 channels, to the model's stem.
+        side = args.size * cells
+        inputs = (torch.randn(args.batch, BASE_MODEL_CHANNELS, args.ts, args.size, args.size, device=device),
+                  torch.randn(args.batch, TESSERA_CHANNELS, side, side, device=device).half())
+    else:
+        inputs = torch.randn(args.batch, channels, args.ts, args.size, args.size, device=device)
     fire = torch.rand(args.batch, args.size, args.size, device=device) > 0.98
     labels = torch.stack((~fire, fire), dim=1).float()
 
@@ -180,13 +189,7 @@ def datasets(config):
         tuple[FireDataset, FireDataset]: (train, val).
     """
     data = FireData(config, config.data_root, config.tessera_root)
-    stats, maps = None, None
-    if config.tessera:
-        from firepred.data.archive import find_fire_sources
-        from firepred.data.tessera_archive import compute_tessera_stats, load_tessera_maps
-
-        maps = load_tessera_maps(config.tessera_root, find_fire_sources(config.data_root / "train"))
-        stats = compute_tessera_stats(maps.values(), min_coverage=config.tessera_min_coverage)
+    stats, maps = data.training_tessera()
     return (data.dataset("train", augment=True, tessera_stats=stats, tessera_maps=maps),
             data.dataset("val", augment=False, tessera_stats=stats))
 
@@ -270,7 +273,7 @@ def check_timing(args):
 # (training/flags.py), with defaults where training requires a value.
 CHECK_FLAGS = ("model", "num_heads", "feature_size", "learning_rate", "loss.name", "loss.ce_weight",
                "loss.lambda_dice", "loss.lambda_ce", "loss.lambda_focal", "loss.focal_gamma", "loss.focal_alpha",
-               "extra_model_options", "device", "seed")
+               "extra_model_options", "device", "seed", "tessera_cells_per_pixel")
 
 
 def add_model_arguments(parser):

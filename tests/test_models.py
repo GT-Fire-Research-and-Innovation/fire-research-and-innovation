@@ -7,7 +7,14 @@ import pytest
 import torch
 from torch import nn
 
-from firepred.models.registry import ModelSpec, available_models, build_model, forward_model, parse_model_option
+from firepred.models.registry import (
+    ModelSpec,
+    available_models,
+    build_model,
+    forward_model,
+    model_takes_tessera,
+    parse_model_option,
+)
 
 TINY = dict(in_channels=5, num_classes=2, ts_length=2, num_heads=3, feature_size=6, image_size=(32, 32))
 # Broken since the original TS-SatFire code; see docs/KNOWN_ISSUES.md.
@@ -20,8 +27,10 @@ def test_model_contract(name):
     if name in KNOWN_BROKEN:
         pytest.xfail(f"{name} cannot be built (docs/KNOWN_ISSUES.md)")
     torch.manual_seed(0)
-    model = build_model(name, ModelSpec(**TINY))
-    x = torch.randn(2, TINY["in_channels"], TINY["ts_length"], 32, 32)
+    # A model that reads TESSERA itself gets the map appended to every day, as batch_inputs does.
+    spec = dict(TINY, in_channels=TINY["in_channels"] + 129) if model_takes_tessera(name) else TINY
+    model = build_model(name, ModelSpec(**spec))
+    x = torch.randn(2, spec["in_channels"], TINY["ts_length"], 32, 32)
     logits = forward_model(model, x)
     assert logits.shape == (2, TINY["num_classes"], 32, 32)
     logits.mean().backward()
@@ -85,3 +94,53 @@ def test_swin_v2_attention_option():
     assert out.shape == (1, 2, 32, 32)
     with pytest.raises(ValueError, match="v1 or v2"):
         build_model("swinunetr3d", spec(attn_version="ar"))
+
+
+def test_tessera_context_model_starts_as_plain_swinunetr3d():
+    """swinunetr3d_tessera with zero FiLM gives exactly a 43-channel SwinUNETR-3D's output, for any k."""
+    from firepred.models.zoo.swinunetr3d_tessera import TesseraContextSwinUNETR
+
+    base = dict(num_classes=2, ts_length=2, num_heads=3, feature_size=6, image_size=(32, 32))
+    torch.manual_seed(0)
+    plain = build_model("swinunetr3d", ModelSpec(in_channels=5, **base)).eval()
+    data = torch.randn(1, 5, 2, 32, 32)
+    for cells in (1, 2, 5):
+        model = build_model("swinunetr3d_tessera", ModelSpec(in_channels=5 + 129, tessera_cells_per_pixel=cells, **base))
+        assert isinstance(model, TesseraContextSwinUNETR)  # no generic stem around it
+        missing, unexpected = model.load_state_dict(plain.state_dict(), strict=False)
+        assert not unexpected and all(key.startswith(("context.", "film.")) for key in missing)
+        model.eval()
+        static = torch.randn(1, 129, 32 * cells, 32 * cells)
+        with torch.no_grad():
+            expected = plain(data)
+            if cells == 1:  # one tensor, map copied onto every day (batch_inputs)
+                got = model(torch.cat((data, static.unsqueeze(2).expand(-1, -1, 2, -1, -1)), dim=1))
+            else:
+                got = model(data, static.half())
+        assert torch.allclose(got, expected, atol=1e-6)
+
+
+def test_tessera_context_learns_from_the_map():
+    """After one Adam step the FiLM layers move, so the prediction starts to depend on TESSERA."""
+    base = dict(num_classes=2, ts_length=2, num_heads=3, feature_size=6, image_size=(32, 32))
+    torch.manual_seed(1)
+    model = build_model("swinunetr3d_tessera", ModelSpec(in_channels=134, tessera_cells_per_pixel=4,
+                                                         options={"context_channels": 8}, **base))
+    data, static = torch.randn(2, 5, 2, 32, 32), torch.randn(2, 129, 128, 128)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
+    forward_model(model, (data, static)).mean().backward()
+    assert model.context.patchify[0].weight.grad is None or not model.context.patchify[0].weight.grad.any()
+    optimizer.step()
+    model.eval()
+    with torch.no_grad():
+        a = forward_model(model, (data, static))
+        b = forward_model(model, (data, torch.zeros_like(static)))
+    assert not torch.allclose(a, b)
+    assert len(model.context.reduce) == 1  # k = 4: two halvings
+
+
+def test_tessera_context_model_needs_tessera():
+    """swinunetr3d_tessera refuses a spec without TESSERA channels."""
+    with pytest.raises(ValueError, match="--tessera"):
+        build_model("swinunetr3d_tessera", ModelSpec(in_channels=43, num_classes=2, ts_length=2, num_heads=3,
+                                                     feature_size=6, image_size=(32, 32)))

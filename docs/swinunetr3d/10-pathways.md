@@ -133,9 +133,13 @@ cross-attention at each scale.
 **Risk.** Annual 10 m embeddings vs daily 375 m dynamics; 172 input channels
 risks WSTS's "more channels can hurt" finding [12]. Run the matched no-TESSERA
 baseline on the same fires (the notebook's `TESSERA_INPUTS = False`).
-**Where.** `zoo/swinunetr3d_static.py`: a `static` branch and the
-Swin encoder from `blocks/swin_encoder.py`. The data side already returns
-`static` separately (`data/fire_dataset.py`).
+**Where.** Implemented as
+[`firepred/models/zoo/swinunetr3d_tessera.py`](../../firepred/models/zoo/swinunetr3d_tessera.py)
+(`-m swinunetr3d_tessera --tessera`): a small 2-D CNN
+(`blocks/tessera_context.py`) encodes TESSERA once and FiLM conditions every
+skip connection and the bottleneck; it starts identical to a 43-channel
+SwinUNETR-3D. With `--tessera-cells-per-pixel 5` the branch also learns from
+5 x 5 cells of 75 m inside each VIIRS pixel instead of their average.
 
 ### 3b. More data
 WildfireSpreadTS covers 607 fires (WSTS+ 1,005) at the same 375 m resolution [12, 13],

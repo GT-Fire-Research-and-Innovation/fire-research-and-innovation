@@ -28,6 +28,7 @@ from firepred.config.dataset import (
     SPLITS,
     SRC_REPO,
     STRIP_ROWS,
+    TESSERA_CELLS_PER_PIXEL,
     TESSERA_REPO,
     TESSERA_UPLOAD_BATCH,
     TESSERA_ZIP,
@@ -302,7 +303,8 @@ def excluded_fires(token=None, src_repo=SRC_REPO, roi_dir=ROI_CACHE_DIR):
     return tessera_excluded_npz(read_roi(hub.download_roi_csvs(src_repo, token, roi_dir)))
 
 
-def build_one(gt, fire_id, day_files, start_year, src_repo, token, staging_dir, strip_rows, temp_root):
+def build_one(gt, fire_id, day_files, start_year, src_repo, token, staging_dir, strip_rows, temp_root,
+              cells_per_pixel=TESSERA_CELLS_PER_PIXEL):
     """Download one fire's two day images and build its TESSERA file.
 
     The images go into a temporary folder that is deleted afterwards. The file
@@ -318,6 +320,7 @@ def build_one(gt, fire_id, day_files, start_year, src_repo, token, staging_dir, 
         staging_dir (str | Path): where finished files wait for upload.
         strip_rows (int): TESSERA rows read per request.
         temp_root (str | Path): where the temporary download folder is made.
+        cells_per_pixel (int): TESSERA cells along each side of one VIIRS pixel.
 
     Returns:
         FireTessera: the written file and its coverage.
@@ -328,7 +331,8 @@ def build_one(gt, fire_id, day_files, start_year, src_repo, token, staging_dir, 
             for remote_name in day_files
         }
         return build_fire_tessera(
-            gt, fire_id, day_paths, start_year, Path(staging_dir) / f"p{fire_id}.npz", strip_rows=strip_rows
+            gt, fire_id, day_paths, start_year, Path(staging_dir) / f"p{fire_id}.npz", strip_rows=strip_rows,
+            cells_per_pixel=cells_per_pixel,
         )
 
 
@@ -344,6 +348,7 @@ def process_tessera(
     store_url=None,
     strip_rows=STRIP_ROWS,
     only_fires=None,
+    cells_per_pixel=TESSERA_CELLS_PER_PIXEL,
 ):
     """Build a TESSERA file for every fire of the chosen splits and upload them.
 
@@ -364,6 +369,10 @@ def process_tessera(
         store_url (str | None): another TESSERA store (default: geotessera's).
         strip_rows (int): TESSERA rows read per request.
         only_fires (list[str] | None): restrict to these ids (a timing test).
+        cells_per_pixel (int): TESSERA cells along each side of one VIIRS pixel:
+            1 (default) averages each VIIRS pixel into one vector, 5 keeps 5 x 5
+            cells of 75 m. Use a separate tessera_repo per value, because fires
+            already in the repo are skipped whatever k they were built with.
 
     Returns:
         TesseraBuildReport: what was built, skipped and uploaded.
@@ -373,7 +382,8 @@ def process_tessera(
     hub.ensure_repo(tessera_repo, token, private=True)  # a new repo is created private
     roi = read_roi(hub.download_roi_csvs(src_repo, token, roi_dir))
     gt = GeoTesseraZarr() if store_url is None else GeoTesseraZarr(store_url)
-    print(f"TESSERA store {gt.url}, years {gt.years}")
+    print(f"TESSERA store {gt.url}, years {gt.years}"
+          + (f", {cells_per_pixel} x {cells_per_pixel} cells per VIIRS pixel" if cells_per_pixel > 1 else ""))
     plan = plan_tessera(roi, splits, hub.list_fire_files(src_repo, token), set(hub.list_repo_files(tessera_repo, token)),
                         gt.years, overwrite, only_fires)
     print(plan.summary())
@@ -390,7 +400,7 @@ def process_tessera(
         started = time.time()
         try:
             result = build_one(gt, job.fire_id, job.day_files, job.start_year, src_repo, token,
-                               staging_dir, strip_rows, temp_root)
+                               staging_dir, strip_rows, temp_root, cells_per_pixel)
             print(f"{job.fire_id}: {result.summary()}; built in {(time.time() - started) / 60:.1f} min")
             built.append(job.fire_id)
             staged += 1

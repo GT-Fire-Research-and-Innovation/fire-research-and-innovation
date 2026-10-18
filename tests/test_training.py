@@ -200,6 +200,7 @@ def test_test_mode_builds_no_trainer(data_root, tmp_path, monkeypatch):
     monkeypatch.setitem(__import__("sys").modules, "wandb", fake_wandb)
     monkeypatch.setenv("FAKE_WANDB_DIR", str(tmp_path))
     monkeypatch.chdir(tmp_path)
+    fake_wandb.CALLS.clear()  # calls from earlier runs in this process are not this run's
 
     def refuse(*args, **kwargs):
         """Stands in for Trainer: building one in test mode is a bug."""

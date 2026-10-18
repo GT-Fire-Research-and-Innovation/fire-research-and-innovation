@@ -56,6 +56,18 @@
         "cli"
       ],
       "reason": "one source for flags: check reuses the training flags (shared help, metavar and --device choices); the dataset CLI's dests are the master parameters and its defaults come from the master signatures"
+    },
+    {
+      "groups": [
+        "cli"
+      ],
+      "reason": "new --tessera-cells-per-pixel (train, check) and --cells-per-pixel (dataset tessera) flags, default 1"
+    },
+    {
+      "groups": [
+        "cli"
+      ],
+      "reason": "check help lists the new swinunetr3d_tessera model"
     }
   ]
 }

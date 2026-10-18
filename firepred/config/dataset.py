@@ -132,6 +132,10 @@ BASE_MODEL_CHANNELS = N_STORED_CHANNELS - 1 + N_LANDCOVER_CLASSES  # 43
 # TESSERA: 128 embedding bands per pixel plus one validity mask. [ours]
 TESSERA_BANDS = 128
 TESSERA_CHANNELS = TESSERA_BANDS + 1
+# TESSERA cells along each side of one 375 m VIIRS pixel. 1 averages every 10 m
+# pixel inside the VIIRS pixel into one vector; k > 1 keeps k x k finer cells
+# (5 -> 75 m cells), which a learned stem compresses back to the VIIRS grid. [ours]
+TESSERA_CELLS_PER_PIXEL = 1
 
 
 def model_input_channels(use_tessera):

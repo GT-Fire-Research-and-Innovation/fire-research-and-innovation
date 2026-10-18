@@ -26,7 +26,7 @@ from torch import nn
 from firepred.config.dataset import N_STORED_CHANNELS
 from firepred.data.archive import find_fire_sources, unzip_data_root
 from firepred.data.fire_dataset import FireDataset, make_dataloader, validate_dataset_output
-from firepred.data.tessera_archive import compute_tessera_stats, load_tessera_maps
+from firepred.data.tessera_archive import compute_tessera_stats, iter_tessera_maps, load_tessera_maps
 from firepred.models.registry import build_model
 from firepred.training.accelerator import Device
 from firepred.training.checkpoints import CheckpointLoader, CheckpointStore
@@ -131,6 +131,7 @@ class FireData:
             tessera_dir=self.tessera_dir,
             tessera_stats=tessera_stats,
             tessera_maps=tessera_maps,
+            cells_per_pixel=self.config.tessera_cells,
         )
 
     def loader(self, dataset, shuffle, seed_offset):
@@ -159,19 +160,41 @@ class FireData:
             generator=torch.Generator().manual_seed(self.config.seed + seed_offset),
         )
 
+    def training_tessera(self):
+        """Read the training fires' TESSERA and compute its statistics.
+
+        The statistics come from the training fires only, so nothing leaks from
+        held-out fires. With one cell per pixel the maps are read once and kept
+        for the training dataset; with k > 1 cells they are streamed one fire at
+        a time and not kept (the dataset reads them per window).
+
+        Returns:
+            tuple[dict | None, dict | None]: (statistics, kept maps); (None, None)
+            without TESSERA.
+        """
+        if self.tessera_dir is None:
+            return None, None
+        cells = self.config.tessera_cells
+        train_fires = find_fire_sources(self.root / "train")
+        maps = None
+        if cells > 1:
+            maps_for_stats = iter_tessera_maps(self.tessera_dir, train_fires, cells)
+        else:
+            maps = load_tessera_maps(self.tessera_dir, train_fires, cells)
+            maps_for_stats = maps.values()
+        return compute_tessera_stats(maps_for_stats, min_coverage=self.config.tessera_min_coverage), maps
+
     def training(self):
         """Build the training and validation data.
 
         TESSERA statistics come from the training fires only, so nothing leaks
-        from held-out fires. The validation set is shape-checked before training.
+        from held-out fires (training_tessera). The validation set is
+        shape-checked before training.
 
         Returns:
             TrainingData: the two loaders and the TESSERA statistics.
         """
-        stats, maps = None, None
-        if self.tessera_dir is not None:
-            maps = load_tessera_maps(self.tessera_dir, find_fire_sources(self.root / "train"))
-            stats = compute_tessera_stats(maps.values(), min_coverage=self.config.tessera_min_coverage)
+        stats, maps = self.training_tessera()
         train = self.dataset("train", augment=True, tessera_stats=stats, tessera_maps=maps)
         val = self.dataset("val", augment=False, tessera_stats=stats)
         # Validation for the shape check, so no random augmentation is drawn.

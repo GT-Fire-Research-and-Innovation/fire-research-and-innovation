@@ -258,8 +258,9 @@ class CheckpointLoader:
     def load(self, checkpoint_path, trusted=False):
         """Load a checkpoint and refuse it if it was trained with other inputs than this run.
 
-        A TESSERA mismatch, a different input width or (SwinUNETR-3D) a different
-        temporal-merging setting would silently give wrong results. Loading follows
+        A TESSERA mismatch (on or off, or another number of cells per pixel), a
+        different input width or (SwinUNETR-3D) a different temporal-merging setting
+        would silently give wrong results. Loading follows
         read's safety rules.
 
         Args:
@@ -288,6 +289,12 @@ class CheckpointLoader:
             raise ValueError(
                 f"{checkpoint_path} was trained on {trained_channels} input channels; this run has "
                 f"{config.input_channels}"
+            )
+        trained_cells = checkpoint.get("tessera_cells_per_pixel", 1)  # older checkpoints: one cell per pixel
+        if config.tessera and trained_cells != config.tessera_cells:
+            raise ValueError(
+                f"{checkpoint_path} was trained with {trained_cells} TESSERA cells per pixel; "
+                f"use --tessera-cells-per-pixel {trained_cells}"
             )
         # Checkpoints from before this flag used the released code's merging.
         trained_temporal_downsample = bool(checkpoint.get("swin_temporal_downsample", True))

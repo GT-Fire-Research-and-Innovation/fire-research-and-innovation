@@ -22,6 +22,37 @@ from firepred.config.dataset import CROP_SIZE, TESSERA_BANDS, TESSERA_FORMAT_VER
 from firepred.data.archive import fire_name
 
 
+# ----- Grid size ----- #
+
+
+def cells_per_pixel_of(shape, expected=None):
+    """Find how many TESSERA cells per VIIRS pixel side a stored map has.
+
+    A map holds k x k cells for every one of the 256 x 256 VIIRS pixels, so its
+    side is 256 k. k = 1 is one averaged vector per VIIRS pixel. A map whose
+    side is not a whole multiple of 256 is refused.
+
+    Args:
+        shape (tuple[int, ...]): the embedding shape (128, S, S) or coverage shape (S, S).
+        expected (int | None): the k the caller needs, or None for any.
+
+    Returns:
+        int: k.
+
+    Raises:
+        ValueError: if the shape is not square, not a multiple of 256, or not the expected k.
+    """
+    side = shape[-1]
+    if len(shape) < 2 or shape[-2] != side or side % CROP_SIZE or side == 0:
+        raise ValueError(f"TESSERA map shape {tuple(shape)} is not a square multiple of {CROP_SIZE}")
+    if len(shape) == 3 and shape[0] != TESSERA_BANDS:
+        raise ValueError(f"TESSERA map shape {tuple(shape)} does not have {TESSERA_BANDS} bands")
+    cells = side // CROP_SIZE
+    if expected is not None and cells != expected:
+        raise ValueError(f"TESSERA map has {cells} cells per VIIRS pixel; this run needs {expected}")
+    return cells
+
+
 # ----- Writing ----- #
 
 
@@ -34,8 +65,9 @@ def save_tessera_npz(save_path, embedding, coverage, metadata):
 
     Args:
         save_path (str | Path): where to write tessera/p<id>.npz.
-        embedding (np.ndarray): (128, 256, 256) float32, NaN where there is no data.
-        coverage (np.ndarray): (256, 256), the fraction of 10 m pixels with data.
+        embedding (np.ndarray): (128, 256 k, 256 k) float32, NaN where there is no data
+            (k TESSERA cells per VIIRS pixel side; 1 by default).
+        coverage (np.ndarray): (256 k, 256 k), the fraction of 10 m pixels with data.
         metadata (dict): extra members (fire id, years, grid, versions).
 
     Returns:
@@ -45,9 +77,8 @@ def save_tessera_npz(save_path, embedding, coverage, metadata):
         ValueError: on a wrong shape or a value too large for float16.
         RuntimeError: if the written file does not read back correctly.
     """
-    if embedding.shape != (TESSERA_BANDS, CROP_SIZE, CROP_SIZE):
-        raise ValueError(f"Unexpected embedding shape {embedding.shape}")
-    if coverage.shape != (CROP_SIZE, CROP_SIZE):
+    cells = cells_per_pixel_of(embedding.shape)
+    if coverage.shape != embedding.shape[1:]:
         raise ValueError(f"Unexpected coverage shape {coverage.shape}")
 
     # float16 halves the file size; TESSERA values are small enough not to overflow.
@@ -65,7 +96,7 @@ def save_tessera_npz(save_path, embedding, coverage, metadata):
 
     # Read the file back once to make sure it is complete.
     with np.load(save_path, allow_pickle=False) as archive:
-        if archive["embedding"].shape != (TESSERA_BANDS, CROP_SIZE, CROP_SIZE):
+        if archive["embedding"].shape != (TESSERA_BANDS, CROP_SIZE * cells, CROP_SIZE * cells):
             raise RuntimeError(f"Failed to verify {save_path}")
     return Path(save_path)
 
@@ -73,7 +104,7 @@ def save_tessera_npz(save_path, embedding, coverage, metadata):
 # ----- Reading ----- #
 
 
-def read_tessera(path):
+def read_tessera(path, cells_per_pixel=None):
     """Read one fire's TESSERA embedding and coverage.
 
     The arrays are marked read-only, because one fire's map is shared by all of
@@ -81,40 +112,40 @@ def read_tessera(path):
 
     Args:
         path (str | Path): a tessera/p<id>.npz file.
+        cells_per_pixel (int | None): the k the caller needs, or None for any.
 
     Returns:
-        tuple[np.ndarray, np.ndarray]: (embedding (128, 256, 256) float16,
-        coverage (256, 256) float16).
+        tuple[np.ndarray, np.ndarray]: (embedding (128, 256 k, 256 k) float16,
+        coverage (256 k, 256 k) float16).
 
     Raises:
-        ValueError: if the embedding has the wrong shape.
+        ValueError: if the embedding has the wrong shape or another k.
     """
     path = Path(path)
     with np.load(path, allow_pickle=False) as archive:
         embedding = archive["embedding"]
         coverage = archive["coverage"]
-    if embedding.shape != (TESSERA_BANDS, CROP_SIZE, CROP_SIZE):
-        raise ValueError(
-            f"{path}: embedding has shape {embedding.shape}; "
-            f"expected ({TESSERA_BANDS}, {CROP_SIZE}, {CROP_SIZE})"
-        )
+    try:
+        cells_per_pixel_of(embedding.shape, cells_per_pixel)
+    except ValueError as error:
+        raise ValueError(f"{path}: embedding has shape {embedding.shape}; {error}") from None
     embedding.flags.writeable = False
     coverage.flags.writeable = False
     return embedding, coverage
 
 
-def load_tessera_maps(tessera_dir, fire_sources):
-    """Read the TESSERA file of every fire in a list, once each.
+def tessera_paths(tessera_dir, fire_sources):
+    """Find the TESSERA file of every fire in a list, and refuse if any is missing.
 
-    Pass the result both to compute_tessera_stats and to FireDataset, so neither
-    reads the files again (about 16 MiB per fire). Every fire must have a file.
+    A missing file fails here, before training, not at some later window.
+    Nothing is read yet.
 
     Args:
         tessera_dir (str | Path): the folder of tessera/p<id>.npz files.
         fire_sources (list[Path]): the fires' archives or folders.
 
     Returns:
-        dict[str, tuple[np.ndarray, np.ndarray]]: {"p<id>": (embedding, coverage)}.
+        dict[str, Path]: {"p<id>": its TESSERA file}, in fire order.
 
     Raises:
         RuntimeError: if any fire has no TESSERA file.
@@ -124,7 +155,51 @@ def load_tessera_maps(tessera_dir, fire_sources):
     missing = [f"{name}.npz" for name in names if not (tessera_dir / f"{name}.npz").exists()]
     if missing:
         raise RuntimeError(f"{len(missing)} fires have no TESSERA file in {tessera_dir}: {missing[:10]}")
-    return {name: read_tessera(tessera_dir / f"{name}.npz") for name in names}
+    return {name: tessera_dir / f"{name}.npz" for name in names}
+
+
+def load_tessera_maps(tessera_dir, fire_sources, cells_per_pixel=None):
+    """Read the TESSERA file of every fire in a list, once each.
+
+    Pass the result both to compute_tessera_stats and to FireDataset, so neither
+    reads the files again (about 16 MiB per fire at one cell per VIIRS pixel).
+    Every fire must have a file.
+
+    Args:
+        tessera_dir (str | Path): the folder of tessera/p<id>.npz files.
+        fire_sources (list[Path]): the fires' archives or folders.
+        cells_per_pixel (int | None): the k every map must have, or None for any.
+
+    Returns:
+        dict[str, tuple[np.ndarray, np.ndarray]]: {"p<id>": (embedding, coverage)}.
+
+    Raises:
+        RuntimeError: if any fire has no TESSERA file.
+    """
+    return {name: read_tessera(path, cells_per_pixel)
+            for name, path in tessera_paths(tessera_dir, fire_sources).items()}
+
+
+def iter_tessera_maps(tessera_dir, fire_sources, cells_per_pixel=None):
+    """Read the fires' TESSERA files one at a time, for statistics over large maps.
+
+    With k x k cells per VIIRS pixel a map is k² times larger (about 400 MiB per
+    fire at k = 5), so they cannot all sit in memory. Missing files are found
+    at once; each map is read only when the iterator reaches it.
+
+    Args:
+        tessera_dir (str | Path): the folder of tessera/p<id>.npz files.
+        fire_sources (list[Path]): the fires' archives or folders.
+        cells_per_pixel (int | None): the k every map must have, or None for any.
+
+    Returns:
+        Iterator[tuple[np.ndarray, np.ndarray]]: (embedding, coverage) of one fire at a time.
+
+    Raises:
+        RuntimeError: if any fire has no TESSERA file.
+    """
+    paths = tessera_paths(tessera_dir, fire_sources)
+    return (read_tessera(path, cells_per_pixel) for path in paths.values())
 
 
 def compute_tessera_stats(tessera_maps, min_coverage=0.5):
@@ -151,9 +226,9 @@ def compute_tessera_stats(tessera_maps, min_coverage=0.5):
     total_sq = np.zeros(TESSERA_BANDS, dtype=np.float64)
     count = 0
     for embedding, coverage in tessera_maps:
-        embedding = embedding.astype(np.float64)
         valid = coverage.astype(np.float32) >= min_coverage
-        values = embedding[:, valid]
+        # Select first, then widen: only the kept pixels are copied to float64.
+        values = embedding[:, valid].astype(np.float64)
         total += values.sum(axis=1)
         total_sq += (values ** 2).sum(axis=1)
         count += values.shape[1]

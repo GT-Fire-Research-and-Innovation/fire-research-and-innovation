@@ -166,6 +166,10 @@ FLAGS = (
         "action": "store_true", "help": "Also store each best checkpoint as a versioned W&B model Artifact"}),
     Flag(("--tessera-min-coverage",), "tessera_min_coverage", {
         "type": float, "help": "TESSERA pixels below this coverage are zeroed and masked"}),
+    Flag(("--tessera-cells-per-pixel",), "tessera_cells_per_pixel", {
+        "type": int, "help": "NEW, not in the paper: TESSERA cells per VIIRS pixel side in the TESSERA files "
+        "(built with the same value). 1 = one averaged vector per pixel; k > 1 = k x k cells, compressed by a "
+        "learned k x k stride-k stem and read per window"}),
     Flag(("--model-option",), "extra_model_options", {
         "action": "append", "type": parse_model_option, "metavar": "KEY=VALUE",
         "help": "Model-specific setting passed to the model builder as ModelSpec.options[KEY]; repeatable. VALUE is "

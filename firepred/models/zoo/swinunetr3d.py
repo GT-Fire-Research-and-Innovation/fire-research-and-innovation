@@ -309,26 +309,25 @@ class SwinUNETR(nn.Module):
         return logits
 
 
-@register_model("swinunetr3d")
-def build(spec):
-    """Build SwinUNETR-3D with the paper's settings for a ModelSpec.
+def swinunetr_settings(spec):
+    """Give SwinUNETR-3D's constructor settings for a ModelSpec, except the input channels.
 
     Patch (1, 2, 2) splits only space, and the window (T, 4, 4) covers every day.
     swin_temporal_downsample False follows the paper ("we do not use
     downsampling in the temporal dimension"); True is the released code. The
-    option attn_version picks Swin V1 (default) or V2 attention.
+    option attn_version picks Swin V1 (default) or V2 attention. Variants that
+    build on SwinUNETR-3D use the same settings.
 
     Args:
         spec (ModelSpec): what the model is built for.
 
     Returns:
-        SwinUNETR: the new model.
+        dict: keyword arguments for SwinUNETR, without in_channels.
     """
-    return SwinUNETR(
+    return dict(
         image_size=spec.input_size,
         patch_size=PATCH_SIZE,
         window_size=(spec.ts_length, *WINDOW_HW),
-        in_channels=spec.in_channels,
         out_channels=spec.num_classes,
         depths=DEPTHS,
         num_heads=(spec.num_heads, spec.num_heads, spec.num_heads, spec.num_heads),
@@ -344,3 +343,19 @@ def build(spec):
         spatial_dims=3,
         temporal_downsample=spec.options.get("swin_temporal_downsample", False),
     )
+
+
+@register_model("swinunetr3d")
+def build(spec):
+    """Build SwinUNETR-3D with the paper's settings for a ModelSpec.
+
+    The settings come from swinunetr_settings. The input channels are the
+    spec's (43, or 172 with TESSERA appended).
+
+    Args:
+        spec (ModelSpec): what the model is built for.
+
+    Returns:
+        SwinUNETR: the new model.
+    """
+    return SwinUNETR(in_channels=spec.in_channels, **swinunetr_settings(spec))

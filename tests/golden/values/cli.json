@@ -173,6 +173,10 @@ false
 0.5
 ],
 [
+"tessera_cells_per_pixel",
+1
+],
+[
 "model_option",
 null
 ],
@@ -1031,6 +1035,25 @@ false
 [
 "tuple",
 [
+"--tessera-cells-per-pixel"
+]
+],
+"tessera_cells_per_pixel",
+1,
+"NEW, not in the paper: TESSERA cells per VIIRS pixel side in the TESSERA files (built with the same value). 1 = one averaged vector per pixel; k > 1 = k x k cells, compressed by a learned k x k stride-k stem and read per window",
+null,
+null,
+"int",
+null,
+false
+]
+],
+[
+"tuple",
+[
+[
+"tuple",
+[
 "--model-option"
 ]
 ],
@@ -1198,6 +1221,10 @@ false
 [
 "only_fires",
 null
+],
+[
+"cells_per_pixel",
+1
 ]
 ]
 ],
@@ -2034,6 +2061,25 @@ null,
 null,
 false
 ]
+],
+[
+"tuple",
+[
+[
+"tuple",
+[
+"--cells-per-pixel"
+]
+],
+"cells_per_pixel",
+1,
+"TESSERA cells per VIIRS pixel side: 1 averages each pixel, 5 keeps 5x5 cells of 75 m (use a separate --tessera-repo per value)",
+null,
+null,
+"int",
+null,
+false
+]
 ]
 ]
 ]
@@ -2843,7 +2889,7 @@ false
 ],
 "m",
 "swinunetr3d",
-"Registered model: attunet, swinunetr3d, swinunetr3d_tpool, unet3d, unetr3d",
+"Registered model: attunet, swinunetr3d, swinunetr3d_tessera, swinunetr3d_tpool, unet3d, unetr3d",
 null,
 null,
 "None",
@@ -3118,6 +3164,25 @@ false
 "seed",
 42,
 null,
+null,
+null,
+"int",
+null,
+false
+]
+],
+[
+"tuple",
+[
+[
+"tuple",
+[
+"--tessera-cells-per-pixel"
+]
+],
+"tessera_cells_per_pixel",
+1,
+"NEW, not in the paper: TESSERA cells per VIIRS pixel side in the TESSERA files (built with the same value). 1 = one averaged vector per pixel; k > 1 = k x k cells, compressed by a learned k x k stride-k stem and read per window",
 null,
 null,
 "int",
@@ -3245,7 +3310,7 @@ false
 ],
 "m",
 "swinunetr3d",
-"Registered model: attunet, swinunetr3d, swinunetr3d_tpool, unet3d, unetr3d",
+"Registered model: attunet, swinunetr3d, swinunetr3d_tessera, swinunetr3d_tpool, unet3d, unetr3d",
 null,
 null,
 "None",
@@ -3520,6 +3585,25 @@ false
 "seed",
 42,
 null,
+null,
+null,
+"int",
+null,
+false
+]
+],
+[
+"tuple",
+[
+[
+"tuple",
+[
+"--tessera-cells-per-pixel"
+]
+],
+"tessera_cells_per_pixel",
+1,
+"NEW, not in the paper: TESSERA cells per VIIRS pixel side in the TESSERA files (built with the same value). 1 = one averaged vector per pixel; k > 1 = k x k cells, compressed by a learned k x k stride-k stem and read per window",
 null,
 null,
 "int",

@@ -18,6 +18,11 @@ data flows through them:
     loaders      make_dataloader, validate_dataset_output, and batch_inputs,
                  which repeats the static map across the T days on the GPU.
 
+With k x k TESSERA cells per VIIRS pixel (cells_per_pixel=k > 1) "static" is
+(129, 256 k, 256 k) float16 and is read from its file for every window (a
+k = 5 map is about 400 MiB, too large to keep every fire in memory); the
+model's TESSERA stem compresses it to the VIIRS grid.
+
 TESSERA files are built by data/tessera.py: tessera/p<id>.npz with a
 (128, 256, 256) float16 `embedding` and a (256, 256) `coverage` (fraction of
 10 m pixels with data). [ours]
@@ -38,10 +43,11 @@ from firepred.config.dataset import (
     NORMALIZATION_MEAN,
     NORMALIZATION_STD,
     TESSERA_BANDS,
+    TESSERA_CELLS_PER_PIXEL,
     TESSERA_CHANNELS,
 )
 from firepred.data.archive import find_fire_sources, fire_name, index_fires, open_fire
-from firepred.data.tessera_archive import load_tessera_maps, static_map
+from firepred.data.tessera_archive import load_tessera_maps, read_tessera, static_map, tessera_paths
 from firepred.data.transforms import augment, landcover_one_hot_matrix, normalize, preprocess
 
 
@@ -213,6 +219,8 @@ class FireDataset(Dataset):
         tessera_dir=None,
         tessera_stats=None,
         tessera_maps=None,
+        cells_per_pixel=TESSERA_CELLS_PER_PIXEL,
+        lazy_tessera=None,
     ):
         """Find a split's fires, read their TESSERA maps if asked, and index every window.
 
@@ -231,6 +239,10 @@ class FireDataset(Dataset):
             tessera_stats (dict | None): training statistics (compute_tessera_stats).
             tessera_maps (dict | None): this split's maps (load_tessera_maps), when the
                 caller already read them; otherwise they are read from tessera_dir.
+            cells_per_pixel (int): TESSERA cells per VIIRS pixel side every map must have.
+            lazy_tessera (bool | None): read each window's map from its file instead
+                of keeping every fire's map in memory. Default: only when
+                cells_per_pixel > 1.
 
         Raises:
             RuntimeError: if the split has no fires or windows, or a TESSERA file is missing.
@@ -246,15 +258,23 @@ class FireDataset(Dataset):
         # [ours] optional TESSERA mode: each p<id>.npz pairs with <tessera_dir>/p<id>.npz.
         # Every fire's map is read here, once, rather than in every __getitem__;
         # DataLoader workers forked later (Linux, including Kaggle) share the arrays.
+        # With large maps (k > 1 cells per pixel) only the file paths are kept and
+        # each window reads its fire's map (lazy_tessera).
         self.tessera_dir = Path(tessera_dir) if tessera_dir is not None else None
         self.tessera_stats = tessera_stats
+        self.cells_per_pixel = cells_per_pixel
+        self.lazy_tessera = cells_per_pixel > 1 if lazy_tessera is None else lazy_tessera
         self.tessera_maps = {}
+        self.tessera_files = {}
         if self.tessera_dir is not None:
             if tessera_stats is None:
                 raise ValueError("tessera_stats is required with tessera_dir")
-            if tessera_maps is None:
-                tessera_maps = load_tessera_maps(self.tessera_dir, self.npz_files)
-            self.tessera_maps = valid_tessera_maps(tessera_maps, self.npz_files, tessera_stats["min_coverage"])
+            if self.lazy_tessera:
+                self.tessera_files = tessera_paths(self.tessera_dir, self.npz_files)
+            else:
+                if tessera_maps is None:
+                    tessera_maps = load_tessera_maps(self.tessera_dir, self.npz_files, cells_per_pixel)
+                self.tessera_maps = valid_tessera_maps(tessera_maps, self.npz_files, tessera_stats["min_coverage"])
 
         self.n_channel = n_channel
         self.ts_length = ts_length
@@ -295,7 +315,8 @@ class FireDataset(Dataset):
 
         The window is read from its fire archive, then prepared (standardized,
         augmented in training, encoded). In TESSERA mode the fire's map is
-        normalized and added; it is returned once as (129, H, W), and the trainer
+        normalized and added; it is returned once as (129, H, W) (or, with k cells
+        per pixel, (129, k H, k W) float16 read from its file), and the trainer
         repeats it across the days on the GPU.
 
         Args:
@@ -303,15 +324,39 @@ class FireDataset(Dataset):
 
         Returns:
             dict[str, torch.Tensor]: {"data": (43, T, H, W), "labels": (2, H, W)}, plus
-            "static": (129, H, W) in TESSERA mode.
+            "static": (129, H, W), or (129, k H, k W) float16 when lazy, in TESSERA mode.
         """
         source, window_idx = self.index[idx]
         x, y = read_window(source, window_idx, self.n_channel, self.ts_length, self.target_is_single_day)
         static = None
         if self.tessera_dir is not None:
-            embedding, valid = self.tessera_maps[fire_name(source)]
-            static = torch.from_numpy(static_map(embedding, valid, self.tessera_stats))
-        return prepare_window(x, y, self.one_hot_matrix, static, self.use_augmentations)
+            static = torch.from_numpy(self.static_tessera(fire_name(source)))
+        sample = prepare_window(x, y, self.one_hot_matrix, static, self.use_augmentations)
+        if self.lazy_tessera and "static" in sample:
+            # float16 halves the host memory of a large map (the mask, 0 or 1, stays exact);
+            # it is cast only after augmentation, which needs float32 on the CPU.
+            sample["static"] = sample["static"].half()
+        return sample
+
+    def static_tessera(self, name):
+        """Give one fire's normalized TESSERA map and validity mask.
+
+        Kept maps were read once when the dataset was built. Lazy maps are read
+        from their file now, so only the windows being loaded hold a large
+        (k > 1) map in memory.
+
+        Args:
+            name (str): the fire's name, "p<id>".
+
+        Returns:
+            np.ndarray: (129, k H, k W) float32 (k = 1 for kept maps by default).
+        """
+        if not self.lazy_tessera:
+            embedding, valid = self.tessera_maps[name]
+            return static_map(embedding, valid, self.tessera_stats)
+        embedding, coverage = read_tessera(self.tessera_files[name], self.cells_per_pixel)
+        valid = coverage.astype(np.float32) >= self.tessera_stats["min_coverage"]
+        return static_map(embedding, valid, self.tessera_stats)
 
 
 # ----- Loaders and batches ----- #
@@ -384,6 +429,11 @@ def validate_dataset_output(dataset, expected_model_channels, dataset_name):
     data_shape = tuple(sample["data"].shape)
     label_shape = tuple(sample["labels"].shape)
     static_channels = sample["static"].shape[0] if "static" in sample else 0
+    if static_channels and sample["static"].shape[-1] % data_shape[-1]:
+        raise ValueError(
+            f"{dataset_name} TESSERA map {tuple(sample['static'].shape)} is not a whole multiple "
+            f"of the window size {data_shape[-2:]}"
+        )
 
     if len(data_shape) != 4:
         raise ValueError(
@@ -409,24 +459,29 @@ def validate_dataset_output(dataset, expected_model_channels, dataset_name):
 
 
 def batch_inputs(batch, device):
-    """Assemble a batch into the model's input tensor on the device.
+    """Assemble a batch into the model's input on the device.
 
     The batch's 43 channels are moved to the device. In TESSERA mode the static
     (129, H, W) map is copied onto every day there and appended, giving 172
     channels; doing the copy on the GPU keeps host RAM at one map per sample.
+    A finer map (k cells per pixel) cannot be appended pixel by pixel, so it is
+    returned beside the data for the model's TESSERA stem.
 
     Args:
         batch (dict[str, torch.Tensor]): a DataLoader batch with "data" (and "static").
         device (torch.device | str): where the model runs.
 
     Returns:
-        torch.Tensor: shape (B, C, T, H, W) on device.
+        torch.Tensor | tuple[torch.Tensor, torch.Tensor]: (B, C, T, H, W) on device,
+        or (data (B, 43, T, H, W), static (B, 129, k H, k W)) for a finer map.
     """
     # Move the batch to the GPU; in TESSERA mode, copy the per-fire map onto every
     # day there and append it after the 43 regular channels.
     data = batch["data"].to(device, non_blocking=True)
     if "static" in batch:
         static = batch["static"].to(device, non_blocking=True)
+        if static.shape[-2:] != data.shape[-2:]:
+            return data, static
         static = static.unsqueeze(2).expand(-1, -1, data.shape[2], -1, -1)
         data = torch.cat((data, static), dim=1)
     return data

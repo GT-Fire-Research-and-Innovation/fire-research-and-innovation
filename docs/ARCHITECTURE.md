@@ -149,6 +149,39 @@ tensors). `data/fire_dataset.batch_inputs` appends the TESSERA map on the GPU,
 `models/registry.forward_model` averages the per-day logits over the days,
 and `training/objectives.TrainingLoss` returns the loss and its logged parts.
 
+**Finer TESSERA (k x k cells per VIIRS pixel)** [ours]. By default each
+375 m VIIRS pixel gets one TESSERA vector, the mean of the ~1400 10 m pixels
+inside it. `process_tessera(..., cells_per_pixel=k)` (CLI `tessera
+--cells-per-pixel k`) keeps k x k cells instead: k = 5 gives 75 m cells and a
+(128, 1280, 1280) map per fire, 25 times larger, so use a separate TESSERA repo
+per k. Train with the same `--tessera-cells-per-pixel k`:
+
+- `FireDataset` reads each window's map from its file (`lazy_tessera`) and
+  returns it as `static` (129, 256 k, 256 k) float16; statistics are computed by
+  streaming the training maps one at a time (`iter_tessera_maps`).
+- `batch_inputs` returns `(data, static)` instead of one tensor, because the
+  finer map cannot be appended pixel by pixel.
+- `models/registry.build_model` puts `models/blocks/tessera_stem.TesseraStem`
+  in front of the backbone: a learned k x k, stride-k `Conv2d(128, 128)` turns
+  each VIIRS pixel's k x k cells into one vector, the validity mask becomes the
+  fraction of valid cells, and the backbone still receives 172 channels.
+- Names get `_tessera<k>x<k>`, checkpoints record `tessera_cells_per_pixel`,
+  and a checkpoint is refused by a run with another k.
+
+k = 1 builds no stem and keeps every map in memory, exactly as before.
+
+**`-m swinunetr3d_tessera`** [ours] reads TESSERA as context instead of as
+input channels (`models/zoo/swinunetr3d_tessera.py`). Its own small CNN
+(`models/blocks/tessera_context.TesseraContextEncoder`) learns features while
+shrinking the map by k (one learned conv step per prime factor of k), refines
+them on the 256 x 256 grid and builds a pyramid down to 8 x 8. SwinUNETR-3D runs
+on the 43 VIIRS channels only, and each skip connection and the bottleneck is
+conditioned on the context map of its size by FiLM (features x (1 + scale) +
+shift, the same for every day). The FiLM projections start at zero, so the
+untrained model is exactly a 43-channel SwinUNETR-3D; registered with
+`takes_tessera=True`, it gets no generic stem and works for any k, including 1.
+`--model-option context_channels=N` sets the context width (default 32).
+
 Scoring never disturbs training: evaluation runs in eval mode without
 augmentation, and its loaders use a private random generator, so a run with
 `--test-every 1` ends with exactly the weights of one without it

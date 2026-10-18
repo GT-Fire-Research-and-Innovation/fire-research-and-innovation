@@ -20,7 +20,14 @@ change. A run with the paper's Dice+CE loss and TESSERA inputs, for example:
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from firepred.config.dataset import DEFAULT_DATA_ROOT, DEFAULT_TEST_CSV, TS_INTERVAL, TS_LENGTH, model_input_channels
+from firepred.config.dataset import (
+    DEFAULT_DATA_ROOT,
+    DEFAULT_TEST_CSV,
+    TESSERA_CELLS_PER_PIXEL,
+    TS_INTERVAL,
+    TS_LENGTH,
+    model_input_channels,
+)
 from firepred.config.training import (
     DEFAULT_EPOCHS,
     DEFAULT_LOAD_EPOCH,
@@ -183,6 +190,8 @@ class RunConfig:
         tessera (bool): append TESSERA embeddings.
         tessera_dir (Path | None): the TESSERA folder (default <data_root>/tessera).
         tessera_min_coverage (float): TESSERA pixels below this coverage are masked.
+        tessera_cells_per_pixel (int): TESSERA cells per VIIRS pixel side in the files;
+            above 1 a learned stem compresses them and maps are read per window.
         loss (LossConfig): the training loss.
         schedule (ScheduleConfig): the learning-rate schedule.
         swin_temporal_downsample (bool): SwinUNETR-3D also merges days.
@@ -220,6 +229,7 @@ class RunConfig:
     tessera: bool = False
     tessera_dir: Path = None
     tessera_min_coverage: float = TESSERA_MIN_COVERAGE
+    tessera_cells_per_pixel: int = TESSERA_CELLS_PER_PIXEL
     loss: LossConfig = None            # None -> the paper's loss for `model` (LossConfig.paper_loss)
     schedule: ScheduleConfig = field(default_factory=ScheduleConfig)
     swin_temporal_downsample: bool = False
@@ -245,7 +255,8 @@ class RunConfig:
         names must be known, and -nc must match the data's channel count.
 
         Raises:
-            ValueError: on an unknown loss or schedule, or a wrong -nc.
+            ValueError: on an unknown loss or schedule, a wrong -nc, or fewer than one
+                TESSERA cell per pixel.
         """
         if self.loss is None:
             object.__setattr__(self, "loss", LossConfig(LossConfig.paper_loss(self.model)))
@@ -253,6 +264,8 @@ class RunConfig:
             raise ValueError(f"Unsupported loss: {self.loss.name}")
         if self.schedule.name not in LR_SCHEDULES:
             raise ValueError(f"Unsupported learning-rate schedule: {self.schedule.name}")
+        if int(self.tessera_cells_per_pixel) != self.tessera_cells_per_pixel or self.tessera_cells_per_pixel < 1:
+            raise ValueError(f"--tessera-cells-per-pixel must be 1 or more, got {self.tessera_cells_per_pixel}")
         if self.expected_channels is not None and self.expected_channels != self.input_channels:
             raise ValueError(
                 f"-nc {self.expected_channels} does not match the preprocessing: expected "
@@ -284,6 +297,33 @@ class RunConfig:
         if not self.tessera:
             return None
         return Path(self.tessera_dir).expanduser() if self.tessera_dir is not None else Path(self.data_root) / "tessera"
+
+    @property
+    def tessera_cells(self):
+        """Give the TESSERA cells per VIIRS pixel side this run reads: 1 without TESSERA.
+
+        The model's stem, the dataset's shape check and the names all use this
+        one value. Without --tessera the setting does not apply.
+
+        Returns:
+            int: k.
+        """
+        return self.tessera_cells_per_pixel if self.tessera else 1
+
+    @property
+    def tessera_tag(self):
+        """Give the name part that marks TESSERA runs.
+
+        It is "_tessera" for one cell per pixel and "_tessera5x5" for 5 x 5
+        cells. Runs with different TESSERA grids therefore never share a name.
+
+        Returns:
+            str: "", "_tessera" or "_tessera<k>x<k>".
+        """
+        if not self.tessera:
+            return ""
+        cells = self.tessera_cells
+        return "_tessera" + (f"{cells}x{cells}" if cells > 1 else "")
 
     # ----- model ----- #
 
@@ -325,6 +365,7 @@ class RunConfig:
             num_heads=self.num_heads,
             feature_size=self.feature_size,
             options=self.model_options,
+            tessera_cells_per_pixel=self.tessera_cells,
             **sizes,
         )
 
@@ -340,8 +381,7 @@ class RunConfig:
         Returns:
             str: e.g. "_tessera_dicece_lr-plateau".
         """
-        tessera_tag = "_tessera" if self.tessera else ""
-        return tessera_tag + ("" if self.loss.name == "dice" else f"_{self.loss.name}") + self.schedule.tag
+        return self.tessera_tag + ("" if self.loss.name == "dice" else f"_{self.loss.name}") + self.schedule.tag
 
     @property
     def run_name(self):
@@ -357,7 +397,7 @@ class RunConfig:
         return (
             f"{'test' if self.test_only else 'train'}_{self.mode}_{self.model}_"
             f"num_heads_{self.num_heads}_hidden_size_{self.feature_size}_"
-            f"batchsize_{self.batch_size}{'_tessera' if self.tessera else ''}"
+            f"batchsize_{self.batch_size}{self.tessera_tag}"
             f"{'' if self.loss.name == 'dice' else '_' + self.loss.name}"
             f"{self.schedule.tag}"
         )
@@ -424,6 +464,7 @@ class RunConfig:
             "use_tessera": self.tessera,
             "model_input_channels": self.input_channels,
             "swin_temporal_downsample": self.swin_temporal_downsample,
+            "tessera_cells_per_pixel": self.tessera_cells,
             "tessera_stats": tessera_stats,
             "loss_config": self.loss.record(),
             "lr_config": self.schedule.record(),
@@ -456,6 +497,8 @@ class RunConfig:
             "input_channels": self.input_channels,
             **self.loss.record(),
         }
+        if self.tessera:
+            config["tessera_cells_per_pixel"] = self.tessera_cells
         if on_tpu:
             config["device"] = "tpu"
         if self.model == "swinunetr3d":
