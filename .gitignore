@@ -6,11 +6,8 @@ __pycache__/
 .DS_Store
 
 # Notebooks stay local: they are shared on Kaggle / Colab, not versioned here.
-/notebooks/
-
-# The paper's unused code (active-fire / burned-area tasks, TensorFlow models) stays local.
-/legacy/
-/docs/
+#/notebooks/
+#/docs/
 
 # Dataset pipeline outputs (python -m firepred.cli.dataset run from the repo root).
 # Anchored with a leading "/" so package folders such as firepred/data/ stay tracked.
