@@ -1,0 +1,334 @@
+"""GeoTIFF frames -> model-ready windows and next-day targets, for one fire.
+
+Level 1 (prep). Used by hub/publish_windows.py while building the dataset.
+
+For a fire with N daily VIIRS_Day GeoTIFFs (plus matching VIIRS_Night and
+FirePred files), a window starting on day i stacks days i .. i+length-1 as the
+input and uses day i+length as the target:
+
+    input   (27, length, 256, 256): day bands 0-5, night bands 6-7, FirePred 8-26,
+            cropped to rows/cols 128:384; NaN/Inf -> 0. Channels 3, 4 (I4, I5)
+            and 6, 7 (night I4, I5) hold the running maximum over the window's
+            days so far, a memory of where it has been hot.
+    target  (256, 256): pixels burned on day i+length that were not burned by
+            day i+length-1 ("the difference between the burned area masks of
+            the last observed day and the next day" [paper]).
+
+The burned-area mask accumulates active fire (AF band) and, with label_sel 0,
+the NIFC perimeters (BA band) too; label_sel 1 uses AF only.
+"""
+
+import os
+
+import numpy as np
+
+from firepred.config.channels import N_STORED_CHANNELS
+from firepred.config.dataset import CROP_OFFSET, CROP_SIZE, TS_INTERVAL, TS_LENGTH
+from firepred.prep.geotiff import read_tiff
+
+
+def binary_mask(array):
+    """Treat NaN, infinity, zero, and negative nodata as background."""
+    return np.isfinite(array) & (array > 0)
+
+
+def build_fire_windows(
+    loc_name,
+    local_map,
+    length=TS_LENGTH,
+    interval=TS_INTERVAL,
+    label_sel=1,
+    debug=False,
+):
+    """Build (windows, C, T, H, W) inputs and (windows, H, W) targets.
+
+    `local_map` maps each source file name to a local path. Only entries
+    whose source name contains "VIIRS_Day" are used as frames; the
+    matching VIIRS_Night and FirePred files are found next to them.
+    """
+    # Step 1: the fire's daily frames, in date order. Each day has one VIIRS_Day
+    # GeoTIFF; its night and FirePred (weather/terrain/fuel) files sit next to it.
+    day_files = sorted(
+        path
+        for remote_name, path in local_map.items()
+        if "VIIRS_Day" in remote_name
+    )
+
+    if not day_files:
+        print(f"{loc_name}: no VIIRS_Day files")
+        return None, None
+
+    # Step 2: output geometry. Every frame is cropped to the same 256 x 256 square
+    # (rows/cols 128..384), so a fire's windows all cover the same ground.
+    n_channels = N_STORED_CHANNELS
+    output_shape_x = CROP_SIZE
+    output_shape_y = CROP_SIZE
+    offset = CROP_OFFSET
+
+    # Windows go straight into one (windows, C, T, H, W) array. Stacking
+    # per-window arrays, transposing and copying again tripled the RAM a
+    # long fire needs (about 10 GiB for an 87-day fire).
+    n_windows = sum(
+        1
+        for i in range(0, len(day_files), interval)
+        if i + length < len(day_files)
+    )
+    loc_x = np.zeros(
+        (n_windows, n_channels, length, output_shape_x, output_shape_y),
+        dtype=np.float32,
+    )
+    loc_y = np.zeros(
+        (n_windows, output_shape_x, output_shape_y),
+        dtype=np.float32,
+    )
+
+    # Label accumulators must be Boolean. Raw NaNs must never be passed
+    # directly to np.logical_or because bool(np.nan) is True.
+    # Step 3: running state carried from day to day.
+    #   ba_label / af_acc_label: every pixel ever burned so far (NIFC perimeter / active fire).
+    #   max_img: per-pixel maximum of each channel so far (used for the heat bands).
+    #   new_base_*: a saved copy of that state, restored before the next window starts.
+    ba_label = np.zeros(
+        (output_shape_x, output_shape_y),
+        dtype=bool,
+    )
+    af_acc_label = np.zeros_like(ba_label)
+    new_base_acc_label = af_acc_label.copy()
+    new_base_ba_label = ba_label.copy()
+
+    max_img = np.zeros(
+        (n_channels, output_shape_x, output_shape_y),
+        dtype=np.float32,
+    )
+    new_base_max_img = max_img.copy()
+
+    # Step 4: slide a window over the days. Window k starts on day k * interval and
+    # uses `length` input days plus the next day as its target.
+    for window_idx, i in enumerate(range(0, len(day_files), interval)):
+        # A window needs `length` input frames plus one target frame.
+        if i + length >= len(day_files):
+            print(f"{loc_name}: dropping incomplete tail")
+            break
+
+        # Read the window's days one at a time: j = 0 .. length-1 are inputs, j = length is the target day.
+        for j in range(length + 1):
+            file_name = day_files[i + j]
+            array_day, day_profile = read_tiff(file_name)
+
+            if array_day.shape[0] < 7:
+                raise ValueError(
+                    f"{file_name}: expected at least 7 day bands, "
+                    f"found {array_day.shape[0]}"
+                )
+
+            original_shape_x = array_day.shape[1]
+            original_shape_y = array_day.shape[2]
+
+            # Night bands (I4, I5 at night) come from the matching VIIRS_Night file.
+            # Missing or broken night files become zeros instead of stopping the build.
+            night_file = file_name.replace(
+                "VIIRS_Day",
+                "VIIRS_Night",
+            )
+            array_night = None
+            if os.path.exists(night_file):
+                array_night, night_profile = read_tiff(night_file)
+                if array_night.shape[0] == 5:
+                    print(f"{night_file}: correcting day/night alignment")
+                    array_night = array_night[3:, :, :]
+
+                if array_night.shape[0] < 2:
+                    # Unusable night capture: a missing value, so zeros
+                    # (TS-SatFire paper), like a missing night file.
+                    print(
+                        f"{night_file}: {array_night.shape[0]} band(s); "
+                        "using zeros"
+                    )
+                    array_night = None
+                elif array_night.shape[1:] != array_day.shape[1:]:
+                    # The crop is by pixel index, so it only matches the
+                    # day crop when both rasters share one grid.
+                    if night_profile["transform"] != day_profile["transform"]:
+                        raise ValueError(
+                            f"Day/night grid mismatch for {file_name}: "
+                            f"{array_day.shape[1:]} versus "
+                            f"{array_night.shape[1:]}"
+                        )
+                    print(
+                        f"{night_file}: size {array_night.shape[1:]} differs "
+                        f"from day {array_day.shape[1:]} on the same grid"
+                    )
+
+            # No usable night capture: two all-zero bands keep the channel layout fixed.
+            if array_night is None:
+                array_night = np.zeros(
+                    (2, original_shape_x, original_shape_y),
+                    dtype=np.float32,
+                )
+
+            # FirePred holds the 19 auxiliary bands (vegetation, weather, forecast, terrain, drought, land cover).
+            pred_file = file_name.replace(
+                "VIIRS_Day",
+                "FirePred",
+            )
+            array_pred, _ = read_tiff(pred_file)
+
+            # Stack the 27 stored channels for this day, cropped to the fire square:
+            # 6 day bands + 2 night bands + 19 FirePred bands.
+            row_slice = slice(offset, offset + output_shape_x)
+            col_slice = slice(offset, offset + output_shape_y)
+
+            img = np.concatenate(
+                (
+                    array_day[:6, row_slice, col_slice],
+                    array_night[:, row_slice, col_slice],
+                    array_pred[:, row_slice, col_slice],
+                ),
+                axis=0,
+            )
+            img = img[:, :output_shape_x, :output_shape_y]
+
+            expected_shape = (
+                n_channels,
+                output_shape_x,
+                output_shape_y,
+            )
+            if img.shape != expected_shape:
+                raise ValueError(
+                    f"{file_name}: expected cropped input shape "
+                    f"{expected_shape}, found {img.shape}"
+                )
+
+            # Model inputs must be finite before maximum accumulation.
+            img = np.nan_to_num(
+                img,
+                copy=False,
+                nan=0.0,
+                posinf=0.0,
+                neginf=0.0,
+            )
+
+            # Heat memory: the thermal bands (day I4/I5 = channels 3-4, night I4/I5 =
+            # channels 6-7) are replaced by their running maximum, so a pixel that was hot
+            # earlier in the window still looks hot today. All other channels keep today's value.
+            max_img = np.maximum(img, max_img)
+            img = np.concatenate(
+                (
+                    img[:3, ...],
+                    max_img[3:5, ...],
+                    img[[5], ...],
+                    max_img[6:8, ...],
+                    img[8:, ...],
+                ),
+                axis=0,
+            )
+
+            # Labels for this day: band 6 = active fire detections, band 7 = NIFC
+            # burned-area perimeter (missing on some days, then treated as empty).
+            af_raw = array_day[6, row_slice, col_slice]
+            if array_day.shape[0] >= 8:
+                ba_raw = array_day[7, row_slice, col_slice]
+            else:
+                ba_raw = np.zeros(
+                    (output_shape_x, output_shape_y),
+                    dtype=np.float32,
+                )
+
+            # Critical fix: create explicit masks before accumulation.
+            # np.logical_or on raw arrays would interpret NaN as True.
+            af = binary_mask(af_raw)
+            ba = binary_mask(ba_raw)
+
+            if debug:
+                af_full = binary_mask(array_day[6])
+                if array_day.shape[0] >= 8:
+                    ba_full = binary_mask(array_day[7])
+                else:
+                    ba_full = np.zeros(
+                        (original_shape_x, original_shape_y),
+                        dtype=bool,
+                    )
+
+                print(
+                    os.path.basename(file_name),
+                    f"AF full={np.count_nonzero(af_full)}",
+                    f"AF crop={np.count_nonzero(af)}",
+                    f"BA full={np.count_nonzero(ba_full)}",
+                    f"BA crop={np.count_nonzero(ba)}",
+                )
+
+            # Accumulate: once a pixel has burned it stays burned. label_sel picks the
+            # burned-area definition: 1 = active fire only, otherwise active fire + NIFC perimeters.
+            ba_label = np.logical_or(ba_label, ba)
+            af_acc_label = np.logical_or(af_acc_label, af)
+
+            if label_sel == 1:
+                final_label = af_acc_label
+            else:
+                final_label = np.logical_or(
+                    af_acc_label,
+                    ba_label,
+                )
+
+            # Save state at the next stride boundary. Restoring this
+            # state after the window prevents overlapping windows from
+            # leaking future information into their early frames.
+            if j == interval - 1:
+                new_base_acc_label = af_acc_label.copy()
+                new_base_ba_label = ba_label.copy()
+                new_base_max_img = max_img.copy()
+
+            # Input day: store the frame and remember the burned area so far.
+            # Target day: the label is what is burned now but was not burned on the last
+            # input day, i.e. only the newly burned pixels (the fire's growth).
+            if j < length:
+                prev_final_label = final_label.copy()
+                loc_x[window_idx, :, j] = img
+            else:
+                new_mask = np.logical_and(
+                    np.logical_not(prev_final_label),
+                    final_label,
+                )
+                loc_y[window_idx] = new_mask
+
+                if debug:
+                    print(
+                        "previous accumulated:",
+                        np.count_nonzero(prev_final_label),
+                        "current accumulated:",
+                        np.count_nonzero(final_label),
+                        "new target:",
+                        np.count_nonzero(new_mask),
+                    )
+
+        # Rewind the running state to the next window's start, so overlapping windows
+        # never see days that lie after their own start.
+        af_acc_label = new_base_acc_label.copy()
+        ba_label = new_base_ba_label.copy()
+        max_img = new_base_max_img.copy()
+
+    # Step 5: sanity checks and a short report of how many windows contain new fire.
+    if n_windows == 0:
+        print(f"{loc_name}: not enough time-series frames")
+        return None, None
+
+    # One window at a time, so the check needs no full-size mask.
+    for window in loc_x:
+        if not np.isfinite(window).all():
+            raise ValueError(f"{loc_name}: processed inputs contain NaN/Inf")
+    if not np.isfinite(loc_y).all():
+        raise ValueError(f"{loc_name}: processed labels contain NaN/Inf")
+
+    positive_per_window = np.count_nonzero(
+        loc_y > 0,
+        axis=(1, 2),
+    )
+    print(
+        f"{loc_name}: {np.count_nonzero(positive_per_window)}/"
+        f"{len(positive_per_window)} windows contain positives; "
+        f"{positive_per_window.sum()} total positive pixels"
+    )
+    if positive_per_window.sum() == 0:
+        print(f"WARNING: {loc_name} has no positive prediction targets")
+
+    return loc_x, loc_y

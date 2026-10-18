@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+/build/
+.DS_Store
+
+# Notebooks stay local: they are shared on Kaggle / Colab, not versioned here.
+/notebooks/
+
+# The paper's unused code (active-fire / burned-area tasks, TensorFlow models) stays local.
+/legacy/
+/docs/
+
+# Dataset pipeline outputs (python -m firepred.cli.dataset run from the repo root).
+# Anchored with a leading "/" so package folders such as firepred/data/ stay tracked.
+/hf_roi/
+/temp/
+/staging/
+/data/
+/data-npy/
+/data.zip
+/windowed_npz_*/
+/data_tessera/
+/data_tessera.zip
+/data_processed/
+/tessera_bundle/
+/tessera.zip
+
+# Training outputs (python -m firepred.cli.train run from the repo root)
+/wandb/
+/evaluation_plot/
+/saved_models/

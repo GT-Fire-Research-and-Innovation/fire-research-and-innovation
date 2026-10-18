@@ -1,0 +1,19 @@
+[project]
+name = "firepred"
+version = "0.1.0"
+description = "Next-day wildfire spread prediction on the TS-SatFire dataset (SwinUNETR-3D and friends)"
+requires-python = ">=3.10"
+
+# Runs from the repository root without installation (Kaggle/Colab clone and
+# run `python -m firepred.cli.<name>`). `pip install -e .` also works.
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["firepred*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q -p no:cacheprovider"
+filterwarnings = ["ignore::DeprecationWarning", "ignore::UserWarning", "ignore::FutureWarning"]
