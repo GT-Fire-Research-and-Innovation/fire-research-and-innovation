@@ -9,7 +9,7 @@ os.environ.setdefault("MPLBACKEND", "Agg")
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
-sys.path.insert(0, str(REPO_ROOT / "tests" / "equivalence"))
+sys.path.insert(0, str(REPO_ROOT / "tests" / "support"))
 
 import pytest  # noqa: E402
 

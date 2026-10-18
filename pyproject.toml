@@ -15,5 +15,6 @@ include = ["firepred*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q -p no:cacheprovider"
+addopts = "-q -p no:cacheprovider -m 'not slow'"
+markers = ["slow: SwinUNETR-3D end-to-end runs (pytest -m slow)"]
 filterwarnings = ["ignore::DeprecationWarning", "ignore::UserWarning", "ignore::FutureWarning"]

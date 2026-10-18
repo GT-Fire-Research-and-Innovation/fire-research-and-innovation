@@ -1,5 +1,7 @@
 """What happens to one window between disk and model: normalize, augment, encode.
 
+Every function here returns new arrays and leaves its inputs unchanged.
+
 Level 1 (data). Used by data/dataset.py, in this order per window:
 
     normalize    standardize every channel except angles and land cover
@@ -12,13 +14,14 @@ import numpy as np
 import torch
 import torchvision.transforms.functional as TF
 
-from firepred.config.channels import DEGREE_CHANNELS, LANDCOVER_CHANNEL, N_LANDCOVER_CLASSES
+from firepred.config.data import DEGREE_CHANNELS, LANDCOVER_CHANNEL, N_LANDCOVER_CLASSES
 
 
 class Normalize:
     """Normalize selected input channels using fixed dataset statistics."""
 
     def __init__(self, mean, std, dont_normalize_idc):
+        """Store per-channel statistics; channels in `dont_normalize_idc` pass through."""
         # [released] the original per-channel normalization statistics.
         self.mean = mean
         self.std = std
@@ -32,7 +35,8 @@ class Normalize:
             )
 
     def __call__(self, sample):
-        # [ours] validate the channel dimension before modifying the tensor.
+        """A standardized copy of `sample` (C, T, H, W), tensor or array; `sample` is unchanged."""
+        # [ours] validate the channel dimension first.
         if sample.ndim != 4:
             raise ValueError(
                 "Expected input shaped (C, T, H, W), but found "
@@ -46,14 +50,16 @@ class Normalize:
             )
 
         # [released] normalize one channel at a time and skip angle/land-cover
-        # channels, which preprocess() encodes instead.
+        # channels, which preprocess() encodes instead. The per-channel
+        # arithmetic is kept as released so results stay bit-identical.
+        normalized = sample.copy() if isinstance(sample, np.ndarray) else sample.clone()
         for channel_idx in range(len(self.mean)):
             if channel_idx not in self.dont_normalize_idc:
-                sample[channel_idx] = (
+                normalized[channel_idx] = (
                     sample[channel_idx] - self.mean[channel_idx]
                 ) / self.std[channel_idx]
 
-        return sample
+        return normalized
 
 
 def landcover_one_hot_matrix(n_classes=N_LANDCOVER_CLASSES):
@@ -118,15 +124,10 @@ def augment(x, y, static=None, degree_channels=DEGREE_CHANNELS):
 
 
 def preprocess(x, one_hot_matrix, degree_channels=DEGREE_CHANNELS, landcover_channel=LANDCOVER_CHANNEL):
-    """sin() of the angle channels, then land cover -> one-hot planes. [released]
+    """sin() of the angle channels and land cover -> one-hot planes, as a new tensor. [released]
 
-    (27, T, H, W) -> (27 - 1 + 17, T, H, W) = (43, T, H, W).
+    (27, T, H, W) -> (27 - 1 + 17, T, H, W) = (43, T, H, W); `x` is unchanged.
     """
-    # Angles become sin(angle) after augmentation has rotated them.
-    x[degree_channels] = torch.sin(
-        torch.deg2rad(x[degree_channels])
-    )
-
     new_shape = (
         x.shape[1],
         x.shape[2],
@@ -158,8 +159,16 @@ def preprocess(x, one_hot_matrix, degree_channels=DEGREE_CHANNELS, landcover_cha
         new_shape
     ).permute(3, 0, 1, 2)
 
-    x = torch.cat(
-        [x[:landcover_channel], landcover_encoding, x[landcover_channel + 1:]],
-        dim=0,
-    )
-    return x
+    # Assemble the output channel by channel, so `x` itself is never written:
+    # angles become sin(angle) (after augmentation has rotated them), land
+    # cover becomes its one-hot planes, every other channel is kept.
+    degree_channels = set(degree_channels)
+    pieces = []
+    for channel in range(x.shape[0]):
+        if channel == landcover_channel:
+            pieces.append(landcover_encoding)
+        elif channel in degree_channels:
+            pieces.append(torch.sin(torch.deg2rad(x[channel:channel + 1])))
+        else:
+            pieces.append(x[channel:channel + 1])
+    return torch.cat(pieces, dim=0)

@@ -22,15 +22,17 @@ import torch
 import wandb
 from torch import nn
 
-from firepred.config.channels import N_STORED_CHANNELS, model_input_channels as count_model_channels
-from firepred.config.paths import DEFAULT_DATA_ROOT
+from firepred.config.data import DEFAULT_DATA_ROOT, N_STORED_CHANNELS, model_input_channels as count_model_channels
 from firepred.config.training import NUM_CLASSES, TOP_N_CHECKPOINTS
-from firepred.data.archive import find_fire_sources, fire_name, unzip_data_root
-from firepred.data.dataset import FireDataset
-from firepred.data.loader import make_dataloader, validate_dataset_output
-from firepred.data.tessera import compute_tessera_stats
-from firepred.models.registry import build_model
-from firepred.models.spec import ModelSpec
+from firepred.data.archive import find_fire_sources, unzip_data_root
+from firepred.data.dataset import (
+    FireDataset,
+    compute_tessera_stats,
+    load_tessera_maps,
+    make_dataloader,
+    validate_dataset_output,
+)
+from firepred.models.registry import ModelSpec, build_model
 from firepred.training import naming
 from firepred.training.accelerator import checkpoint_map_location, is_xla, resolve_device, seed_device
 from firepred.training.checkpoints import load_checkpoint
@@ -253,13 +255,13 @@ def run(args):
     if not args.run_test:
         # TESSERA normalization comes from the training fires only (no leak from val/test).
         tessera_stats = None
+        train_tessera_maps = None
         if use_tessera:
-            # Normalization comes from the training fires only.
+            # Each training fire's TESSERA file is read once, for the statistics
+            # and the training dataset alike.
+            train_tessera_maps = load_tessera_maps(tessera_dir, find_fire_sources(train_npz_dir))
             tessera_stats = compute_tessera_stats(
-                [
-                    tessera_dir / f"{fire_name(path)}.npz"
-                    for path in find_fire_sources(train_npz_dir)
-                ],
+                train_tessera_maps.values(),
                 min_coverage=args.tessera_min_coverage,
             )
         # Training windows are augmented; validation windows are not.
@@ -271,6 +273,7 @@ def run(args):
             use_augmentations=True,
             tessera_dir=tessera_dir,
             tessera_stats=tessera_stats,
+            tessera_maps=train_tessera_maps,
         )
         val_dataset = FireDataset(
             npz_dir=val_npz_dir,

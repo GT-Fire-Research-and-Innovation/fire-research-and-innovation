@@ -20,8 +20,7 @@ import time
 import torch
 from torch import nn
 
-from firepred.config.channels import N_STORED_CHANNELS, model_input_channels
-from firepred.config.dataset import CROP_SIZE, TS_LENGTH
+from firepred.config.data import CROP_SIZE, N_STORED_CHANNELS, TS_LENGTH, model_input_channels
 from firepred.config.training import (
     FOCAL_ALPHA,
     FOCAL_GAMMA,
@@ -33,12 +32,15 @@ from firepred.config.training import (
     PAPER_CE_WEIGHT,
     SEED,
 )
-from firepred.data.archive import find_fire_sources, fire_name
-from firepred.data.dataset import FireDataset
-from firepred.data.loader import batch_inputs, make_dataloader
-from firepred.data.tessera import compute_tessera_stats
-from firepred.models.registry import available_models, build_model, forward_model
-from firepred.models.spec import ModelSpec, parse_model_option
+from firepred.data.archive import find_fire_sources
+from firepred.data.dataset import (
+    FireDataset,
+    batch_inputs,
+    compute_tessera_stats,
+    load_tessera_maps,
+    make_dataloader,
+)
+from firepred.models.registry import ModelSpec, available_models, build_model, forward_model, parse_model_option
 from firepred.training.losses import build_criterion, compute_loss
 from firepred.training.optim import build_grad_scaler, build_optimizer
 
@@ -135,12 +137,12 @@ def datasets(args):
     # Same dataset settings as training; TESSERA statistics come from the training
     # fires only, as in training.
     kwargs = dict(ts_length=args.ts, n_channel=N_STORED_CHANNELS, target_is_single_day=True)
+    train_maps = None
     if args.tessera:
         tessera_dir = args.data_root / "tessera"
-        stats = compute_tessera_stats([tessera_dir / f"{fire_name(path)}.npz"
-                                       for path in find_fire_sources(args.data_root / "train")])
-        kwargs.update(tessera_dir=tessera_dir, tessera_stats=stats)
-    train = FireDataset(npz_dir=args.data_root / "train", use_augmentations=True, **kwargs)
+        train_maps = load_tessera_maps(tessera_dir, find_fire_sources(args.data_root / "train"))
+        kwargs.update(tessera_dir=tessera_dir, tessera_stats=compute_tessera_stats(train_maps.values()))
+    train = FireDataset(npz_dir=args.data_root / "train", use_augmentations=True, tessera_maps=train_maps, **kwargs)
     val = FireDataset(npz_dir=args.data_root / "val", use_augmentations=False, **kwargs)
     return train, val
 

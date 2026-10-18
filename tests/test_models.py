@@ -7,8 +7,7 @@ import pytest
 import torch
 from torch import nn
 
-from firepred.models.registry import available_models, build_model, forward_model
-from firepred.models.spec import ModelSpec, parse_model_option
+from firepred.models.registry import ModelSpec, available_models, build_model, forward_model, parse_model_option
 
 TINY = dict(in_channels=5, num_classes=2, ts_length=2, num_heads=3, feature_size=6, image_size=(32, 32))
 # Broken since the original TS-SatFire code; see docs/KNOWN_ISSUES.md.

@@ -19,7 +19,7 @@ import wandb
 from monai.data import decollate_batch
 from tqdm import tqdm
 
-from firepred.data.loader import batch_inputs
+from firepred.data.dataset import batch_inputs
 from firepred.models.registry import forward_model
 from firepred.training.accelerator import mark_step
 from firepred.training.checkpoints import BestCheckpoints, save_checkpoint

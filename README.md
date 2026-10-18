@@ -19,7 +19,7 @@ from scratch in [docs/swinunetr3d/](docs/swinunetr3d/).
     │   ├── hub/                  # L2 Hugging Face upload/download, local data staging
     │   ├── training/             # L3 loss, metrics, loop, evaluation, W&B, checkpoints
     │   └── cli/                  # L4 train, dataset, check, new_model
-    ├── tests/                    # pytest micro tests + equivalence/ (bit-identity harness)
+    ├── tests/                    # pytest: unit tests, golden/ (same-output values), end-to-end runs
     ├── tools/                    # trace_shapes.py: real tensor shapes through SwinUNETR-3D
     ├── docs/                     # ARCHITECTURE, MIGRATION, KNOWN_ISSUES, swinunetr3d/ explainer
     ├── legacy/                   # the paper's unused code (AF/BA tasks, TensorFlow models)

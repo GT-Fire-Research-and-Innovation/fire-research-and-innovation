@@ -1,10 +1,15 @@
 """FireDataset: one item per window, model-ready shapes, TESSERA as a static map."""
 
-from firepred.config.channels import BASE_MODEL_CHANNELS, TESSERA_CHANNELS
-from firepred.data.archive import find_fire_sources, fire_name
-from firepred.data.dataset import FireDataset
-from firepred.data.loader import batch_inputs, make_dataloader, validate_dataset_output
-from firepred.data.tessera import compute_tessera_stats
+from firepred.config.data import BASE_MODEL_CHANNELS, TESSERA_CHANNELS
+from firepred.data.archive import find_fire_sources
+from firepred.data.dataset import (
+    FireDataset,
+    batch_inputs,
+    compute_tessera_stats,
+    load_tessera_maps,
+    make_dataloader,
+    validate_dataset_output,
+)
 
 
 def test_items_have_model_shapes(data_root):
@@ -20,7 +25,7 @@ def test_items_have_model_shapes(data_root):
 
 def test_tessera_adds_a_static_map_repeated_on_the_batch(data_root):
     root, _ = data_root
-    stats = compute_tessera_stats([root / "tessera" / f"{fire_name(p)}.npz" for p in find_fire_sources(root / "train")])
+    stats = compute_tessera_stats(load_tessera_maps(root / "tessera", find_fire_sources(root / "train")).values())
     dataset = FireDataset(root / "val", ts_length=6, target_is_single_day=True,
                           tessera_dir=root / "tessera", tessera_stats=stats)
     assert tuple(dataset[0]["static"].shape) == (TESSERA_CHANNELS, 256, 256)

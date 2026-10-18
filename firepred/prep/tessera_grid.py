@@ -1,6 +1,8 @@
 """Prior-year TESSERA embeddings averaged onto one fire's 256 x 256 VIIRS grid.
 
-Level 1 (prep). Used by hub/publish_tessera.py. [ours]
+Level 1 (prep). Used by prep/tessera_master.py. [ours] rasterio and pyproj
+are imported inside the functions that need them, so the masters import
+without the geospatial stack.
 
 prep/windows.py crops rows/cols 128:384 of every VIIRS_Day GeoTIFF, so one
 256 x 256 grid covers all of a fire's windows. build_fire_tessera() reads that
@@ -19,23 +21,30 @@ into the inputs. Fires whose prior year is not published (2017 fires) get none.
 """
 
 import gc
+import importlib.metadata
 import os
 import subprocess
-from importlib.metadata import version as package_version
+from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
-import rasterio
-from pyproj import Transformer
-from rasterio.transform import Affine, array_bounds
-from rasterio.warp import transform_bounds
 
-from firepred.config.channels import TESSERA_BANDS
-from firepred.config.dataset import CROP_OFFSET, CROP_SIZE, FIRST_TESSERA_YEAR, TESSERA_FORMAT_VERSION
+from firepred.config.data import CROP_OFFSET, CROP_SIZE, STRIP_ROWS, TESSERA_BANDS, TESSERA_FORMAT_VERSION
 
 
-def has_prior_year_tessera(fire_year):
-    """True if the year before `fire_year` has published TESSERA embeddings."""
-    return fire_year is not None and int(fire_year) - 1 >= FIRST_TESSERA_YEAR
+@dataclass(frozen=True)
+class FireTessera:
+    """One built TESSERA file: where it went, the year used and its coverage map."""
+
+    path: Path
+    tessera_year: int
+    coverage: np.ndarray
+
+    def summary(self):
+        """One line: year, mean coverage, cells without data."""
+        empty = int(np.count_nonzero(self.coverage == 0))
+        return (f"TESSERA {self.tessera_year}, mean coverage {self.coverage.mean():.3f}, "
+                f"cells without data {empty}/{self.coverage.size}")
 
 
 def code_version():
@@ -52,7 +61,9 @@ def code_version():
 
 
 def crop_grid(profile, offset=CROP_OFFSET, size=CROP_SIZE):
-    """Return (crs, transform) of the crop process_location takes from a GeoTIFF."""
+    """Return (crs, transform) of the crop prep/windows.py takes from a GeoTIFF."""
+    from rasterio.transform import Affine
+
     if profile["height"] < offset + size or profile["width"] < offset + size:
         raise ValueError(
             f"GeoTIFF is {profile['height']}x{profile['width']}; the "
@@ -72,7 +83,7 @@ def utm_zones(west, east):
     return list(range(max(1, first), min(60, last) + 1))
 
 
-def grid_tessera(gt, dst_crs, dst_transform, year, size=CROP_SIZE, strip_rows=128):
+def grid_tessera(gt, dst_crs, dst_transform, year, size=CROP_SIZE, strip_rows=STRIP_ROWS):
     """Area-average one year of TESSERA onto a size x size raster grid.
 
     `gt` is a geotessera.GeoTesseraZarr. The region is streamed in row strips
@@ -85,6 +96,10 @@ def grid_tessera(gt, dst_crs, dst_transform, year, size=CROP_SIZE, strip_rows=12
         coverage       (size, size) float32, valid / total 10 m pixels
         source_pixels  (size, size) int64, total 10 m pixels per cell
     """
+    from pyproj import Transformer
+    from rasterio.transform import array_bounds
+    from rasterio.warp import transform_bounds
+
     # Running totals per crop cell (flattened 256 x 256): the sum of each band over
     # the 10 m pixels that fall inside it, how many of those had data, and how many
     # there were in total. Means and coverage are computed at the very end.
@@ -183,7 +198,7 @@ def grid_tessera(gt, dst_crs, dst_transform, year, size=CROP_SIZE, strip_rows=12
 
 
 def save_tessera_npz(save_path, embedding, coverage, metadata):
-    """Write one fire's embedding, coverage, and metadata, then verify it."""
+    """Write one fire's embedding, coverage, and metadata, verify it, and return the path."""
     if embedding.shape != (TESSERA_BANDS, CROP_SIZE, CROP_SIZE):
         raise ValueError(f"Unexpected embedding shape {embedding.shape}")
     if coverage.shape != (CROP_SIZE, CROP_SIZE):
@@ -206,15 +221,19 @@ def save_tessera_npz(save_path, embedding, coverage, metadata):
     with np.load(save_path, allow_pickle=False) as archive:
         if archive["embedding"].shape != (TESSERA_BANDS, CROP_SIZE, CROP_SIZE):
             raise RuntimeError(f"Failed to verify {save_path}")
+    return Path(save_path)
 
 
-def build_fire_tessera(gt, fire_id, day_paths, fire_year, save_path, strip_rows=128):
-    """Build tessera/p<fire_id>.npz from local VIIRS_Day GeoTIFFs.
+def build_fire_tessera(gt, fire_id, day_paths, fire_year, save_path, strip_rows=STRIP_ROWS):
+    """Build tessera/p<fire_id>.npz from local VIIRS_Day GeoTIFFs; returns a FireTessera.
 
     `day_paths` maps source repo names to local paths. Every given file must
     share one georeference, otherwise the fixed crop would cover different
     ground on different days and no single embedding could match it.
     """
+    import rasterio
+    from rasterio.transform import array_bounds
+
     # All days of a fire must share one georeference, otherwise the fixed crop would
     # cover different ground on different days and one embedding could not match them.
     profiles = {}
@@ -255,15 +274,9 @@ def build_fire_tessera(gt, fire_id, day_paths, fire_year, save_path, strip_rows=
         "bounds_lonlat": np.asarray(bounds_lonlat, dtype=np.float64),
         "source_store": str(gt.url),
         "model_version": str(getattr(gt, "model_version", "")),
-        "geotessera_version": package_version("geotessera"),
+        "geotessera_version": importlib.metadata.version("geotessera"),
         "code_version": code_version(),
         "day_files": np.asarray(sorted(day_paths), dtype=str),
     }
-    save_tessera_npz(save_path, embedding, coverage, metadata)
-
-    print(
-        f"{fire_id}: TESSERA {tessera_year}, mean coverage "
-        f"{coverage.mean():.3f}, cells without data "
-        f"{int(np.count_nonzero(coverage == 0))}/{coverage.size}"
-    )
-    return coverage
+    path = save_tessera_npz(save_path, embedding, coverage, metadata)
+    return FireTessera(path, tessera_year, coverage)

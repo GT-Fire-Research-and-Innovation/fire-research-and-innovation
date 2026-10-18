@@ -59,7 +59,7 @@ def test_check_data_on_synthetic_root(data_root, capsys):
 def test_zip_with_escaping_member_is_refused(tmp_path):
     import zipfile
 
-    from firepred.hub.staging import check_members_inside
+    from firepred.prep.staging import check_members_inside
 
     bad = tmp_path / "bad.zip"
     with zipfile.ZipFile(bad, "w") as archive:

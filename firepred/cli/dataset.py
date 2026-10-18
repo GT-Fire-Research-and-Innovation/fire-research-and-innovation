@@ -1,8 +1,9 @@
 """Build the TS-SatFire next-day prediction dataset through Hugging Face.
 
-Level 4 (cli). Each subcommand wraps one function in firepred/hub/. The token
+Level 4 (cli). Each subcommand calls one master function (prep/dataset_master.py,
+prep/tessera_master.py) and prints its report. The token
 defaults to the HF_TOKEN environment variable. Defaults come from
-firepred/config/dataset.py: -ts/-it (window length and stride) and the
+firepred/config/data.py: -ts/-it (window length and stride) and the
 dataset repos. --window-repo defaults to the repo for the chosen -ts/-it
 (window_repo_for). The flags are those of the former dataset_gen_pred.py.
 
@@ -18,7 +19,7 @@ dataset repos. --window-repo defaults to the repo for the chosen -ts/-it
 import argparse
 import os
 
-from firepred.config.dataset import (
+from firepred.config.data import (
     SPLITS,
     SRC_REPO,
     TESSERA_REPO,
@@ -27,16 +28,14 @@ from firepred.config.dataset import (
     TS_LENGTH,
     window_repo_for,
 )
-from firepred.hub.download import download_processed_data
-from firepred.hub.publish_tessera import process_tessera, upload_tessera_zip
-from firepred.hub.publish_windows import process_data
-from firepred.hub.zips import pull_tessera_data, pull_zip_data_to, upload_data_zip
+from firepred.prep import dataset_master, tessera_master
 
 
 ZIP_REPOS = ("window", "tessera")
 
 
 def parse_args(argv=None):
+    """Parse the dataset command line (global repo/folder flags, then one subcommand)."""
     parser = argparse.ArgumentParser(prog="python -m firepred.cli.dataset", description=__doc__.splitlines()[0])
     # Shared by every subcommand: credentials, the three Hugging Face repos (raw
     # source, windows, TESSERA) and the local working folders.
@@ -177,90 +176,53 @@ def parse_args(argv=None):
     return parser.parse_args(argv)
 
 
-def main(argv=None):
-    args = parse_args(argv)
-    # No --window-repo: use the repo named after -ts/-it, so each window shape has
-    # its own repo (archive names do not record the window length).
-    if args.window_repo is None and args.command in ("process", "download", "upload-zip", "pull-zip"):
-        args.window_repo = window_repo_for(args.ts, args.it)
-    # --zip-repo picks between the window repo and the TESSERA repo.
-    zip_repos = {
-        "window": args.window_repo,
-        "tessera": args.tessera_repo,
-    }
+def window_repo_of(args):
+    """--window-repo, or the repo named after -ts/-it (each window shape has its own repo)."""
+    return args.window_repo or window_repo_for(args.ts, args.it)
 
-    # Dispatch: each subcommand calls one hub/ function with its flags.
+
+def run(args):
+    """Run the parsed subcommand through its master function and return the result."""
     if args.command == "process":
-        process_data(
-            args.token,
-            src_repo=args.src_repo,
-            window_repo=args.window_repo,
-            batch_size=args.batch_size,
-            length=args.ts,
-            interval=args.it,
-            splits=args.mode,
-            roi_dir=args.roi_dir,
-            work_dir=args.work_dir,
-            overwrite=args.overwrite,
-            debug=args.debug,
-            use_roi_label_sel=not args.ignore_roi_label_sel,
+        return dataset_master.process_windows(
+            args.token, src_repo=args.src_repo, window_repo=window_repo_of(args), batch_size=args.batch_size,
+            length=args.ts, interval=args.it, splits=args.mode, roi_dir=args.roi_dir, work_dir=args.work_dir,
+            overwrite=args.overwrite, debug=args.debug, use_roi_label_sel=not args.ignore_roi_label_sel,
             train_val_label_sel=args.train_val_label_sel,
         )
-    elif args.command == "tessera":
-        process_tessera(
-            args.token,
-            src_repo=args.src_repo,
-            tessera_repo=args.tessera_repo,
-            splits=args.mode,
-            batch_size=args.batch_size,
-            work_dir=args.work_dir,
-            roi_dir=args.roi_dir,
-            overwrite=args.overwrite,
-            strip_rows=args.strip_rows,
-            only_fires=args.only_fires,
+    if args.command == "tessera":
+        return tessera_master.process_tessera(
+            args.token, src_repo=args.src_repo, tessera_repo=args.tessera_repo, splits=args.mode,
+            batch_size=args.batch_size, work_dir=args.work_dir, roi_dir=args.roi_dir, overwrite=args.overwrite,
+            strip_rows=args.strip_rows, only_fires=args.only_fires,
         )
-    elif args.command == "tessera-zip":
-        upload_tessera_zip(
-            args.token,
-            src_repo=args.src_repo,
-            tessera_repo=args.tessera_repo,
-            work_dir=args.work_dir,
+    if args.command == "tessera-zip":
+        return tessera_master.upload_tessera_zip(
+            args.token, src_repo=args.src_repo, tessera_repo=args.tessera_repo, work_dir=args.work_dir,
             roi_dir=args.roi_dir,
         )
-    elif args.command == "pull-tessera":
-        pull_tessera_data(
-            args.data_root,
-            token=args.token,
-            tessera_repo=args.tessera_repo,
-            drop_excluded=not args.keep_excluded,
+    if args.command == "pull-tessera":
+        return tessera_master.pull_tessera_zip(
+            args.data_root, token=args.token, tessera_repo=args.tessera_repo, drop_excluded=not args.keep_excluded,
         )
-    elif args.command == "download":
-        download_processed_data(
-            args.token,
-            window_repo=args.window_repo,
-            src_repo=args.src_repo,
-            base_output_dir=args.data_root,
-            roi_dir=args.roi_dir,
-            include_tessera=args.tessera,
-            tessera_repo=args.tessera_repo,
+    if args.command == "download":
+        return dataset_master.download_windows(
+            args.token, window_repo=window_repo_of(args), src_repo=args.src_repo, data_root=args.data_root,
+            roi_dir=args.roi_dir, include_tessera=args.tessera, tessera_repo=args.tessera_repo,
         )
-    elif args.command == "upload-zip":
-        upload_data_zip(
-            args.token,
-            data_root=args.data_root,
-            zip_path=args.zip_path,
-            repo_id=zip_repos[args.zip_repo],
-            zip_name=args.zip_name,
+    # --zip-repo picks between the window repo and the TESSERA repo.
+    zip_repo = {"window": window_repo_of(args), "tessera": args.tessera_repo}[args.zip_repo]
+    if args.command == "upload-zip":
+        return dataset_master.upload_data_zip(
+            args.token, data_root=args.data_root, zip_path=args.zip_path, repo_id=zip_repo, zip_name=args.zip_name,
         )
-    elif args.command == "pull-zip":
-        # The zips store their folders (train/, val/, test/, ...) at the root.
-        pull_zip_data_to(
-            args.data_root,
-            token=args.token,
-            repo_id=zip_repos[args.zip_repo],
-            download_dir=args.data_root,
-            zip_name=args.zip_name,
-        )
+    # pull-zip: the zips store their folders (train/, val/, test/, ...) at the root.
+    return dataset_master.pull_data_zip(args.data_root, token=args.token, repo_id=zip_repo, zip_name=args.zip_name)
+
+
+def main(argv=None):
+    """Parse the command line and run the subcommand; returns its report."""
+    return run(parse_args(argv))
 
 
 if __name__ == "__main__":

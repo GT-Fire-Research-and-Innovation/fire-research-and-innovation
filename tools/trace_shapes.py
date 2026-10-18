@@ -16,11 +16,9 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from firepred.config.channels import model_input_channels  # noqa: E402
-from firepred.config.dataset import CROP_SIZE  # noqa: E402
+from firepred.config.data import CROP_SIZE, model_input_channels  # noqa: E402
 from firepred.models.blocks.window_ops import get_window_size  # noqa: E402
-from firepred.models.registry import build_model, forward_model  # noqa: E402
-from firepred.models.spec import ModelSpec  # noqa: E402
+from firepred.models.registry import ModelSpec, build_model, forward_model  # noqa: E402
 
 PIXEL_METERS = 375  # VIIRS I-band pixel
 

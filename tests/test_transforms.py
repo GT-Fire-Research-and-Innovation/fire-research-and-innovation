@@ -3,8 +3,8 @@
 import numpy as np
 import torch
 
-from firepred.config.channels import BASE_MODEL_CHANNELS, LANDCOVER_CHANNEL
-from firepred.data.transforms import augment, landcover_one_hot_matrix, preprocess
+from firepred.config.data import BASE_MODEL_CHANNELS, LANDCOVER_CHANNEL, NORMALIZATION_MEAN, NORMALIZATION_STD
+from firepred.data.transforms import Normalize, augment, landcover_one_hot_matrix, preprocess
 
 
 def window(landcover):
@@ -48,3 +48,20 @@ def test_augment_draws_exactly_three_random_numbers():
     np.random.seed(0)
     np.random.random(3)
     assert after == np.random.random()
+
+
+def test_transforms_leave_their_inputs_unchanged():
+    """Normalize, preprocess and augment return new tensors; the caller's window is untouched."""
+    x = window(3.0) + torch.arange(27.0)[:, None, None, None]
+    x[LANDCOVER_CHANNEL] = 3.0
+    original = x.clone()
+    normalize = Normalize(NORMALIZATION_MEAN, NORMALIZATION_STD, dont_normalize_idc=[12, 18, 24, LANDCOVER_CHANNEL])
+    normalized = normalize(x)
+    assert torch.equal(x, original) and not torch.equal(normalized, original)
+    preprocess(x, landcover_one_hot_matrix())
+    assert torch.equal(x, original)
+    y = torch.zeros(2, 4, 4)
+    for seed in range(8):  # covers flip and rotation draws
+        np.random.seed(seed)
+        augment(x, y)
+        assert torch.equal(x, original)

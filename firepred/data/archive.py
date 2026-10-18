@@ -28,7 +28,7 @@ from pathlib import Path
 
 import numpy as np
 
-from firepred.config.dataset import ARCHIVE_FORMAT_VERSION, NPZ_COMPRESSLEVEL
+from firepred.config.data import ARCHIVE_FORMAT_VERSION, NPZ_COMPRESSLEVEL
 
 # Written into each unzipped folder: the archive (path, size, mtime) it came from.
 _UNZIP_MARKER = ".source.json"
@@ -50,7 +50,7 @@ def write_fire_archive(
     `data` as one five-dimensional member, this layout lets a Dataset
     decompress only the requested window. The dictionary values below are
     views, so building `payload` does not duplicate the fire in memory.
-    Returns the number of windows written.
+    Returns the path written (its `num_windows` member holds the count).
     """
     if len(data) != len(labels):
         raise ValueError(
@@ -113,7 +113,7 @@ def write_fire_archive(
             f"missing={sorted(missing_keys)}"
         )
 
-    return number_of_windows
+    return Path(save_path)
 
 
 # ----- Finding and opening fires ----- #

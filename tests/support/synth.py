@@ -1,4 +1,4 @@
-"""Deterministic synthetic inputs for the equivalence harness.
+"""Deterministic synthetic inputs for the tests (data roots, GeoTIFFs, fake TESSERA).
 
 Everything here is written with numpy/zipfile/rasterio directly, never with
 the code under test, so both trees read byte-identical files.

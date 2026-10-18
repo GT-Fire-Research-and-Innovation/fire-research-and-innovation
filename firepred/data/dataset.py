@@ -1,37 +1,118 @@
-"""FireDataset: every window of every fire in a split, as one PyTorch Dataset.
+"""From window archives to model input: TESSERA maps, FireDataset, loaders, batches.
 
-Level 1 (data). Used by training/run.py and cli/check.py.
+Level 1 (data). Used by training/ and cli/check.py. Three parts, in the order
+data flows through them:
 
-dataset[i] reads one window from its fire archive (data/archive.py) and runs
-data/transforms.py on it:
+    TESSERA      read_tessera, load_tessera_maps, compute_tessera_stats:
+                 per-fire embedding files and their normalization statistics
+    FireDataset  every window of every fire in a split, as one Dataset;
+                 dataset[i] reads one window from its fire archive
+                 (data/archive.py) and runs data/transforms.py on it:
+                     load       (27, T, 256, 256) float32 input, (256, 256) target
+                     normalize  standardized channels
+                     augment    (training only) flips/rotation
+                     preprocess -> {"data": (43, T, 256, 256), "labels": (2, 256, 256)}
+                 In TESSERA mode it also returns "static": (129, 256, 256),
+                 the fire's normalized embedding plus a validity mask.
+    loaders      make_dataloader, validate_dataset_output, and batch_inputs,
+                 which repeats the static map across the T days on the GPU.
 
-    load      (27, T, 256, 256) float32 input, (256, 256) target
-    normalize standardized channels
-    augment   (training only) flips/rotation
-    preprocess -> {"data": (43, T, 256, 256), "labels": (2, 256, 256)}
-
-In TESSERA mode it also returns "static": (129, 256, 256), the fire's
-normalized embedding plus a validity mask; the trainer repeats it across the
-T days on the GPU (data/loader.py: batch_inputs).
+TESSERA files are built by prep/tessera_grid.py: tessera/p<id>.npz with a
+(128, 256, 256) float16 `embedding` and a (256, 256) `coverage` (fraction of
+10 m pixels with data). [ours]
 """
 
 from pathlib import Path
 
 import numpy as np
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import DataLoader, Dataset
 
-from firepred.config.channels import (
+from firepred.config.data import (
+    ARCHIVE_FORMAT_VERSION,
+    BASE_MODEL_CHANNELS,
+    CROP_SIZE,
     DEGREE_CHANNELS,
     LANDCOVER_CHANNEL,
     N_STORED_CHANNELS,
     NORMALIZATION_MEAN,
     NORMALIZATION_STD,
+    TESSERA_BANDS,
+    TESSERA_CHANNELS,
 )
-from firepred.config.dataset import ARCHIVE_FORMAT_VERSION, CROP_SIZE
 from firepred.data.archive import find_fire_sources, fire_name, open_fire
-from firepred.data.tessera import read_tessera
 from firepred.data.transforms import Normalize, augment, landcover_one_hot_matrix, preprocess
+
+
+# ----- TESSERA embeddings ----- #
+
+
+def read_tessera(path):
+    """Read one TESSERA file and return its stored (embedding, coverage).
+
+    The arrays are marked read-only: one fire's map is shared by every window
+    of that fire (and by forked DataLoader workers), so nothing may modify it.
+    """
+    path = Path(path)
+    with np.load(path, allow_pickle=False) as archive:
+        embedding = archive["embedding"]
+        coverage = archive["coverage"]
+    if embedding.shape != (TESSERA_BANDS, CROP_SIZE, CROP_SIZE):
+        raise ValueError(
+            f"{path}: embedding has shape {embedding.shape}; "
+            f"expected ({TESSERA_BANDS}, {CROP_SIZE}, {CROP_SIZE})"
+        )
+    embedding.flags.writeable = False
+    coverage.flags.writeable = False
+    return embedding, coverage
+
+
+def load_tessera_maps(tessera_dir, fire_sources):
+    """{fire name: (embedding, coverage)} for every fire archive in `fire_sources`.
+
+    Each file is read once here (about 16 MiB per fire as float16); pass the
+    result to compute_tessera_stats and to FireDataset(tessera_maps=...) so
+    neither reads it again. Raises if any fire has no TESSERA file.
+    """
+    tessera_dir = Path(tessera_dir)
+    names = [fire_name(path) for path in fire_sources]
+    missing = [f"{name}.npz" for name in names if not (tessera_dir / f"{name}.npz").exists()]
+    if missing:
+        raise RuntimeError(f"{len(missing)} fires have no TESSERA file in {tessera_dir}: {missing[:10]}")
+    return {name: read_tessera(tessera_dir / f"{name}.npz") for name in names}
+
+
+def compute_tessera_stats(tessera_maps, min_coverage=0.5):
+    """Per-band mean/std over well-covered pixels of the given (embedding, coverage) maps.
+
+    Compute this from the training fires only and reuse it for validation and
+    test, so no statistics leak from held-out fires. Returns
+    {"mean": (128,), "std": (128,), "min_coverage": float}.
+    """
+    # Accumulate sum and sum of squares over all well-covered pixels of the
+    # training fires (float64 to avoid rounding drift), then mean and std per band.
+    total = np.zeros(TESSERA_BANDS, dtype=np.float64)
+    total_sq = np.zeros(TESSERA_BANDS, dtype=np.float64)
+    count = 0
+    for embedding, coverage in tessera_maps:
+        embedding = embedding.astype(np.float64)
+        valid = coverage.astype(np.float32) >= min_coverage
+        values = embedding[:, valid]
+        total += values.sum(axis=1)
+        total_sq += (values ** 2).sum(axis=1)
+        count += values.shape[1]
+    if count == 0:
+        raise RuntimeError("No TESSERA pixels with sufficient coverage")
+    mean = total / count
+    std = np.sqrt(np.maximum(total_sq / count - mean ** 2, 1e-12))
+    return {
+        "mean": mean.astype(np.float32),
+        "std": std.astype(np.float32),
+        "min_coverage": float(min_coverage),
+    }
+
+
+# ----- FireDataset ----- #
 
 
 class FireDataset(Dataset):
@@ -45,6 +126,8 @@ class FireDataset(Dataset):
                           than (T, H, W) sequences
     tessera_dir:          folder of tessera/p<id>.npz files, or None
     tessera_stats:        training-split statistics from compute_tessera_stats()
+    tessera_maps:         this split's maps from load_tessera_maps(), when the
+                          caller already read them; otherwise read from tessera_dir
     """
 
     def __init__(
@@ -56,7 +139,9 @@ class FireDataset(Dataset):
         target_is_single_day=False,
         tessera_dir=None,
         tessera_stats=None,
+        tessera_maps=None,
     ):
+        """Find the split's fires, load TESSERA maps if asked, and index every window."""
         # [ours] data and labels live together in version-2 archives, or in
         # unzipped p<id>/ folders of the same members.
         # 1. Find the split's fires (archives or unzipped folders).
@@ -80,19 +165,11 @@ class FireDataset(Dataset):
         if self.tessera_dir is not None:
             if tessera_stats is None:
                 raise ValueError("tessera_stats is required with tessera_dir")
-            missing = [
-                f"{fire_name(path)}.npz"
-                for path in self.npz_files
-                if not (self.tessera_dir / f"{fire_name(path)}.npz").exists()
-            ]
-            if missing:
-                raise RuntimeError(
-                    f"{len(missing)} archives in {self.npz_dir} have no TESSERA "
-                    f"file in {self.tessera_dir}: {missing[:10]}"
-                )
+            if tessera_maps is None:
+                tessera_maps = load_tessera_maps(self.tessera_dir, self.npz_files)
             for path in self.npz_files:
                 name = fire_name(path)
-                embedding, coverage = read_tessera(self.tessera_dir / f"{name}.npz")
+                embedding, coverage = tessera_maps[name]
                 valid = (
                     coverage.astype(np.float32) >= tessera_stats["min_coverage"]
                 )
@@ -172,10 +249,11 @@ class FireDataset(Dataset):
         self.one_hot_matrix = landcover_one_hot_matrix()
 
     def __len__(self):
-        # The number of windows across all fires.
+        """The number of windows across all fires."""
         return len(self.index)
 
     def __getitem__(self, idx):
+        """Window `idx` as {"data", "labels"[, "static"]}, ready for the model."""
         # DataLoader supplies a global window index; load_data maps it to one
         # member pair inside one fire archive.
         # One training example, in pipeline order: read the window from disk,
@@ -220,11 +298,6 @@ class FireDataset(Dataset):
         with open_fire(npz_path) as archive:
             data_array = archive[data_key]
             label_array = archive[label_key]
-
-        # NPZ-loaded arrays normally own writable memory already. Copy only
-        # if necessary because normalization modifies x in place.
-        if not data_array.flags.writeable:
-            data_array = data_array.copy()
 
         # No squeeze(): it could remove a real temporal dimension when T == 1.
         x = torch.from_numpy(data_array).to(dtype=torch.float32)
@@ -310,3 +383,84 @@ class FireDataset(Dataset):
             axis=0,
         ).astype(np.float32)
         return torch.from_numpy(static)
+
+
+# ----- Loaders and batches ----- #
+
+
+def make_dataloader(dataset, batch_size, shuffle, num_workers, pin_memory, generator=None):
+    """Create a conservative loader that can be tuned after RAM is measured.
+
+    `generator` (a torch.Generator) gives the loader its own random stream for
+    shuffling and worker seeds; None draws from the global torch generator.
+    """
+    # Batches of windows; training shuffles, validation and test keep a fixed order.
+    loader_options = {
+        "dataset": dataset,
+        "batch_size": batch_size,
+        "shuffle": shuffle,
+        "num_workers": num_workers,
+        "pin_memory": pin_memory,
+    }
+    if generator is not None:
+        loader_options["generator"] = generator
+
+    # Worker prefetching can hold multiple decompressed windows in RAM.
+    # Keep one prefetched batch per worker rather than PyTorch's default two.
+    if num_workers > 0:
+        loader_options["prefetch_factor"] = 1
+        loader_options["persistent_workers"] = True
+
+    return DataLoader(**loader_options)
+
+
+def validate_dataset_output(dataset, expected_model_channels, dataset_name):
+    """Fail before model construction if the Dataset/model shapes disagree."""
+    if len(dataset) == 0:
+        raise RuntimeError(f"{dataset_name} dataset contains no windows")
+
+    # Load one window and check its channel count matches what the model expects,
+    # so a data/model mismatch fails here, before any training time is spent.
+    sample = dataset[0]
+    data_shape = tuple(sample["data"].shape)
+    label_shape = tuple(sample["labels"].shape)
+    static_channels = sample["static"].shape[0] if "static" in sample else 0
+
+    if len(data_shape) != 4:
+        raise ValueError(
+            f"{dataset_name} sample must be (C,T,H,W), found {data_shape}"
+        )
+
+    actual_channels = data_shape[0] + static_channels
+    if actual_channels != expected_model_channels:
+        raise ValueError(
+            f"{dataset_name} FireDataset produces {actual_channels} channels "
+            f"after preprocessing, but the model is configured for "
+            f"{expected_model_channels}. The 27-channel archive plus 17-class "
+            f"land-cover expansion gives {BASE_MODEL_CHANNELS} channels; "
+            f"--tessera adds {TESSERA_CHANNELS} more."
+        )
+
+    print(
+        f"{dataset_name} windows={len(dataset)}, "
+        f"data shape={data_shape}, label shape={label_shape}"
+        + (f", static TESSERA channels={static_channels}" if static_channels else "")
+    )
+
+
+def batch_inputs(batch, device):
+    """Model input on `device`: the 43 stored channels, then (TESSERA mode)
+    the static (129, H, W) map repeated across the T days.
+
+    The repeat happens here on the GPU, not in the loader, so host RAM holds
+    the TESSERA map once per sample instead of once per day. The channel
+    order matches appending TESSERA after the base channels.
+    """
+    # Move the batch to the GPU; in TESSERA mode, copy the per-fire map onto every
+    # day there and append it after the 43 regular channels.
+    data = batch["data"].to(device, non_blocking=True)
+    if "static" in batch:
+        static = batch["static"].to(device, non_blocking=True)
+        static = static.unsqueeze(2).expand(-1, -1, data.shape[2], -1, -1)
+        data = torch.cat((data, static), dim=1)
+    return data

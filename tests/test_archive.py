@@ -9,8 +9,9 @@ def test_write_then_read_round_trip(tmp_path):
     data = np.arange(2 * 27 * 2 * 4 * 4, dtype=np.float32).reshape(2, 27, 2, 4, 4)
     labels = np.zeros((2, 4, 4), dtype=np.float32)
     labels[1, 0, 0] = 1
-    assert write_fire_archive(tmp_path / "p1.npz", data, labels, label_sel=0) == 2
-    with open_fire(tmp_path / "p1.npz") as archive:
+    path = write_fire_archive(tmp_path / "p1.npz", data, labels, label_sel=0)
+    assert path == tmp_path / "p1.npz"
+    with open_fire(path) as archive:
         assert int(archive["num_windows"]) == 2 and int(archive["format_version"]) == 2
         assert int(archive["label_sel"]) == 0
         np.testing.assert_array_equal(archive["data_001"], data[1])

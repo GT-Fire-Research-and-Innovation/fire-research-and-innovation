@@ -1,6 +1,6 @@
 """Offline stand-in for the parts of `huggingface_hub` the dataset pipeline calls.
 
-Installed as sys.modules["huggingface_hub"] by snapshot.py's hub tier. Each
+Installed as sys.modules["huggingface_hub"] by tests/golden/cases.py (hub group). Each
 repo is a folder under ROOT; every API call is logged in CALLS (paths made
 relative) so two trees can be compared call by call.
 """
@@ -9,7 +9,7 @@ import os
 import shutil
 from pathlib import Path
 
-ROOT = None   # set by snapshot.py: folder holding one subfolder per repo id
+ROOT = None   # set by the caller: folder holding one subfolder per repo id
 CALLS = []
 
 

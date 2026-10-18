@@ -1,6 +1,9 @@
-"""Model registry: model names -> builder functions, and the model I/O contract.
+"""Model registry: ModelSpec, model names -> builder functions, and the model I/O contract.
 
-Level 2 (models). Used by training/run.py, cli/check.py and tools/.
+Level 2 (models). Used by training/run.py, cli/check.py, cli/train.py and tools/.
+
+ModelSpec is everything a builder needs to know about the data; training
+builds one from the command line and passes it to build_model(name, spec).
 
 The contract every registered model follows:
     input   (B, C, T, H, W) float tensor, C = spec.in_channels
@@ -19,10 +22,60 @@ there is all it takes for `-m mymodel` to work. Lookups construct nothing, so
 they never touch the random-number streams.
 """
 
+import argparse
+import ast
 import importlib
 import pkgutil
+from dataclasses import dataclass, field
 
+from firepred.config.data import CROP_SIZE
 from firepred.models import zoo
+
+
+# ----- What a builder receives ----- #
+
+
+@dataclass(frozen=True)
+class ModelSpec:
+    """Input/output sizes plus the shared and model-specific hyperparameters.
+
+    in_channels:  channels per day after preprocessing (43, or 172 with TESSERA)
+    num_classes:  output channels (2: background, newly burned)
+    ts_length:    input days per window (T)
+    num_heads:    attention heads per stage (-nh); models without attention ignore it
+    feature_size: base feature width (-ed)
+    image_size:   (H, W) of every window
+    options:      model-specific settings, e.g. {"swin_temporal_downsample": False},
+                  from --model-option KEY=VALUE and the model-specific flags
+    """
+
+    in_channels: int
+    num_classes: int
+    ts_length: int
+    num_heads: int
+    feature_size: int
+    image_size: tuple = (CROP_SIZE, CROP_SIZE)
+    options: dict = field(default_factory=dict)
+
+    @property
+    def input_size(self):
+        """(T, H, W) of one input window."""
+        return (self.ts_length, *self.image_size)
+
+
+def parse_model_option(text):
+    """'KEY=VALUE' -> (KEY, VALUE) for ModelSpec.options; VALUE as a Python
+    literal when it parses (3, 0.5, True, (1, 2)), else as text."""
+    key, separator, value = text.partition("=")
+    if not separator or not key:
+        raise argparse.ArgumentTypeError(f"expected KEY=VALUE, got {text!r}")
+    try:
+        return key, ast.literal_eval(value)
+    except (ValueError, SyntaxError):
+        return key, value
+
+
+# ----- Registry ----- #
 
 _BUILDERS = {}
 

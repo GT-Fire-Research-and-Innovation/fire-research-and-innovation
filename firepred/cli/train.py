@@ -10,7 +10,7 @@ import argparse
 
 import wandb
 
-from firepred.config.paths import DEFAULT_TEST_CSV
+from firepred.config.data import DEFAULT_TEST_CSV
 from firepred.config.training import (
     DEFAULT_EPOCHS,
     DEFAULT_LOAD_EPOCH,
@@ -31,7 +31,7 @@ from firepred.config.training import (
     TESSERA_MIN_COVERAGE,
     WANDB_ENTITY,
 )
-from firepred.models.spec import parse_model_option
+from firepred.models.registry import parse_model_option
 from firepred.training.accelerator import DEVICES
 from firepred.training.run import run
 

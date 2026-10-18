@@ -1,0 +1,514 @@
+{
+"loss.('dice',)": [
+"tuple",
+[
+[
+"array",
+"float32",
+[
+1
+],
+"yi0jPw=="
+],
+[
+"dict",
+[]
+]
+]
+],
+"loss_name.('dice',)": "dice",
+"loss.('dicece',)": [
+"tuple",
+[
+[
+"array",
+"float32",
+[
+1
+],
+"1ydqQw=="
+],
+[
+"dict",
+[
+[
+"dice_loss",
+[
+"array",
+"float32",
+[
+1
+],
+"FIFRQw=="
+]
+],
+[
+"ce_loss",
+[
+"array",
+"float32",
+[
+1
+],
+"GTbFQQ=="
+]
+]
+]
+]
+]
+],
+"loss_name.('dicece',)": "dicece",
+"loss.('dicece', (1.0, 457.1), 0.7, 1.3)": [
+"tuple",
+[
+[
+"array",
+"float32",
+[
+1
+],
+"JcU2Qw=="
+],
+[
+"dict",
+[
+[
+"dice_loss",
+[
+"array",
+"float32",
+[
+1
+],
+"fVZWQw=="
+]
+],
+[
+"ce_loss",
+[
+"array",
+"float32",
+[
+1
+],
+"CHDJQQ=="
+]
+]
+]
+]
+]
+],
+"loss_name.('dicece', (1.0, 457.1), 0.7, 1.3)": "dicece",
+"loss.('dicefocal',)": [
+"tuple",
+[
+[
+"array",
+"float32",
+[
+1
+],
+"XrTfPw=="
+],
+[
+"dict",
+[
+[
+"dice_loss",
+[
+"array",
+"float32",
+[
+1
+],
+"yi0jPw=="
+]
+],
+[
+"focal_loss",
+[
+"array",
+"float32",
+[
+1
+],
+"eR2OPw=="
+]
+]
+]
+]
+]
+],
+"loss_name.('dicefocal',)": "dicefocal",
+"loss.('dicefocal', (1.0, 446.7836), 1.0, 1.0, 2.0, 1.5, 0.25)": [
+"tuple",
+[
+[
+"array",
+"float32",
+[
+1
+],
+"emoVQA=="
+],
+[
+"dict",
+[
+[
+"dice_loss",
+[
+"array",
+"float32",
+[
+1
+],
+"yi0jPw=="
+]
+],
+[
+"focal_loss",
+[
+"array",
+"float32",
+[
+1
+],
+"Dz5ZPw=="
+]
+]
+]
+]
+]
+],
+"loss_name.('dicefocal', (1.0, 446.7836), 1.0, 1.0, 2.0, 1.5, 0.25)": "dicefocal",
+"post_transform": [
+"array-hash",
+"float32",
+[
+3,
+2,
+32,
+32
+],
+"e613919c7c21b234cd1a65ab64c8bed333f427189ee09cf9523346dd1b4ffe69",
+2013.0,
+[
+0.0,
+1.0,
+0.0,
+1.0,
+0.0,
+0.0,
+1.0,
+0.0
+]
+],
+"metric.fire_only_f1": [
+"array",
+"float32",
+[
+3
+],
+"XH3PPS2msz0AAIA/"
+],
+"metric.background_f1": [
+"array",
+"float32",
+[
+3
+],
+"5N8nP/GiKT8AAAAA"
+],
+"metric.fire_only_iou": [
+"array",
+"float32",
+[
+3
+],
+"r49aPdHjOz0AAIA/"
+],
+"metric.mean_iou": [
+"array",
+"float32",
+[
+3,
+2
+],
+"zsT5Pq+PWj1nsP0+0eM7PQAAAAAAAIA/"
+],
+"metric.dice": [
+"array",
+"float32",
+[
+3,
+2
+],
+"5N8nP1x9zz3xoik/LaazPQAAAAAAAIA/"
+],
+"lr.none": [
+"tuple",
+[
+"NoneType",
+[
+"list",
+[
+0.001,
+0.001,
+0.001,
+0.001,
+0.001,
+0.001
+]
+]
+]
+],
+"lr.plateau": [
+"tuple",
+[
+"ReduceLROnPlateau",
+[
+"list",
+[
+0.001,
+0.001,
+0.001,
+0.0005,
+0.0005,
+0.0005
+]
+]
+]
+],
+"lr.cosine": [
+"tuple",
+[
+"CosineAnnealingLR",
+[
+"list",
+[
+0.0009397114317029975,
+0.0007750000000000001,
+0.00055,
+0.00032500000000000015,
+0.0001602885682970026,
+0.0001
+]
+]
+]
+],
+"chart_labels.dice": [
+"dict",
+[
+[
+"epoch",
+"Training Epoch (Starting at 0)"
+],
+[
+"train_loss",
+"Training Dice Loss \u2014 Next-Day Fire Growth"
+],
+[
+"val_loss",
+"Validation Dice Loss \u2014 Next-Day Fire Growth"
+],
+[
+"miou",
+"Validation Mean IoU \u2014 Background & Fire Growth"
+],
+[
+"mdice",
+"Validation Mean Dice (F1) \u2014 Background & Fire Growth"
+],
+[
+"train_fire_f1",
+"Training F1 \u2014 Next-Day Fire Growth"
+],
+[
+"train_background_f1",
+"Training F1 \u2014 Background"
+],
+[
+"val_fire_f1",
+"Validation F1 \u2014 Next-Day Fire Growth"
+],
+[
+"val_background_f1",
+"Validation F1 \u2014 Background"
+],
+[
+"train_fire_iou",
+"Training IoU \u2014 Next-Day Fire Growth"
+],
+[
+"val_fire_iou",
+"Validation IoU \u2014 Next-Day Fire Growth"
+],
+[
+"periodic_test_f1",
+"Test F1 \u2014 Next-Day Fire Growth (periodic, current weights)"
+],
+[
+"periodic_test_iou",
+"Test IoU \u2014 Next-Day Fire Growth (periodic, current weights)"
+],
+[
+"learning_rate",
+"Learning Rate"
+]
+]
+],
+"chart_labels.dicece": [
+"dict",
+[
+[
+"epoch",
+"Training Epoch (Starting at 0)"
+],
+[
+"train_loss",
+"Training Weighted Dice + Cross-Entropy Loss \u2014 Next-Day Fire Growth"
+],
+[
+"val_loss",
+"Validation Weighted Dice + Cross-Entropy Loss \u2014 Next-Day Fire Growth"
+],
+[
+"miou",
+"Validation Mean IoU \u2014 Background & Fire Growth"
+],
+[
+"mdice",
+"Validation Mean Dice (F1) \u2014 Background & Fire Growth"
+],
+[
+"train_fire_f1",
+"Training F1 \u2014 Next-Day Fire Growth"
+],
+[
+"train_background_f1",
+"Training F1 \u2014 Background"
+],
+[
+"val_fire_f1",
+"Validation F1 \u2014 Next-Day Fire Growth"
+],
+[
+"val_background_f1",
+"Validation F1 \u2014 Background"
+],
+[
+"train_fire_iou",
+"Training IoU \u2014 Next-Day Fire Growth"
+],
+[
+"val_fire_iou",
+"Validation IoU \u2014 Next-Day Fire Growth"
+],
+[
+"periodic_test_f1",
+"Test F1 \u2014 Next-Day Fire Growth (periodic, current weights)"
+],
+[
+"periodic_test_iou",
+"Test IoU \u2014 Next-Day Fire Growth (periodic, current weights)"
+],
+[
+"learning_rate",
+"Learning Rate"
+],
+[
+"train_dice_loss",
+"Training Weighted Dice Loss \u2014 Next-Day Fire Growth"
+],
+[
+"train_ce_loss",
+"Training Weighted Cross-Entropy Loss \u2014 Next-Day Fire Growth"
+],
+[
+"val_dice_loss",
+"Validation Weighted Dice Loss \u2014 Next-Day Fire Growth"
+],
+[
+"val_ce_loss",
+"Validation Weighted Cross-Entropy Loss \u2014 Next-Day Fire Growth"
+]
+]
+],
+"chart_labels.dicefocal": [
+"dict",
+[
+[
+"epoch",
+"Training Epoch (Starting at 0)"
+],
+[
+"train_loss",
+"Training Dice + Focal Loss \u2014 Next-Day Fire Growth"
+],
+[
+"val_loss",
+"Validation Dice + Focal Loss \u2014 Next-Day Fire Growth"
+],
+[
+"miou",
+"Validation Mean IoU \u2014 Background & Fire Growth"
+],
+[
+"mdice",
+"Validation Mean Dice (F1) \u2014 Background & Fire Growth"
+],
+[
+"train_fire_f1",
+"Training F1 \u2014 Next-Day Fire Growth"
+],
+[
+"train_background_f1",
+"Training F1 \u2014 Background"
+],
+[
+"val_fire_f1",
+"Validation F1 \u2014 Next-Day Fire Growth"
+],
+[
+"val_background_f1",
+"Validation F1 \u2014 Background"
+],
+[
+"train_fire_iou",
+"Training IoU \u2014 Next-Day Fire Growth"
+],
+[
+"val_fire_iou",
+"Validation IoU \u2014 Next-Day Fire Growth"
+],
+[
+"periodic_test_f1",
+"Test F1 \u2014 Next-Day Fire Growth (periodic, current weights)"
+],
+[
+"periodic_test_iou",
+"Test IoU \u2014 Next-Day Fire Growth (periodic, current weights)"
+],
+[
+"learning_rate",
+"Learning Rate"
+],
+[
+"train_dice_loss",
+"Training Dice Loss \u2014 Next-Day Fire Growth"
+],
+[
+"train_focal_loss",
+"Training Focal Loss \u2014 Next-Day Fire Growth"
+],
+[
+"val_dice_loss",
+"Validation Dice Loss \u2014 Next-Day Fire Growth"
+],
+[
+"val_focal_loss",
+"Validation Focal Loss \u2014 Next-Day Fire Growth"
+]
+]
+]
+}

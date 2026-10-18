@@ -1,0 +1,240 @@
+"""End-to-end training runs through the CLI: they finish and produce sane results.
+
+Exact numbers of a full run are not pinned (random-draw order may change in a
+refactor); what is pinned is the shape of a run: what gets logged, which
+checkpoint is kept, that -test reproduces the final scores, and that a run is
+deterministic for a given seed. Default runs use the one-layer "tiny3d" model
+(tests/support/tiny_model.py); `pytest -m slow` repeats one with SwinUNETR-3D.
+"""
+
+import json
+import math
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+import torch
+
+RUN_CLI = Path(__file__).resolve().parent / "support" / "run_cli.py"
+EPOCH = "Training Epoch (Starting at 0)"
+LEARNING_RATE = "Learning Rate"
+VAL_LOSS_DICECE = "Validation Weighted Dice + Cross-Entropy Loss — Next-Day Fire Growth"
+PERIODIC_F1 = "Test F1 — Next-Day Fire Growth (periodic, current weights)"
+CHECKPOINT_FIELDS = {
+    "epoch", "model_state_dict", "optimizer_state_dict", "loss", "use_tessera", "model_input_channels",
+    "swin_temporal_downsample", "tessera_stats", "loss_config", "lr_config",
+}
+
+
+def base_flags(model="tiny3d", width="12"):
+    """Common flags of every run: 2 epochs, batch 2, seed 42."""
+    return ["-m", model, "-mode", "pred", "-b", "2", "-r", "1", "-lr", "0.001", "-nh", "3", "-ed", width,
+            "-ts", "6", "-it", "1", "-seed", "42", "--epochs", "2"]
+
+
+class Run:
+    """What one CLI run left behind: exit code, W&B calls, checkpoints, plots."""
+
+    def __init__(self, case_dir, result):
+        """Read the call log and list the files of a finished run."""
+        self.dir = case_dir
+        self.returncode = result.returncode
+        self.stderr = result.stderr
+        calls_path = case_dir / "calls.json"
+        self.calls = json.loads(calls_path.read_text()) if calls_path.exists() else []
+        self.checkpoints = sorted(case_dir.glob("*.pth"))
+        self.plots = sorted(case_dir.rglob("*.png"))
+
+    def named(self, name):
+        """Every call of one kind (e.g. "log", "init")."""
+        return [call for call in self.calls if call[0] == name]
+
+    def logs(self):
+        """The dicts passed to wandb.log, in order."""
+        return [call[1][0] for call in self.named("log")]
+
+    def train_logs(self):
+        """Per-epoch training logs."""
+        return [log for log in self.logs() if EPOCH in log and LEARNING_RATE not in log and PERIODIC_F1 not in log]
+
+    def val_logs(self):
+        """Per-epoch validation logs (they carry the learning rate)."""
+        return [log for log in self.logs() if LEARNING_RATE in log]
+
+    def periodic_logs(self):
+        """Periodic test-fire logs."""
+        return [log for log in self.logs() if PERIODIC_F1 in log]
+
+    def final_log(self):
+        """The final test log (the one with test_f1), or None."""
+        finals = [log for log in self.logs() if "test_f1" in log]
+        return finals[-1] if finals else None
+
+    def checkpoint(self, index=0):
+        """Fully load one saved checkpoint."""
+        return torch.load(self.checkpoints[index], map_location="cpu", weights_only=False)
+
+
+def run(case_dir, flags, check=True):
+    """Run the training CLI with `flags` in `case_dir` and return a Run."""
+    env = dict(os.environ, CUDA_VISIBLE_DEVICES="", MPLBACKEND="Agg", PYTHONHASHSEED="0",
+               OMP_NUM_THREADS="4", PYTHONWARNINGS="ignore")
+    result = subprocess.run([sys.executable, str(RUN_CLI), str(case_dir), "--", *flags],
+                            capture_output=True, text=True, env=env)
+    finished = Run(Path(case_dir), result)
+    if check:
+        assert finished.returncode == 0, finished.stderr[-3000:]
+    return finished
+
+
+@pytest.fixture(scope="module")
+def e2e_root(tmp_path_factory):
+    """Synthetic data root for end-to-end runs (2 val windows, 2 test fires) and its test CSV."""
+    import synth
+
+    return synth.data_root(tmp_path_factory.mktemp("e2e") / "data", synth.E2E_FIRES)
+
+
+def data_flags(e2e_root):
+    """Flags pointing a run at the synthetic data."""
+    root, csv_path = e2e_root
+    return ["--data-root", str(root), "--test-csv", str(csv_path)]
+
+
+@pytest.fixture(scope="module")
+def dicece_run(e2e_root, tmp_path_factory):
+    """Dice+CE run with checkpoint upload, periodic test every epoch and plots."""
+    flags = base_flags() + data_flags(e2e_root) + [
+        "--loss", "dicece", "--upload-checkpoints", "--test-every", "1", "--plot-dir", "plots"]
+    return run(tmp_path_factory.mktemp("dicece"), flags)
+
+
+def assert_finite_scores(log, low=0.0, high=1.0, score_words=("F1", "IoU", "Dice")):
+    """Every value in a log is finite; F1/IoU/Dice values lie in [low, high]."""
+    for key, value in log.items():
+        assert math.isfinite(value), (key, value)
+        if any(word in key for word in score_words) and "Loss" not in key:
+            assert low <= value <= high, (key, value)
+
+
+def test_training_run_logs_every_epoch(dicece_run):
+    """W&B is set up and finished, and every epoch logs train, validation and periodic test scores."""
+    init = dicece_run.named("init")
+    assert len(init) == 1 and init[0][2]["project"]
+    assert dicece_run.named("finish")
+    assert dicece_run.named("define_metric")
+    train, val, periodic = dicece_run.train_logs(), dicece_run.val_logs(), dicece_run.periodic_logs()
+    assert [log[EPOCH] for log in train] == [0, 1]
+    assert [log[EPOCH] for log in val] == [0, 1]
+    assert [log[EPOCH] for log in periodic] == [0, 1]
+    for log in train + val + periodic:
+        assert_finite_scores(log)
+    for log in train + val:
+        assert all(value > 0 for key, value in log.items() if "Loss" in key)
+    assert all(log[LEARNING_RATE] == pytest.approx(1e-3) for log in val)
+
+
+def test_training_run_keeps_the_best_checkpoint(dicece_run):
+    """One checkpoint is kept: the lowest validation loss, with every recorded setting."""
+    assert len(dicece_run.checkpoints) == 1
+    checkpoint = dicece_run.checkpoint()
+    val_losses = [log[VAL_LOSS_DICECE] for log in dicece_run.val_logs()]
+    assert checkpoint["loss"] == pytest.approx(min(val_losses))
+    assert CHECKPOINT_FIELDS <= set(checkpoint)
+    assert checkpoint["loss_config"]["loss"] == "dicece"
+    assert dicece_run.checkpoints[0].name.startswith("model_tiny3d_mode_pred_")
+    assert f"epoch_{checkpoint['epoch'] + 1}" in dicece_run.checkpoints[0].name
+
+
+def test_training_run_uploads_and_tests_the_best_checkpoint(dicece_run):
+    """The checkpoint is uploaded with best/latest/epoch aliases, and the final test covers both fires."""
+    aliases = [call[2]["aliases"] for call in dicece_run.named("run.log_artifact")]
+    assert aliases and all(set(a[:2]) == {"best", "latest"} and a[2].startswith("epoch-") for a in aliases)
+    final = dicece_run.final_log()
+    assert final is not None and final["test_fires"] == 2
+    assert_finite_scores(final)
+    assert dicece_run.named("run.summary.update")
+    assert len(dicece_run.plots) == 2  # one per test window
+
+
+def test_tessera_plateau_run(e2e_root, tmp_path):
+    """Dice loss + TESSERA inputs + plateau schedule: 172 channels and training-fire statistics saved."""
+    flags = base_flags() + data_flags(e2e_root) + [
+        "--loss", "dice", "--tessera", "--lr-schedule", "plateau", "--lr-patience", "0"]
+    finished = run(tmp_path, flags)
+    checkpoint = finished.checkpoint()
+    assert checkpoint["use_tessera"] is True
+    assert checkpoint["model_input_channels"] == 172
+    stats = checkpoint["tessera_stats"]
+    assert len(stats["mean"]) == len(stats["std"]) == 128
+    assert "_tessera" in finished.checkpoints[0].name
+    assert finished.final_log() is not None
+
+
+def test_worker_cosine_run_without_final_test(e2e_root, tmp_path):
+    """Two loader workers and a cosine schedule; --no-test-after-train skips the final test."""
+    flags = base_flags() + data_flags(e2e_root) + [
+        "--num-workers", "2", "--lr-schedule", "cosine", "--no-test-after-train"]
+    finished = run(tmp_path, flags)
+    rates = [log[LEARNING_RATE] for log in finished.val_logs()]
+    assert rates[0] == pytest.approx(1e-3) and rates[1] < rates[0]
+    assert finished.final_log() is None
+    assert len(finished.checkpoints) == 1
+
+
+def test_test_mode_reproduces_final_scores(dicece_run, e2e_root, tmp_path):
+    """-test on the kept checkpoint gives exactly the scores the training run logged at the end."""
+    flags = base_flags() + data_flags(e2e_root) + [
+        "--loss", "dicece", "-test", "--checkpoint", str(dicece_run.checkpoints[0])]
+    finished = run(tmp_path, flags)
+    assert not finished.named("define_metric")
+    assert finished.named("init")
+    names = [call[1][0] for call in finished.named("run.name")]
+    assert names and names[0].startswith("test_")
+    trained, tested = dicece_run.final_log(), finished.final_log()
+    assert tested["test_f1"] == trained["test_f1"]
+    assert tested["test_iou"] == trained["test_iou"]
+    assert not finished.checkpoints
+
+
+def test_test_mode_refuses_a_tessera_mismatch(dicece_run, e2e_root, tmp_path):
+    """A checkpoint trained without TESSERA cannot be tested with --tessera."""
+    flags = base_flags() + data_flags(e2e_root) + [
+        "--loss", "dicece", "--tessera", "-test", "--checkpoint", str(dicece_run.checkpoints[0])]
+    finished = run(tmp_path, flags, check=False)
+    assert finished.returncode != 0
+    assert "tessera" in finished.stderr.lower()
+
+
+def weights(finished):
+    """The kept checkpoint's model weights."""
+    return finished.checkpoint()["model_state_dict"]
+
+
+def assert_same_weights(left, right):
+    """Two state dicts hold bit-identical tensors under the same names."""
+    assert list(left) == list(right)
+    for name in left:
+        assert torch.equal(left[name], right[name]), name
+
+
+def test_runs_are_deterministic_and_periodic_tests_change_nothing(dicece_run, e2e_root, tmp_path):
+    """The same seed gives the same weights, with or without periodic test scoring."""
+    common = base_flags() + data_flags(e2e_root) + ["--loss", "dicece", "--no-test-after-train"]
+    again = run(tmp_path / "again", common + ["--test-every", "1"])
+    without = run(tmp_path / "without", common + ["--test-every", "0"])
+    assert_same_weights(weights(dicece_run), weights(again))
+    assert_same_weights(weights(again), weights(without))
+
+
+@pytest.mark.slow
+def test_swinunetr3d_run(e2e_root, tmp_path):
+    """The real model trains, keeps a checkpoint and scores the test fires."""
+    flags = base_flags("swinunetr3d", "12") + data_flags(e2e_root) + ["--loss", "dicece", "--test-every", "1"]
+    finished = run(tmp_path, flags)
+    assert len(finished.checkpoints) == 1
+    final = finished.final_log()
+    assert final is not None and final["test_fires"] == 2
+    assert_finite_scores(final)

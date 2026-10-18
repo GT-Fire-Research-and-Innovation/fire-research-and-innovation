@@ -13,9 +13,8 @@ ALLOWED = {
     "data": {"config"},
     "models": {"config"},
     "prep": {"config", "data"},
-    "hub": {"config", "data", "prep"},
     "training": {"config", "data", "models"},
-    "cli": {"config", "data", "models", "prep", "hub", "training"},
+    "cli": {"config", "data", "models", "prep", "training"},
 }
 
 
@@ -64,7 +63,7 @@ def test_training_path_skips_dataset_building_dependencies():
     code = (
         "import sys, importlib, pkgutil\n"
         "import firepred.cli.train\n"
-        "heavy = {'rasterio', 'pyproj', 'geotessera', 'firepred.hub', 'firepred.prep'}\n"
+        "heavy = {'rasterio', 'pyproj', 'geotessera', 'firepred.prep'}\n"
         "print(sorted(heavy & set(sys.modules)))\n"
     )
     result = subprocess.run([sys.executable, "-c", code], cwd=PACKAGE.parent, capture_output=True, text=True)

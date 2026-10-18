@@ -18,9 +18,9 @@ import torch
 from monai.data import decollate_batch
 from torch.utils.data import Subset
 
-from firepred.config.dataset import EXCLUDED_TEST_FIRES
+from firepred.config.data import EXCLUDED_TEST_FIRES
 from firepred.data.archive import fire_name
-from firepred.data.loader import batch_inputs, make_dataloader
+from firepred.data.dataset import batch_inputs, make_dataloader
 from firepred.models.registry import forward_model
 from firepred.training.metrics import background_f1, fire_only_f1, fire_only_iou
 
