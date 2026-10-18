@@ -1,223 +1,203 @@
 """Build the TS-SatFire next-day prediction dataset through Hugging Face.
 
-Level 4 (cli). Each subcommand calls one master function (prep/dataset_master.py,
-prep/tessera_master.py) and prints its report. The token
-defaults to the HF_TOKEN environment variable. Defaults come from
-firepred/config/data.py: -ts/-it (window length and stride) and the
-dataset repos. --window-repo defaults to the repo for the chosen -ts/-it
-(window_repo_for). The flags are those of the former dataset_gen_pred.py.
+Level 4 (cli). Each subcommand is one master function (data/windows_master.py,
+data/tessera_master.py); its flags set that function's parameters of the same
+name, and every default is the function's own (so the defaults live in one
+place: the master signatures, which take them from firepred/config/dataset.py).
+The token defaults to the HF_TOKEN environment variable; --window-repo to the
+repo for the chosen -ts/-it (window_repo_for).
 
-    python -m firepred.cli.dataset process -ts 6 -it 1
+    python -m firepred.cli.dataset process -ts 6 -it 1 [--only-fires 21890003 ...]
     python -m firepred.cli.dataset tessera [--only-fires 21890003 ...]
     python -m firepred.cli.dataset tessera-zip
     python -m firepred.cli.dataset pull-zip --data-root ./data && python -m firepred.cli.dataset pull-tessera --data-root ./data
     python -m firepred.cli.dataset download -ts 6 -it 1 --data-root ./data [--tessera]
     python -m firepred.cli.dataset upload-zip --data-root ./data [--zip-repo tessera --zip-name data_tessera.zip]
     python -m firepred.cli.dataset pull-zip --data-root ./data [--zip-repo window|tessera]
+    python -m firepred.cli.dataset rebuild-zip -ts 6 -it 1
+    python -m firepred.cli.dataset stage --work-dir /kaggle/temp/fire-research [--tessera]
 """
 
 import argparse
+import inspect
 import os
+from dataclasses import dataclass, field
 
-from firepred.config.data import (
-    SPLITS,
-    SRC_REPO,
-    TESSERA_REPO,
-    TRAIN_VAL_LABEL_SEL,
-    TS_INTERVAL,
-    TS_LENGTH,
-    window_repo_for,
-)
-from firepred.prep import dataset_master, tessera_master
-
+from firepred.config.dataset import DATA_DIR, SPLITS, window_repo_for
+from firepred.data import tessera_master, windows_master
 
 ZIP_REPOS = ("window", "tessera")
+
+
+@dataclass(frozen=True)
+class Option:
+    """One flag of a subcommand: its spellings and argparse settings; `dest` names the master parameter."""
+
+    flags: tuple
+    dest: str
+    options: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class Command:
+    """One subcommand: the master function it runs and its own flags."""
+
+    name: str
+    function: object
+    help: str
+    options: tuple = ()
+    windows: bool = False   # takes -ts/-it
+
+
+def parameter_default(function, name):
+    """The default of parameter `name` of `function` (None when it has none)."""
+    parameter = inspect.signature(function).parameters.get(name)
+    if parameter is None or parameter.default is inspect.Parameter.empty:
+        return None
+    return parameter.default
+
+
+def splits_option(help_text):
+    """-mode: which splits to work on."""
+    return Option(("-mode",), "splits", {"nargs": "+", "choices": SPLITS, "help": help_text})
+
+
+COMMANDS = (
+    # process (step 1): raw GeoTIFFs -> one windowed NPZ archive per fire in the
+    # window repo. The label flags pick the burned-area mask (with or without NIFC).
+    Command("process", windows_master.process_windows,
+            "Stream raw fires from --src-repo into windowed NPZs in --window-repo", (
+                splits_option("Splits to build"),
+                Option(("--batch-size",), "batch_size", {"type": int}),
+                Option(("--overwrite",), "overwrite", {
+                    "action": "store_true",
+                    "help": "Rebuild fires already in --window-repo and rewrite its window_config.json "
+                            "(window length/stride, label rules, crop, split) with the settings of this run"}),
+                Option(("--debug",), "debug", {"action": "store_true"}),
+                Option(("--only-fires",), "only_fires", {"nargs": "+", "help": "Restrict to these fire IDs (debugging)"}),
+                Option(("--ignore-roi-label-sel",), "use_roi_label_sel", {
+                    "action": "store_false",
+                    "help": "Use --train-val-label-sel for test fires too instead of their ROI value"}),
+                Option(("--train-val-label-sel",), "train_val_label_sel", {
+                    "type": int, "choices": (0, 1),
+                    "help": "Train/val burned-area mask: 0 = AF + NIFC perimeters (paper), 1 = AF only (released code)"}),
+            ), windows=True),
+    # Optional TESSERA steps: build per-fire embeddings (tessera), bundle them into
+    # one zip (tessera-zip), unpack it beside the window data (pull-tessera).
+    Command("tessera", tessera_master.process_tessera,
+            "Build prior-year TESSERA embeddings per fire into --tessera-repo", (
+                splits_option("Splits whose fires get TESSERA"),
+                Option(("--batch-size",), "batch_size", {"type": int}),
+                Option(("--strip-rows",), "strip_rows", {"type": int}),
+                Option(("--overwrite",), "overwrite", {"action": "store_true"}),
+                Option(("--only-fires",), "only_fires", {"nargs": "+", "help": "Restrict to these fire IDs (timing test)"}),
+            )),
+    Command("tessera-zip", tessera_master.upload_tessera_zip,
+            "Bundle --tessera-repo tessera/ and the drop list into tessera.zip there"),
+    Command("pull-tessera", tessera_master.pull_tessera_zip,
+            "Unpack tessera.zip into --data-root/tessera and drop 2017 window archives", (
+                Option(("--data-root",), "data_root", {"default": DATA_DIR}),  # a required parameter
+                Option(("--keep-excluded",), "drop_excluded", {"action": "store_false"}),
+            )),
+    # Move window archives between the repo and a local data root: file by file
+    # (download), or as one zip (upload-zip / pull-zip): one file to fetch instead
+    # of one per fire.
+    Command("download", windows_master.download_windows,
+            "Download --window-repo NPZs into --data-root/{train,val,test}", (
+                Option(("--data-root",), "data_root"),
+                Option(("--tessera",), "include_tessera", {
+                    "action": "store_true",
+                    "help": "TESSERA mode: drop fires without prior-year TESSERA and download "
+                            "--tessera-repo embeddings into --data-root/tessera"}),
+            ), windows=True),
+    Command("upload-zip", windows_master.upload_data_zip, "Zip --data-root and upload it to --zip-repo", (
+                Option(("--data-root",), "data_root"),
+                Option(("--zip-path",), "zip_path", {"help": "Local zip file (default: <data-root>/../<zip-name>)"}),
+                Option(("--zip-repo",), "zip_repo", {"choices": ZIP_REPOS, "default": "window"}),
+                Option(("--zip-name",), "zip_name", {"help": "data_tessera.zip for TESSERA mode"}),
+            ), windows=True),
+    Command("pull-zip", windows_master.pull_data_zip,
+            "Download a zip from --zip-repo and extract it into --data-root", (
+                Option(("--data-root",), "data_root", {"default": DATA_DIR}),  # a required parameter
+                Option(("--zip-repo",), "zip_repo", {"choices": ZIP_REPOS, "default": "window"}),
+                Option(("--zip-name",), "zip_name"),
+            ), windows=True),
+    # rebuild-zip: download every archive of the window repo and upload it back as data.zip.
+    Command("rebuild-zip", windows_master.rebuild_data_zip,
+            "Download --window-repo into --work-dir and upload it there as data.zip", windows=True),
+    # stage: what the training notebooks run before training (a training root under --work-dir).
+    Command("stage", windows_master.stage_training_data,
+            "Download/extract data.zip (and tessera.zip) under --work-dir and print the training root", (
+                Option(("--tessera",), "use_tessera", {"action": "store_true",
+                                                       "help": "Also stage TESSERA and drop excluded fires"}),
+                Option(("--attached-data-root",), "attached_data_root", {"help": "An extracted data root to use as is"}),
+                Option(("--attached-zip",), "attached_zip", {"help": "A local data.zip instead of downloading it"}),
+                Option(("--attached-tessera-dir",), "attached_tessera_dir", {"help": "A folder of TESSERA files"}),
+                Option(("--attached-tessera-zip",), "attached_tessera_zip", {"help": "A local tessera.zip"}),
+            ), windows=True),
+)
+BY_NAME = {command.name: command for command in COMMANDS}
+
+
+def add_option(parser, option, function):
+    """Add one Option to `parser`, defaulting to `function`'s own default for that parameter."""
+    options = dict(option.options)
+    if options.get("action") not in ("store_true", "store_false") and "default" not in options:
+        options["default"] = parameter_default(function, option.dest)
+    parser.add_argument(*option.flags, dest=option.dest, **options)
+    return parser
 
 
 def parse_args(argv=None):
     """Parse the dataset command line (global repo/folder flags, then one subcommand)."""
     parser = argparse.ArgumentParser(prog="python -m firepred.cli.dataset", description=__doc__.splitlines()[0])
     # Shared by every subcommand: credentials, the three Hugging Face repos (raw
-    # source, windows, TESSERA) and the local working folders.
-    parser.add_argument(
-        "--token",
-        default=os.environ.get("HF_TOKEN"),
-        help="Hugging Face token (default: $HF_TOKEN)",
-    )
-    parser.add_argument("--src-repo", default=SRC_REPO, help="Raw GeoTIFFs + ROI CSVs")
-    parser.add_argument(
-        "--window-repo",
-        dest="window_repo",
-        default=None,
-        help="Windowed NPZ per fire (default: the repo for -ts/-it)",
-    )
-    parser.add_argument("--tessera-repo", default=TESSERA_REPO, help="Prior-year TESSERA per fire")
-    parser.add_argument("--roi-dir", default="hf_roi")
-    parser.add_argument("--work-dir", default=".")
+    # source, windows, TESSERA) and the local working folders. Defaults: process_windows'.
+    builder = windows_master.process_windows
+    parser.add_argument("--token", default=os.environ.get("HF_TOKEN"), help="Hugging Face token (default: $HF_TOKEN)")
+    add_option(parser, Option(("--src-repo",), "src_repo", {"help": "Raw GeoTIFFs + ROI CSVs"}), builder)
+    add_option(parser, Option(("--window-repo",), "window_repo",
+                              {"help": "Windowed NPZ per fire (default: the repo for -ts/-it)"}), builder)
+    add_option(parser, Option(("--tessera-repo",), "tessera_repo", {"help": "Prior-year TESSERA per fire"}),
+               tessera_master.process_tessera)
+    add_option(parser, Option(("--roi-dir",), "roi_dir"), builder)
+    add_option(parser, Option(("--work-dir",), "work_dir"), builder)
     # One subcommand per pipeline step; the module docstring lists them in run order.
     subparsers = parser.add_subparsers(dest="command", required=True)
-
-    # Window settings, shared by every command that reads or writes windows.
-    windows = argparse.ArgumentParser(add_help=False)
-    windows.add_argument(
-        "-ts",
-        "--length",
-        dest="ts",
-        type=int,
-        default=TS_LENGTH,
-        help=f"Input days per window (default {TS_LENGTH})",
-    )
-    windows.add_argument(
-        "-it",
-        "--interval",
-        dest="it",
-        type=int,
-        default=TS_INTERVAL,
-        help=f"Days between window starts (default {TS_INTERVAL})",
-    )
-
-    # process (step 1): raw GeoTIFFs -> one windowed NPZ archive per fire in the
-    # window repo. The label flags pick the burned-area mask (with or without NIFC).
-    process = subparsers.add_parser(
-        "process",
-        parents=[windows],
-        help="Stream raw fires from --src-repo into windowed NPZs in --window-repo",
-    )
-    process.add_argument(
-        "-mode",
-        nargs="+",
-        choices=SPLITS,
-        default=list(SPLITS),
-    )
-    process.add_argument("--batch-size", type=int, default=10)
-    process.add_argument(
-        "--overwrite",
-        action="store_true",
-        help="Rebuild fires already in --window-repo and rewrite its window_config.json "
-        "(window length/stride, label rules, crop, split) with the settings of this run",
-    )
-    process.add_argument("--debug", action="store_true")
-    process.add_argument(
-        "--ignore-roi-label-sel",
-        action="store_true",
-        help="Use --train-val-label-sel for test fires too instead of their ROI value",
-    )
-    process.add_argument(
-        "--train-val-label-sel",
-        type=int,
-        choices=(0, 1),
-        default=TRAIN_VAL_LABEL_SEL,
-        help="Train/val burned-area mask: 0 = AF + NIFC perimeters (paper), 1 = AF only (released code)",
-    )
-
-    # Optional TESSERA steps: build per-fire embeddings (tessera), bundle them into
-    # one zip (tessera-zip), unpack it beside the window data (pull-tessera).
-    tessera = subparsers.add_parser(
-        "tessera",
-        help="Build prior-year TESSERA embeddings per fire into --tessera-repo",
-    )
-    tessera.add_argument(
-        "-mode",
-        nargs="+",
-        choices=SPLITS,
-        default=list(SPLITS),
-    )
-    tessera.add_argument("--batch-size", type=int, default=1)
-    tessera.add_argument("--strip-rows", type=int, default=128)
-    tessera.add_argument("--overwrite", action="store_true")
-    tessera.add_argument("--only-fires", nargs="+", help="Restrict to these fire IDs (timing test)")
-
-    subparsers.add_parser(
-        "tessera-zip",
-        help="Bundle --tessera-repo tessera/ and the drop list into tessera.zip there",
-    )
-    pull_tessera = subparsers.add_parser(
-        "pull-tessera",
-        help="Unpack tessera.zip into --data-root/tessera and drop 2017 window archives",
-    )
-    pull_tessera.add_argument("--data-root", default="./data")
-    pull_tessera.add_argument("--keep-excluded", action="store_true")
-
-    # Move window archives between the repo and a local data root: file by file
-    # (download), or as one zip (upload-zip / pull-zip): one file to fetch instead
-    # of one per fire.
-    download = subparsers.add_parser(
-        "download",
-        parents=[windows],
-        help="Download --window-repo NPZs into --data-root/{train,val,test}",
-    )
-    download.add_argument("--data-root", default="./data")
-    download.add_argument(
-        "--tessera",
-        action="store_true",
-        help="TESSERA mode: drop fires without prior-year TESSERA and download "
-        "--tessera-repo embeddings into --data-root/tessera",
-    )
-
-    upload_zip = subparsers.add_parser(
-        "upload-zip",
-        parents=[windows],
-        help="Zip --data-root and upload it to --zip-repo",
-    )
-    upload_zip.add_argument("--data-root", default="./data")
-    upload_zip.add_argument("--zip-path", default="./data.zip")
-    upload_zip.add_argument("--zip-repo", choices=ZIP_REPOS, default="window")
-    upload_zip.add_argument("--zip-name", default="data.zip", help="data_tessera.zip for TESSERA mode")
-
-    pull_zip = subparsers.add_parser(
-        "pull-zip",
-        parents=[windows],
-        help="Download a zip from --zip-repo and extract it into --data-root",
-    )
-    pull_zip.add_argument("--data-root", default="./data")
-    pull_zip.add_argument("--zip-repo", choices=ZIP_REPOS, default="window")
-    pull_zip.add_argument("--zip-name", default="data.zip")
-
+    for command in COMMANDS:
+        sub = subparsers.add_parser(command.name, help=command.help)
+        if command.windows:
+            # Window settings, shared by every command that reads or writes windows.
+            add_option(sub, Option(("-ts", "--length"), "length", {"type": int, "help": "Input days per window"}),
+                       builder)
+            add_option(sub, Option(("-it", "--interval"), "interval",
+                                   {"type": int, "help": "Days between window starts"}), builder)
+        for option in command.options:
+            add_option(sub, option, command.function)
     return parser.parse_args(argv)
 
 
 def window_repo_of(args):
     """--window-repo, or the repo named after -ts/-it (each window shape has its own repo)."""
-    return args.window_repo or window_repo_for(args.ts, args.it)
+    return args.window_repo or window_repo_for(args.length, args.interval)
+
+
+def call_arguments(command, args):
+    """The keyword arguments for `command.function`: every parsed value whose name is a parameter."""
+    values = vars(args)
+    if "zip_repo" in values:  # --zip-repo picks between the window repo and the TESSERA repo
+        values["repo_id"] = {"window": window_repo_of(args), "tessera": args.tessera_repo}[args.zip_repo]
+    if command.name == "stage":  # the training notebooks' paths, from --work-dir and the window settings
+        values["work"] = windows_master.workspace(args.work_dir, args.length, args.interval, args.use_tessera,
+                                                  args.window_repo)
+    parameters = inspect.signature(command.function).parameters
+    return {name: value for name, value in values.items() if name in parameters}
 
 
 def run(args):
     """Run the parsed subcommand through its master function and return the result."""
-    if args.command == "process":
-        return dataset_master.process_windows(
-            args.token, src_repo=args.src_repo, window_repo=window_repo_of(args), batch_size=args.batch_size,
-            length=args.ts, interval=args.it, splits=args.mode, roi_dir=args.roi_dir, work_dir=args.work_dir,
-            overwrite=args.overwrite, debug=args.debug, use_roi_label_sel=not args.ignore_roi_label_sel,
-            train_val_label_sel=args.train_val_label_sel,
-        )
-    if args.command == "tessera":
-        return tessera_master.process_tessera(
-            args.token, src_repo=args.src_repo, tessera_repo=args.tessera_repo, splits=args.mode,
-            batch_size=args.batch_size, work_dir=args.work_dir, roi_dir=args.roi_dir, overwrite=args.overwrite,
-            strip_rows=args.strip_rows, only_fires=args.only_fires,
-        )
-    if args.command == "tessera-zip":
-        return tessera_master.upload_tessera_zip(
-            args.token, src_repo=args.src_repo, tessera_repo=args.tessera_repo, work_dir=args.work_dir,
-            roi_dir=args.roi_dir,
-        )
-    if args.command == "pull-tessera":
-        return tessera_master.pull_tessera_zip(
-            args.data_root, token=args.token, tessera_repo=args.tessera_repo, drop_excluded=not args.keep_excluded,
-        )
-    if args.command == "download":
-        return dataset_master.download_windows(
-            args.token, window_repo=window_repo_of(args), src_repo=args.src_repo, data_root=args.data_root,
-            roi_dir=args.roi_dir, include_tessera=args.tessera, tessera_repo=args.tessera_repo,
-        )
-    # --zip-repo picks between the window repo and the TESSERA repo.
-    zip_repo = {"window": window_repo_of(args), "tessera": args.tessera_repo}[args.zip_repo]
-    if args.command == "upload-zip":
-        return dataset_master.upload_data_zip(
-            args.token, data_root=args.data_root, zip_path=args.zip_path, repo_id=zip_repo, zip_name=args.zip_name,
-        )
-    # pull-zip: the zips store their folders (train/, val/, test/, ...) at the root.
-    return dataset_master.pull_data_zip(args.data_root, token=args.token, repo_id=zip_repo, zip_name=args.zip_name)
+    command = BY_NAME[args.command]
+    return command.function(**call_arguments(command, args))
 
 
 def main(argv=None):

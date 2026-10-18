@@ -1,13 +1,16 @@
-"""Level 3: training and evaluation.
+"""Level 3: training and evaluation, as a one-way chain of classes.
 
-    losses.py       Dice / Dice+CE / Dice+focal training loss
-    metrics.py      F1 / IoU on thresholded predictions
+Modules in import order (each imports only earlier ones):
+
+    config.py       RunConfig (frozen): every setting and every derived name
     accelerator.py  --device: CPU, CUDA GPU or TPU (PyTorch/XLA)
-    optim.py        optimizer, gradient scaler, learning-rate schedule
-    naming.py       run names, checkpoint and artifact names
-    tracking.py     Weights & Biases charts and run setup
-    checkpoints.py  save / upload / load checkpoints, keep the best N
-    loop.py         train_model: the epoch loop
-    evaluation.py   evaluate_model: per-fire test scores and plots
-    run.py          run(args): one full experiment, in order
+    objectives.py   TrainingLoss (Dice / Dice+CE / Dice+focal) and F1/IoU scores
+    checkpoints.py  CheckpointStore (best N on disk), safe loading
+    tracker.py      Tracker: the only module that talks to Weights & Biases
+    evaluator.py    Evaluator: per-fire test scores and plots
+    trainer.py      Trainer: steps, epochs and the epoch loop
+    experiment.py   FireData (datasets, loaders) and Experiment.run()
+
+    RunConfig -> Experiment.run(): FireData -> Tracker -> model
+              -> Trainer.fit(data, tracker, store, evaluator) -> Evaluator.score -> Tracker.log_final
 """

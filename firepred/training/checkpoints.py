@@ -1,6 +1,8 @@
-"""Checkpoints: save, upload to W&B, keep the best N, load for testing.
+"""Checkpoints: save, keep the best N, load for testing.
 
-Level 3 (training). Used by training/loop.py and training/run.py.
+Level 3 (training). Used by training/trainer.py (CheckpointStore) and
+training/experiment.py (load_checkpoint). Uploading a checkpoint to W&B is
+the Tracker's job (training/tracker.py), so this module never touches W&B.
 
 A checkpoint is a plain dict (no repo classes are pickled, so moving code never
 breaks loading):
@@ -9,115 +11,76 @@ breaks loading):
     optimizer_state_dict
     loss                  validation loss
     use_tessera, model_input_channels, swin_temporal_downsample,
-    tessera_stats, loss_config, lr_config      the run settings needed to
-                                               rebuild identical inputs
+    tessera_stats, loss_config, lr_config[, model_options]
+                          the run settings needed to rebuild identical inputs
+                          (RunConfig.checkpoint_settings)
 """
 
 import heapq
-import os
 from pathlib import Path
 
 import torch
-import wandb
 
 from firepred.training import accelerator
 
 
-def save_checkpoint(
-    model,
-    optimizer,
-    epoch,
-    val_loss,
-    save_path,
-    extra=None,
-    artifact_name=None,
-):
-    # Weights, optimizer state and the settings needed to rebuild identical inputs.
-    # (accelerator.save is torch.save; TPU tensors are copied to the CPU first.)
+def save_checkpoint(model, optimizer, epoch, val_loss, save_path, extra=None):
+    """Write weights, optimizer state and the run settings `extra` to `save_path`; return the path.
+
+    accelerator.save is torch.save; TPU tensors are copied to the CPU first.
+    """
     accelerator.save(
         {
             "epoch": epoch,
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "loss": val_loss,
-            # Run config (e.g. TESSERA mode and its normalization) needed to
-            # rebuild identical inputs at test time.
             **(extra or {}),
         },
         save_path,
         device=next(model.parameters()).device,
     )
-
-    if artifact_name is not None:
-        upload_checkpoint(save_path, epoch, val_loss, artifact_name, extra)
+    return Path(save_path)
 
 
-def upload_checkpoint(save_path, epoch, val_loss, artifact_name, extra=None):
-    """Store a versioned checkpoint as a W&B model Artifact.
+class CheckpointStore:
+    """The `keep` lowest-validation-loss checkpoints of one run, on disk in `directory`.
 
-    Online, wait for the upload so a later best checkpoint cannot replace the
-    file first; offline runs log it locally for a later `wandb sync`.
-    """
-    if wandb.run is None:
-        raise RuntimeError("A W&B run is required to upload model checkpoints")
-    # Upload the file as a new version of the run's model artifact, tagged best/latest/epoch-N.
-    metadata = {"epoch": epoch + 1, "validation_loss": float(val_loss)}
-    for key in ("use_tessera", "model_input_channels"):
-        if extra and key in extra:
-            metadata[key] = extra[key]
-    artifact = wandb.Artifact(name=artifact_name, type="model", metadata=metadata)
-    artifact.add_file(str(save_path), name=Path(save_path).name)
-    uploaded = wandb.run.log_artifact(
-        artifact, aliases=["best", "latest", f"epoch-{epoch + 1}"]
-    )
-    if not wandb.run.offline:
-        uploaded.wait()
-    print(f"Checkpoint logged to W&B Artifacts: {artifact_name}")
-
-
-class BestCheckpoints:
-    """Keep the `top_n` lowest-validation-loss checkpoints on disk.
-
-    offer() saves the current model when it is among the best so far and
-    deletes the checkpoint it displaces. The heap stores (-loss, path), so
-    heap[0] is the worst checkpoint kept.
+    offer() saves the model when its validation loss is among the best so far
+    and deletes the checkpoint it displaces. File names come from `template`
+    (RunConfig.checkpoint_template, with a 1-based {epoch}); every file also
+    holds `settings` (RunConfig.checkpoint_settings).
     """
 
-    def __init__(self, top_n):
-        self.top_n = top_n
-        self.heap = []
+    def __init__(self, directory, template, settings, keep=1):
+        """Remember where and how to save; nothing is written yet."""
+        self.directory = Path(directory)
+        self.template = template
+        self.settings = dict(settings)
+        self.keep = keep
+        self._heap = []  # (-loss, path): heap[0] is the worst checkpoint kept
 
-    def offer(self, val_loss, checkpoint_path, save):
-        """Call `save()` (which writes checkpoint_path) if val_loss qualifies."""
-        if len(self.heap) < self.top_n:
-            save()
-            heapq.heappush(
-                self.heap,
-                (-val_loss, checkpoint_path),
-            )
-        else:
-            worst_loss = -self.heap[0][0]
-            if val_loss < worst_loss:
-                _, removed_path = heapq.heapreplace(
-                    self.heap,
-                    (-val_loss, checkpoint_path),
-                )
-                if os.path.exists(removed_path):
-                    os.remove(removed_path)
-                save()
+    def offer(self, epoch, val_loss, model, optimizer):
+        """Save this epoch if it qualifies; return the saved path, or None when it does not."""
+        path = self.directory / self.template.format(epoch=epoch + 1)
+        if len(self._heap) >= self.keep:
+            if val_loss >= -self._heap[0][0]:
+                return None
+            _, displaced = heapq.heappop(self._heap)
+            Path(displaced).unlink(missing_ok=True)
+        self.directory.mkdir(parents=True, exist_ok=True)
+        save_checkpoint(model, optimizer, epoch, val_loss, path, self.settings)
+        heapq.heappush(self._heap, (-val_loss, str(path)))
+        return path
 
-    def print_summary(self):
-        print("Best checkpoints:")
-        for negative_loss, checkpoint_path in sorted(
-            self.heap,
-            reverse=True,
-        ):
-            print(f"loss={-negative_loss:.6f}: {checkpoint_path}")
+    def ranking(self):
+        """[(validation loss, path)] of the kept checkpoints, best first."""
+        return [(-loss, Path(path)) for loss, path in sorted(self._heap, reverse=True)]
 
-    def best_path(self):
+    @property
+    def best(self):
         """Path of the lowest-validation-loss checkpoint."""
-        # Heap entries are (-loss, path), so the largest is the lowest loss.
-        return max(self.heap)[1]
+        return self.ranking()[0][1]
 
 
 def _numpy_array_globals():
@@ -141,7 +104,10 @@ def _numpy_array_globals():
             continue
 
     def alias(module_name):
+        """numpy's _reconstruct, registered under `module_name`."""
+
         def _reconstruct(*args, **kwargs):
+            """Rebuild a pickled ndarray (delegates to numpy)."""
             return reconstruct(*args, **kwargs)
 
         _reconstruct.__module__ = module_name
@@ -192,22 +158,30 @@ def read_checkpoint(checkpoint_path, device, trusted=False):
     return torch.load(checkpoint_path, map_location=device, weights_only=False)
 
 
-def load_checkpoint(checkpoint_path, device, model_name, use_tessera, swin_temporal_downsample, trusted=False):
-    """Load a checkpoint (see read_checkpoint) and refuse one trained with different inputs."""
+def load_checkpoint(checkpoint_path, device, config, trusted=False):
+    """Load a checkpoint (see read_checkpoint) and refuse one trained with other inputs than `config`'s.
+
+    A TESSERA mismatch, a different input width, or (swinunetr3d) a different
+    temporal-downsampling setting would silently give wrong results.
+    """
     checkpoint = read_checkpoint(checkpoint_path, device, trusted)
     # Checkpoints from before TESSERA support carry no flag: they are 43-channel.
-    # Refuse a checkpoint whose inputs differ from this run's: a TESSERA mismatch
-    # or a different temporal-downsampling setting would silently give wrong results.
     trained_with_tessera = bool(checkpoint.get("use_tessera", False))
-    if trained_with_tessera != use_tessera:
+    if trained_with_tessera != config.tessera:
         raise ValueError(
             f"{checkpoint_path} was trained "
             f"{'with' if trained_with_tessera else 'without'} TESSERA; "
             f"{'add' if trained_with_tessera else 'remove'} --tessera"
         )
+    trained_channels = checkpoint.get("model_input_channels", config.input_channels)
+    if trained_channels != config.input_channels:
+        raise ValueError(
+            f"{checkpoint_path} was trained on {trained_channels} input channels; this run has "
+            f"{config.input_channels}"
+        )
     # Checkpoints from before this flag used the released code's merging.
     trained_temporal_downsample = bool(checkpoint.get("swin_temporal_downsample", True))
-    if model_name == "swinunetr3d" and trained_temporal_downsample != swin_temporal_downsample:
+    if config.model == "swinunetr3d" and trained_temporal_downsample != config.swin_temporal_downsample:
         raise ValueError(
             f"{checkpoint_path} was trained "
             f"{'with' if trained_temporal_downsample else 'without'} temporal "

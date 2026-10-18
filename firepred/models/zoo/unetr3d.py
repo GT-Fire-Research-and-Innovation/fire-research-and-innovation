@@ -1,3 +1,5 @@
+"""UNETR-3D, the paper's UNETR baseline (`-m unetr3d`); not used by SwinUNETR-3D."""
+
 # ============================================================================
 # NOT USED BY SWINUNETR-3D (our current work: next-day fire prediction).
 #
@@ -61,6 +63,7 @@ class UNETR(nn.Module):
         mlp_dim: int = 3072,
         num_heads: int = 12,
         patch_size: tuple | int = (1,16,16),
+        kernel_size_up_down: tuple | int = (1, 2, 2),
         pos_embed: str = "conv",
         proj_type: str = "conv",
         norm_name: tuple | str = "instance",
@@ -80,6 +83,9 @@ class UNETR(nn.Module):
             hidden_size: dimension of hidden layer. Defaults to 768.
             mlp_dim: dimension of feedforward layer. Defaults to 3072.
             num_heads: number of attention heads. Defaults to 12.
+            patch_size: ViT patch size; (1, 16, 16) splits only space, as the paper does.
+            kernel_size_up_down: upsampling kernel and stride of every decoder step;
+                (1, 2, 2) restores space and never touches the days. [paper]
             proj_type: patch embedding layer type. Defaults to "conv".
             norm_name: feature normalization type and arguments. Defaults to "instance".
             conv_block: if convolutional block is used. Defaults to True.
@@ -154,7 +160,7 @@ class UNETR(nn.Module):
             num_layer=2,
             kernel_size=(3,3,3),
             stride=1,
-            upsample_kernel_size=(1,2,2),
+            upsample_kernel_size=kernel_size_up_down,
             norm_name=norm_name,
             conv_block=conv_block,
             res_block=res_block,
@@ -166,7 +172,7 @@ class UNETR(nn.Module):
             num_layer=1,
             kernel_size=(3,3,3),
             stride=1,
-            upsample_kernel_size=(1,2,2),
+            upsample_kernel_size=kernel_size_up_down,
             norm_name=norm_name,
             conv_block=conv_block,
             res_block=res_block,
@@ -178,7 +184,7 @@ class UNETR(nn.Module):
             num_layer=0,
             kernel_size=(3,3,3),
             stride=1,
-            upsample_kernel_size=(1,2,2),
+            upsample_kernel_size=kernel_size_up_down,
             norm_name=norm_name,
             conv_block=conv_block,
             res_block=res_block,
@@ -189,7 +195,7 @@ class UNETR(nn.Module):
             in_channels=hidden_size,
             out_channels=feature_size * 8,
             kernel_size=(3,3,3),
-            upsample_kernel_size=(1,2,2),
+            upsample_kernel_size=kernel_size_up_down,
             norm_name=norm_name,
             res_block=res_block,
         )
@@ -198,7 +204,7 @@ class UNETR(nn.Module):
             in_channels=feature_size * 8,
             out_channels=feature_size * 4,
             kernel_size=(3,3,3),
-            upsample_kernel_size=(1,2,2),
+            upsample_kernel_size=kernel_size_up_down,
             norm_name=norm_name,
             res_block=res_block,
         )
@@ -207,7 +213,7 @@ class UNETR(nn.Module):
             in_channels=feature_size * 4,
             out_channels=feature_size * 2,
             kernel_size=(1,3,3),
-            upsample_kernel_size=(1,2,2),
+            upsample_kernel_size=kernel_size_up_down,
             norm_name=norm_name,
             res_block=res_block,
         )
@@ -216,7 +222,7 @@ class UNETR(nn.Module):
             in_channels=feature_size * 2,
             out_channels=feature_size,
             kernel_size=(3,3,3),
-            upsample_kernel_size=(1,2,2),
+            upsample_kernel_size=kernel_size_up_down,
             norm_name=norm_name,
             res_block=res_block,
         )
@@ -226,12 +232,14 @@ class UNETR(nn.Module):
 
     # Reshape a token sequence back into a (B, C, T, H/16, W/16) feature volume.
     def proj_feat(self, x):
+        """Reshape ViT tokens (B, N, F) back into a (B, F, T', H', W') feature volume."""
         new_view = [x.size(0)] + self.proj_view_shape
         x = x.view(new_view)
         x = x.permute(self.proj_axes).contiguous()
         return x
 
     def forward(self, x_in):
+        """(B, C, T, H, W) input -> logits: ViT encoder, skips from layers 3/6/9, U-Net decoder."""
         x, hidden_states_out = self.vit(x_in)
         enc1 = self.encoder1(x_in)
         x2 = hidden_states_out[3]
@@ -250,11 +258,11 @@ class UNETR(nn.Module):
 
 @register_model("unetr3d")
 def build(spec):
-    """The paper's UNETR-3D baseline; option unetr_version "v0" or "v1" (default).
+    """The paper's UNETR-3D baseline: patch (1, 16, 16), hidden size 384, MLP size 1536. [paper]
 
-    KNOWN ISSUE (docs/KNOWN_ISSUES.md): UNETR above has no
-    `kernel_size_up_down` parameter, so this raises TypeError, exactly as the
-    released code's build_model always did. Kept as-is so behavior is unchanged.
+    Option unetr_version "v0" builds the ViT-Base sizes (768 / 3072) instead.
+    The released code passed `kernel_size_up_down` to a UNETR without that
+    parameter and never built; it is now the decoder's upsampling kernel.
     """
     if spec.options.get("unetr_version", "v1") == "v0":
         hidden_size, mlp_dim = 768, 3072

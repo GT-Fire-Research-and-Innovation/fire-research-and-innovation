@@ -6,6 +6,7 @@ from firepred.data.archive import find_fire_sources, fire_name, open_fire, unzip
 
 
 def test_write_then_read_round_trip(tmp_path):
+    """write_fire_archive writes every window as its own member and returns the path; reading gives them back."""
     data = np.arange(2 * 27 * 2 * 4 * 4, dtype=np.float32).reshape(2, 27, 2, 4, 4)
     labels = np.zeros((2, 4, 4), dtype=np.float32)
     labels[1, 0, 0] = 1
@@ -19,6 +20,7 @@ def test_write_then_read_round_trip(tmp_path):
 
 
 def test_unzipped_folders_replace_archives_and_read_the_same(data_root, tmp_path):
+    """Unzipped fire folders read exactly like the archives, and a second unzip call reuses them."""
     root, _ = data_root
     unzipped = unzip_data_root(root, tmp_path / "npy")
     assert unzipped == tmp_path / "npy"

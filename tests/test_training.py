@@ -1,15 +1,25 @@
-"""Losses, metrics, schedules and names behave as documented."""
+"""Losses, metrics, schedules, RunConfig names and checkpoints behave as documented."""
 
 from pathlib import Path
 
+import pytest
 import torch
 from torch import nn, optim
 
-from firepred.training import naming
-from firepred.training.losses import build_criterion, compute_loss
-from firepred.training.metrics import background_f1, fire_only_f1, fire_only_iou
-from firepred.training.optim import build_lr_scheduler, step_lr_scheduler
-from firepred.training.tracking import build_wandb_metric_labels
+from firepred.cli.train import argv_for, config_from_args, parse_args
+from firepred.training.checkpoints import CheckpointStore, load_checkpoint
+from firepred.training.config import LossConfig, RunConfig, ScheduleConfig
+from firepred.training.objectives import background_f1, build_criterion, fire_only_f1, fire_only_iou
+from firepred.training.tracker import chart_labels
+from firepred.training.trainer import build_lr_scheduler, step_lr_scheduler
+
+BASE = ["-m", "swinunetr3d", "-mode", "pred", "-b", "8", "-r", "1", "-lr", "0.001", "-nh", "3", "-ed", "36",
+        "-ts", "6", "-it", "1"]
+
+
+def loss(name, **weights):
+    """A TrainingLoss for `name` with optional LossConfig weights."""
+    return build_criterion(LossConfig(name, **weights))
 
 
 class HostilePayload:
@@ -17,17 +27,20 @@ class HostilePayload:
 
 
 def masks(fire):
+    """(1, 2, H, W) one-hot background/fire masks from a boolean fire map."""
     fire = torch.as_tensor(fire, dtype=torch.bool)[None]
     return torch.stack((~fire, fire), dim=1).float()
 
 
 def test_empty_prediction_and_empty_target_score_one():
+    """Empty prediction and empty target score a perfect 1, like the released sklearn scores."""
     empty = masks([[0, 0], [0, 0]])
     assert fire_only_f1(empty, empty).item() == 1.0
     assert fire_only_iou(empty, empty).item() == 1.0
 
 
 def test_f1_and_iou_on_a_known_case():
+    """F1 and IoU agree with hand-computed values."""
     prediction = masks([[1, 1], [0, 0]])
     target = masks([[1, 0], [1, 0]])
     assert fire_only_f1(prediction, target).item() == 0.5  # 2*1 / (2 + 2)
@@ -36,47 +49,67 @@ def test_f1_and_iou_on_a_known_case():
 
 
 def test_dicece_reports_its_two_parts():
+    """Dice+CE returns its total and both parts; plain Dice has no parts."""
     logits = torch.randn(2, 2, 8, 8)
     labels = masks(torch.rand(8, 8) > 0.9).expand(2, -1, -1, -1)
-    loss, parts = compute_loss(build_criterion("dicece"), logits, labels)
+    total, parts = loss("dicece")(logits, labels)
     assert set(parts) == {"dice_loss", "ce_loss"}
-    assert torch.isclose(loss, parts["dice_loss"] + parts["ce_loss"])
-    assert compute_loss(build_criterion("dice"), logits, labels)[1] == {}
+    assert torch.isclose(total, parts["dice_loss"] + parts["ce_loss"])
+    assert loss("dice")(logits, labels)[1] == {}
 
 
 def test_plateau_schedule_halves_after_patience():
+    """plateau multiplies the rate by its factor after `patience` epochs without improvement."""
     optimizer = optim.Adam([nn.Parameter(torch.zeros(1))], lr=1e-3)
-    scheduler = build_lr_scheduler(optimizer, "plateau", 10, 0.5, 0, 1e-6)
+    scheduler = build_lr_scheduler(optimizer, ScheduleConfig("plateau", 0.5, 0, 1e-6), 10)
     for val_loss in (1.0, 2.0):
         step_lr_scheduler(scheduler, val_loss)
     assert optimizer.param_groups[0]["lr"] == 5e-4
-    assert build_lr_scheduler(optimizer, "none", 10, 0.5, 0, 1e-6) is None
+    assert build_lr_scheduler(optimizer, ScheduleConfig("none"), 10) is None
 
 
 def test_names_never_change():
-    tag = naming.run_tag(True, "dicece", "plateau")
-    assert tag == "_tessera_dicece_lr-plateau"
-    assert naming.run_name(False, "pred", "swinunetr3d", 3, 36, 8, True, "dicece") == \
-        "train_pred_swinunetr3d_num_heads_3_hidden_size_36_batchsize_8_tessera_dicece"
-    template = naming.checkpoint_template("swinunetr3d", "pred", 3, 36, 8, 172, 6, tag)
-    assert template.format(epoch=12) == (
+    """Run, checkpoint and artifact names stay exactly as old runs recorded them."""
+    config = RunConfig("swinunetr3d", tessera=True, loss=LossConfig("dicece"), schedule=ScheduleConfig("plateau"))
+    assert config.run_tag == "_tessera_dicece_lr-plateau"
+    assert config.run_name == \
+        "train_pred_swinunetr3d_num_heads_3_hidden_size_36_batchsize_8_tessera_dicece_lr-plateau"
+    assert config.checkpoint_template.format(epoch=12) == (
         "model_swinunetr3d_mode_pred_num_heads_3_hidden_size_36_batchsize_8_"
         "checkpoint_epoch_12_nc_172_ts_6_tessera_dicece_lr-plateau.pth"
     )
-    assert naming.default_test_checkpoint(template, 199) == Path("saved_models") / template.format(epoch=199)
-    assert naming.artifact_name("swinunetr3d", tag, "abc") == "swinunetr3d-tessera-dicece-lr-plateau-checkpoints-abc"
+    assert config.test_checkpoint == Path("saved_models") / config.checkpoint_template.format(epoch=199)
+    assert config.artifact_name("abc") == "swinunetr3d-tessera-dicece-lr-plateau-checkpoints-abc"
+
+
+def test_command_line_round_trips_through_run_config():
+    """argv_for(config) parses back to the same RunConfig, so notebooks can launch exactly a config."""
+    for extra in ([], ["--tessera", "--loss", "dicefocal", "--focal-alpha", "0.25", "--lr-schedule", "cosine"],
+                  ["-test", "--checkpoint", "x.pth", "--model-option", "depth=2", "-nc", "43", "--no-test-after-train"]):
+        config = config_from_args(parse_args(BASE + extra))
+        assert config_from_args(parse_args(argv_for(config))) == config
+
+
+def test_run_config_fills_and_checks_settings():
+    """The paper's loss per model, loss flags kept without --loss, and -nc checked against the data."""
+    assert RunConfig("attunet").loss.name == "dice" and RunConfig("swinunetr3d").loss.name == "dicece"
+    config = config_from_args(parse_args(BASE + ["--ce-weight", "1", "300"]))
+    assert config.loss.name == "dicece" and config.loss.ce_weight == (1.0, 300.0)
+    with pytest.raises(ValueError, match="-nc 43"):
+        RunConfig("swinunetr3d", tessera=True, expected_channels=43)
 
 
 def test_wandb_chart_names_are_stable():
-    labels = build_wandb_metric_labels("dicece")
+    """Dashboards are built on the chart names, so they never change."""
+    labels = chart_labels("dicece")
     assert labels["val_fire_f1"] == "Validation F1 — Next-Day Fire Growth"
     assert labels["train_ce_loss"] == "Training Weighted Cross-Entropy Loss — Next-Day Fire Growth"
-    assert "train_ce_loss" not in build_wandb_metric_labels("dice")
+    assert "train_ce_loss" not in chart_labels("dice")
 
 
 def test_checkpoints_load_without_running_pickled_code(tmp_path):
+    """Restricted loading reads tensors and TESSERA statistics but refuses arbitrary pickled objects."""
     import numpy as np
-    import pytest
 
     from firepred.training.checkpoints import read_checkpoint
 
@@ -102,32 +135,83 @@ def test_checkpoints_load_without_running_pickled_code(tmp_path):
 
 
 def test_dicefocal_is_weighted_dice_plus_weighted_focal():
+    """dicefocal = lambda_dice x Dice + lambda_focal x focal on the fire channel, no cross entropy."""
     from monai.losses import FocalLoss
-
-    from firepred.training.losses import loss_name_of
 
     torch.manual_seed(3)
     logits = torch.randn(2, 2, 8, 8, requires_grad=True)
     labels = masks(torch.rand(8, 8) > 0.9).expand(2, -1, -1, -1)
-    criterion = build_criterion("dicefocal", lambda_dice=0.5, lambda_focal=2.5, focal_gamma=2.0, focal_alpha=0.25)
-    loss, parts = compute_loss(criterion, logits, labels)
+    criterion = loss("dicefocal", lambda_dice=0.5, lambda_focal=2.5, focal_gamma=2.0, focal_alpha=0.25)
+    total, parts = criterion(logits, labels)
     assert set(parts) == {"dice_loss", "focal_loss"}  # no cross entropy
-    dice, _ = compute_loss(build_criterion("dice"), logits, labels)
+    dice, _ = loss("dice")(logits, labels)
     focal = FocalLoss(include_background=False, gamma=2.0, alpha=0.25)(logits, labels)  # fire channel only
-    assert torch.isclose(loss, 0.5 * dice + 2.5 * focal)
-    assert torch.isclose(criterion(logits, labels), loss)
-    loss.backward()
+    assert torch.isclose(total, 0.5 * dice + 2.5 * focal)
+    total.backward()
     assert torch.isfinite(logits.grad).all()
-    assert [loss_name_of(build_criterion(n)) for n in ("dice", "dicece", "dicefocal")] == ["dice", "dicece", "dicefocal"]
+    assert [loss(n).name for n in ("dice", "dicece", "dicefocal")] == ["dice", "dicece", "dicefocal"]
 
 
 def test_dicefocal_names_and_charts():
-    assert naming.run_tag(False, "dicefocal", "none") == "_dicefocal"
-    config = naming.loss_config("dicefocal", (1.0, 446.7836), 0.5, 1.0, 2.5, 2.0, None)
-    assert config == {"loss": "dicefocal", "lambda_dice": 0.5, "lambda_focal": 2.5, "focal_gamma": 2.0, "focal_alpha": None}
-    assert "lambda_focal" not in naming.loss_config("dicece", (1.0, 446.7836), 1.0, 1.0)
-    labels = build_wandb_metric_labels("dicefocal")
+    """dicefocal has its own tag, loss record and charts (its Dice chart is a dice run's)."""
+    assert RunConfig("swinunetr3d", loss=LossConfig("dicefocal")).run_tag == "_dicefocal"
+    record = LossConfig("dicefocal", (1.0, 446.7836), 0.5, 1.0, 2.5, 2.0, None).record()
+    assert record == {"loss": "dicefocal", "lambda_dice": 0.5, "lambda_focal": 2.5, "focal_gamma": 2.0, "focal_alpha": None}
+    assert "lambda_focal" not in LossConfig("dicece").record()
+    labels = chart_labels("dicefocal")
     assert labels["train_loss"] == "Training Dice + Focal Loss — Next-Day Fire Growth"
     assert labels["val_dice_loss"] == "Validation Dice Loss — Next-Day Fire Growth"  # same chart as a dice run
     assert labels["val_focal_loss"] == "Validation Focal Loss — Next-Day Fire Growth"
     assert "train_ce_loss" not in labels
+
+
+def test_checkpoint_store_keeps_the_best(tmp_path):
+    """The store keeps the `keep` lowest validation losses on disk and deletes the ones they displace."""
+    model = nn.DataParallel(nn.Conv3d(2, 2, 1))
+    optimizer = optim.Adam(model.parameters())
+    store = CheckpointStore(tmp_path, "ckpt_{epoch}.pth", {"use_tessera": False}, keep=2)
+    saved = [store.offer(epoch, val_loss, model, optimizer) for epoch, val_loss in enumerate((0.9, 0.7, 0.8, 0.95, 0.6))]
+    assert [path is not None for path in saved] == [True, True, True, False, True]
+    assert sorted(p.name for p in tmp_path.glob("*.pth")) == ["ckpt_2.pth", "ckpt_5.pth"]
+    assert store.best.name == "ckpt_5.pth" and [loss for loss, _ in store.ranking()] == [0.6, 0.7]
+    assert torch.load(store.best, weights_only=True)["use_tessera"] is False
+
+
+def test_load_checkpoint_refuses_other_inputs(tmp_path):
+    """A checkpoint trained with other inputs (TESSERA, width, temporal merging) is refused."""
+    path = tmp_path / "c.pth"
+    torch.save({"use_tessera": False, "model_input_channels": 43, "swin_temporal_downsample": False}, path)
+    assert load_checkpoint(path, "cpu", RunConfig("swinunetr3d"))["model_input_channels"] == 43
+    with pytest.raises(ValueError, match="--tessera"):
+        load_checkpoint(path, "cpu", RunConfig("swinunetr3d", tessera=True))
+    with pytest.raises(ValueError, match="temporal"):
+        load_checkpoint(path, "cpu", RunConfig("swinunetr3d", swin_temporal_downsample=True))
+
+
+def test_test_mode_builds_no_trainer(data_root, tmp_path, monkeypatch):
+    """-test loads a checkpoint and scores it; no Trainer, loss or optimizer is ever built."""
+    import fake_wandb
+    import tiny_model  # noqa: F401  registers "tiny3d"
+
+    from firepred.training import experiment
+
+    monkeypatch.setitem(__import__("sys").modules, "wandb", fake_wandb)
+    monkeypatch.setenv("FAKE_WANDB_DIR", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+
+    def refuse(*args, **kwargs):
+        """Stands in for Trainer: building one in test mode is a bug."""
+        raise AssertionError("Trainer built in -test mode")
+
+    monkeypatch.setattr(experiment, "Trainer", refuse)
+    root, csv_path = data_root
+    config = RunConfig("tiny3d", batch_size=1, data_root=root, test_csv=csv_path, plot_dir=tmp_path / "plots")
+    model = experiment.prepare_model("tiny3d", config.model_spec(), torch.device("cpu"))
+    store = CheckpointStore(tmp_path, config.checkpoint_template, config.checkpoint_settings(None))
+    checkpoint = store.offer(0, 1.0, model, optim.Adam(model.parameters()))
+    result = experiment.Experiment(
+        RunConfig("tiny3d", batch_size=1, data_root=root, test_csv=csv_path, plot_dir=tmp_path / "plots",
+                  test_only=True, checkpoint=checkpoint)
+    ).run()
+    assert result.checkpoint == checkpoint and result.scores.fires == 2
+    assert not any(call[0] == "define_metric" for call in fake_wandb.CALLS)

@@ -1,9 +1,10 @@
-"""Which fires go where: ROI metadata, train/val/test split, label rule, TESSERA years.
+"""Which fires go where: ROI metadata, train/val/test split, label rule, fire ids.
 
-Level 1 (prep). Pure functions of ROI CSV files already on disk (downloading
-them is prep/repos.py). Used by the two master modules. The split
-[released]: train/val are the 2017-2020 fires (validation is the fixed
-VAL_IDS list), test is the 2021 fires.
+Level 1 (data, dataset building). Pure functions of ROI CSV files already on
+disk (downloading them is data/hub.py). Used by the two master modules. The
+split [released]: train/val are the 2017-2020 fires (validation is the fixed
+VAL_IDS list), test is the 2021 fires. Which fires get TESSERA is
+data/tessera.py.
 """
 
 import os
@@ -11,7 +12,7 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
-from firepred.config.data import FIRST_TESSERA_YEAR, SPLITS, TEST_YEARS, TRAIN_VAL_YEARS, VAL_IDS
+from firepred.config.dataset import SPLITS, TEST_YEARS, TRAIN_VAL_YEARS, VAL_IDS
 
 
 @dataclass(frozen=True)
@@ -96,26 +97,6 @@ def read_roi(roi_paths):
     """A RoiTable from ROI CSV files on disk."""
     train, val, test = split_ids(roi_paths)
     return RoiTable(train, val, test, fire_label_sel(roi_paths), fire_start_years(roi_paths))
-
-
-def has_prior_year_tessera(fire_year, first_year=FIRST_TESSERA_YEAR):
-    """True if the year before `fire_year` has published TESSERA embeddings."""
-    return fire_year is not None and int(fire_year) - 1 >= first_year
-
-
-def tessera_excluded_npz(roi):
-    """Window archives to drop in TESSERA mode, e.g. ['train/p20778153.npz', ...].
-
-    These are the fires with no prior-year TESSERA (all 2017 fires). Dropping
-    them from both the TESSERA and the matched no-TESSERA runs keeps the
-    comparison on the same fires.
-    """
-    return sorted(
-        f"{split}/p{fire_id}.npz"
-        for split, fire_ids in roi.ids_by_split().items()
-        for fire_id in fire_ids
-        if not has_prior_year_tessera(roi.start_years.get(str(fire_id)))
-    )
 
 
 def label_rules(roi, splits, use_roi_label_sel, train_val_label_sel):

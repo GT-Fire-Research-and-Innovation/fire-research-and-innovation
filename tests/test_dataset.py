@@ -1,18 +1,13 @@
 """FireDataset: one item per window, model-ready shapes, TESSERA as a static map."""
 
-from firepred.config.data import BASE_MODEL_CHANNELS, TESSERA_CHANNELS
+from firepred.config.dataset import BASE_MODEL_CHANNELS, TESSERA_CHANNELS
 from firepred.data.archive import find_fire_sources
-from firepred.data.dataset import (
-    FireDataset,
-    batch_inputs,
-    compute_tessera_stats,
-    load_tessera_maps,
-    make_dataloader,
-    validate_dataset_output,
-)
+from firepred.data.fire_dataset import FireDataset, batch_inputs, make_dataloader, validate_dataset_output
+from firepred.data.tessera_archive import compute_tessera_stats, load_tessera_maps
 
 
 def test_items_have_model_shapes(data_root):
+    """Items are windows (not fires) with model-ready shapes and complementary one-hot labels."""
     root, _ = data_root
     dataset = FireDataset(root / "train", ts_length=6, target_is_single_day=True, use_augmentations=True)
     assert len(dataset) == 3  # windows across fires, not fires
@@ -24,6 +19,7 @@ def test_items_have_model_shapes(data_root):
 
 
 def test_tessera_adds_a_static_map_repeated_on_the_batch(data_root):
+    """TESSERA adds a static (129, H, W) map that batch_inputs repeats across the days."""
     root, _ = data_root
     stats = compute_tessera_stats(load_tessera_maps(root / "tessera", find_fire_sources(root / "train")).values())
     dataset = FireDataset(root / "val", ts_length=6, target_is_single_day=True,

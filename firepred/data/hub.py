@@ -18,7 +18,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from firepred.config.data import (
+from firepred.config.dataset import (
     ARCHIVE_FORMAT_VERSION,
     CROP_OFFSET,
     CROP_SIZE,
@@ -32,8 +32,7 @@ from firepred.config.data import (
     WINDOW_CONFIG_FILE,
     window_repo_for,
 )
-from firepred.prep.staging import unzip_into
-from firepred.prep.tessera_grid import code_version
+from firepred.data.files import code_version, unzip_into
 
 # What each label_sel value means (prep/windows.build_fire_windows).
 LABEL_SEL_MEANING = {

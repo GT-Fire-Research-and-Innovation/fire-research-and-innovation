@@ -16,7 +16,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from firepred.config.data import CROP_SIZE, model_input_channels  # noqa: E402
+from firepred.config.dataset import CROP_SIZE, model_input_channels  # noqa: E402
 from firepred.models.blocks.window_ops import get_window_size  # noqa: E402
 from firepred.models.registry import ModelSpec, build_model, forward_model  # noqa: E402
 
@@ -24,10 +24,12 @@ PIXEL_METERS = 375  # VIIRS I-band pixel
 
 
 def shape(tensor):
+    """A tensor's shape as text, e.g. '(1, 43, 6, 256, 256)'."""
     return "(" + ", ".join(str(n) for n in tensor.shape) + ")"
 
 
 def parameters(module):
+    """Number of parameters of `module`."""
     return sum(p.numel() for p in module.parameters())
 
 
@@ -41,6 +43,7 @@ def count_macs(model):
     counter = {"macs": 0}
 
     def conv(module, inputs, output):
+        """Forward hook: add a (transposed) 3D convolution's multiply-accumulates."""
         kernel = module.weight.shape[2:].numel() * (module.in_channels // module.groups)
         if isinstance(module, torch.nn.ConvTranspose3d):
             counter["macs"] += inputs[0].numel() // inputs[0].shape[1] * module.out_channels * kernel
@@ -48,9 +51,11 @@ def count_macs(model):
             counter["macs"] += output.numel() * kernel
 
     def linear(module, inputs, output):
+        """Forward hook: add a linear layer's multiply-accumulates."""
         counter["macs"] += output.numel() * module.in_features
 
     def attention(module, inputs, output):
+        """Forward hook: add window attention's two matrix products (q k^T and attn v)."""
         windows, tokens, channels = inputs[0].shape
         counter["macs"] += 2 * windows * tokens * tokens * channels
 
@@ -65,6 +70,10 @@ def count_macs(model):
 
 
 def trace(spec, batch=1):
+    """Run one seeded forward pass of SwinUNETR-3D for `spec` and record every traced module.
+    
+    Returns (model, rows, stage inputs, input shape, output shape, total MACs);
+    each row is (name, input shape, output shape, parameters, MACs, note)."""
     torch.manual_seed(0)
     model = build_model("swinunetr3d", spec).eval()
     counter = count_macs(model)
@@ -73,7 +82,9 @@ def trace(spec, batch=1):
     starts = {}
 
     def record(name, note=""):
+        """A forward hook for module `name` that appends its row (shapes, parameters, MACs since its pre-hook)."""
         def hook(module, inputs, output):
+            """Append this module's row; MACs are counted since its pre-hook ran."""
             out = output[-1] if isinstance(output, (list, tuple)) else output
             first = inputs[0]
             macs = counter["macs"] - starts.pop(name)
@@ -81,7 +92,9 @@ def trace(spec, batch=1):
         return hook
 
     def start(name):
+        """A forward pre-hook for module `name` that remembers the MAC counter before it runs."""
         def pre_hook(module, inputs):
+            """Remember the MAC counter as this module starts."""
             starts[name] = counter["macs"]
         return pre_hook
 
@@ -132,6 +145,7 @@ def stage_table(model, spec, stage_inputs):
 
 
 def render(spec, model, rows, stage_inputs, input_shape, output_shape, total_macs):
+    """The shapes.md Markdown: every traced module, compute by part, Swin stages, parameters by part."""
     total = parameters(model)
     groups = {
         "Swin encoder (swinViT)": parameters(model.swinViT),
@@ -209,6 +223,7 @@ def render(spec, model, rows, stage_inputs, input_shape, output_shape, total_mac
 
 
 def main(argv=None):
+    """Parse the flags, trace the model, write (or print) the Markdown, and return it."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--tessera", action="store_true", help="172 input channels instead of 43")
     parser.add_argument("--ts", type=int, default=6)

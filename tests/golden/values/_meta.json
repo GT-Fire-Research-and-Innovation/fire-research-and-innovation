@@ -32,6 +32,30 @@
         "checkpoints"
       ],
       "reason": "checkpoint case uses the real tessera_stats dict shape"
+    },
+    {
+      "groups": [
+        "cli"
+      ],
+      "reason": "phase 4: dataset CLI gains process --only-fires and the rebuild-zip and stage subcommands"
+    },
+    {
+      "groups": [
+        "cli"
+      ],
+      "reason": "phase 5: check --device now goes through resolve_device, which also accepts tpu (help text)"
+    },
+    {
+      "groups": [
+        "models"
+      ],
+      "reason": "UNETR-3D builds now (kernel_size_up_down is a real parameter); SwinUNETR-3D gains the attn_version=v2 option; v1 models unchanged"
+    },
+    {
+      "groups": [
+        "cli"
+      ],
+      "reason": "one source for flags: check reuses the training flags (shared help, metavar and --device choices); the dataset CLI's dests are the master parameters and its defaults come from the master signatures"
     }
   ]
 }

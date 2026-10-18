@@ -2,7 +2,7 @@
 
 Every function here returns new arrays and leaves its inputs unchanged.
 
-Level 1 (data). Used by data/dataset.py, in this order per window:
+Level 1 (data). Used by data/fire_dataset.py, in this order per window:
 
     normalize    standardize every channel except angles and land cover
     augment      (training only) random flips and 90-degree rotation
@@ -14,7 +14,7 @@ import numpy as np
 import torch
 import torchvision.transforms.functional as TF
 
-from firepred.config.data import DEGREE_CHANNELS, LANDCOVER_CHANNEL, N_LANDCOVER_CLASSES
+from firepred.config.dataset import DEGREE_CHANNELS, LANDCOVER_CHANNEL, N_LANDCOVER_CLASSES
 
 
 class Normalize:

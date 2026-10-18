@@ -1,7 +1,7 @@
 """The window archive format: one file (or folder) per fire, one member per window.
 
-Level 1 (data). Written by prep/ and hub/ while building the dataset; read
-by data/dataset.py while training.
+Level 1 (data). Written by prep/ while building the dataset; read
+by data/fire_dataset.py while training.
 
 A fire's windows live in p<id>.npz [ours, format version 2]:
 
@@ -28,7 +28,7 @@ from pathlib import Path
 
 import numpy as np
 
-from firepred.config.data import ARCHIVE_FORMAT_VERSION, NPZ_COMPRESSLEVEL
+from firepred.config.dataset import ARCHIVE_FORMAT_VERSION, NPZ_COMPRESSLEVEL
 
 # Written into each unzipped folder: the archive (path, size, mtime) it came from.
 _UNZIP_MARKER = ".source.json"
@@ -153,19 +153,24 @@ class _FireFolder:
     """Read an unzipped p<id>/ folder through np.load's NpzFile interface."""
 
     def __init__(self, folder):
+        """Read members from `folder` (one .npy file per member)."""
         self.folder = Path(folder)
 
     @cached_property
     def files(self):
+        """Member names, like NpzFile.files (the .npy file stems)."""
         return [path.stem for path in self.folder.glob("*.npy")]
 
     def __getitem__(self, key):
+        """Load member `key` as a numpy array."""
         return np.load(self.folder / f"{key}.npy", allow_pickle=False)
 
     def __enter__(self):
+        """Nothing to open: a folder needs no handle."""
         return self
 
     def __exit__(self, *exc_info):
+        """Nothing to close; exceptions are not swallowed."""
         return False
 
 
@@ -177,10 +182,66 @@ def open_fire(source):
     return np.load(source, allow_pickle=False)
 
 
+def index_fires(sources):
+    """[(fire source, window number)] for every window of every fire in `sources`, in order.
+
+    Checks each archive (or unzipped folder) on the way: the current format,
+    and a data_### and label_### member for every window. Checking member
+    names reads only the ZIP directory, never the window arrays. This list is
+    FireDataset's index: its length is the dataset length, and shuffling it
+    mixes fires.
+    """
+    index = []
+    for npz_path in sources:
+        with open_fire(npz_path) as archive:
+            # Reject old archives rather than silently loading the whole
+            # `data` member and defeating lazy decompression.
+            if "num_windows" not in archive.files:
+                raise RuntimeError(
+                    f"{npz_path} uses the old NPZ format. Expected "
+                    "num_windows plus data_###/label_### members."
+                )
+
+            number_of_windows = int(
+                np.asarray(archive["num_windows"]).item()
+            )
+
+            if "format_version" in archive.files:
+                format_version = int(
+                    np.asarray(archive["format_version"]).item()
+                )
+                if format_version != ARCHIVE_FORMAT_VERSION:
+                    raise RuntimeError(
+                        f"{npz_path} has unsupported format version "
+                        f"{format_version}; expected version {ARCHIVE_FORMAT_VERSION}"
+                    )
+
+            # Checking member names reads only the ZIP directory; it does
+            # not decompress the large window arrays.
+            for window_idx in range(number_of_windows):
+                suffix = f"{window_idx:03d}"
+                data_key = f"data_{suffix}"
+                label_key = f"label_{suffix}"
+
+                if data_key not in archive.files:
+                    raise RuntimeError(
+                        f"{npz_path} is missing member {data_key}"
+                    )
+                if label_key not in archive.files:
+                    raise RuntimeError(
+                        f"{npz_path} is missing member {label_key}"
+                    )
+
+                index.append((npz_path, window_idx))
+
+    return index
+
+
 # ----- Unzipping once for faster reads ----- #
 
 
 def _archive_signature(archive_path):
+    """Identity of an archive file (resolved path, size, modification time), stored in the unzip marker."""
     archive_path = Path(archive_path).resolve()
     stat = archive_path.stat()
     return {
@@ -191,6 +252,7 @@ def _archive_signature(archive_path):
 
 
 def _read_unzip_marker(folder):
+    """The unzip marker of an unzipped fire folder, or None when it is missing or unreadable."""
     try:
         return json.loads((folder / _UNZIP_MARKER).read_text())
     except (OSError, ValueError):

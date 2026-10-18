@@ -1,7 +1,7 @@
 """Window multi-head self-attention with a learned relative position bias (Swin V1).
 
 Level 2 (models/blocks). Used by swin_block.py when attn_version="v1", the
-setting SwinUNETR-3D trains with.
+default of SwinUNETR-3D (window_attention_v2.py is the "v2" option).
 
 Input  (num_windows * B, N, C): the N = wd*wh*ww tokens of each window.
 Output the same shape. Each head computes softmax(q k^T / sqrt(d) + bias) v,
@@ -111,6 +111,9 @@ class WindowAttentionV1(nn.Module):
         self.softmax = nn.Softmax(dim=-1)
 
     def forward(self, x, mask):
+        """Window self-attention with relative position bias: (windows, tokens, C) -> (windows, tokens, C).
+        
+        `mask` (or None) keeps shifted windows from attending across their seams."""
         b, n, c = x.shape
         # x: (windows, tokens, channels). Split into per-head queries, keys and values.
         qkv = self.qkv(x).reshape(b, n, 3, self.num_heads, c // self.num_heads).permute(2, 0, 3, 1, 4)

@@ -49,7 +49,7 @@ class SwinTransformer(nn.Module):
         drop_rate:      float = 0.0,
         attn_drop_rate: float = 0.0,
         drop_path_rate: float = 0.0,
-        attn_version:   str = 'v2',
+        attn_version:   str = 'v1',
         norm_layer:     Type[LayerNorm] = nn.LayerNorm,
         patch_norm:     bool = False,
         use_checkpoint: bool = False,
@@ -137,6 +137,7 @@ class SwinTransformer(nn.Module):
         self.num_features = int(embed_dim * 2 ** (self.num_layers - 1))
 
     def proj_out(self, x, normalize=False):
+        """Channels-last LayerNorm (no learned scale) of one stage's output when `normalize`; shape unchanged."""
         # Optional channel-wise LayerNorm (no learned scale) on each stage's output
         # before it goes to the decoder.
         if normalize:
@@ -154,6 +155,7 @@ class SwinTransformer(nn.Module):
         return x
 
     def forward(self, x, normalize=True):
+        """Patch-embed `x`, run the four stages, and return the five scales for the decoder's skips."""
         # Run the stages in order and return all five scales (after patch embedding,
         # then after each stage) for the decoder's skip connections.
         x0 = self.patch_embed(x)

@@ -35,6 +35,7 @@ def window(rng, ts_length, positive_fraction):
 
 
 def fire_archive(path, rng, ts_length, n_windows, compressed=False, empty_window=None):
+    """Write one fire archive of `n_windows` random windows (window `empty_window` has no fire)."""
     arrays = {
         "format_version": np.asarray(2, dtype=np.int16),
         "num_windows": np.asarray(n_windows, dtype=np.int32),
@@ -48,6 +49,7 @@ def fire_archive(path, rng, ts_length, n_windows, compressed=False, empty_window
 
 
 def tessera_file(path, rng):
+    """Write one fire's TESSERA file: (128, 256, 256) float16 embedding, coverage, top rows empty."""
     embedding = rng.normal(0.0, 0.3, size=(128, SIZE, SIZE)).astype(np.float16)
     coverage = rng.random((SIZE, SIZE)).astype(np.float16)
     coverage[:20] = 0
@@ -98,6 +100,7 @@ GEO_SIZE = 400
 
 
 def _write_tif(path, array, transform):
+    """Write a float32 GeoTIFF in EPSG:32610 with the given transform."""
     import rasterio
     from rasterio.crs import CRS
 
@@ -176,9 +179,11 @@ class FakeGeoTessera:
     model_version = "fake"
 
     def __init__(self, seed=2):
+        """A fake store whose blocks are seeded from `seed` and the year."""
         self.seed = seed
 
     def iter_region(self, bbox, year, strip_rows=128):
+        """Yield (block (rows, cols, 128), transform, crs) strips of 750 m pixels with some NaN pixels."""
         from rasterio.transform import from_origin
 
         rng = np.random.default_rng(self.seed + int(year))

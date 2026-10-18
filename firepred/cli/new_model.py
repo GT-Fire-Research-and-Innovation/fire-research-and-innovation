@@ -37,6 +37,7 @@ def create(name, directory=ZOO_DIR):
 
 
 def main(argv=None):
+    """Parse NAME, write models/zoo/NAME.py from the template and print the next step; returns the path."""
     parser = argparse.ArgumentParser(prog="python -m firepred.cli.new_model", description=__doc__.splitlines()[0])
     parser.add_argument("name", help="Model name used with -m, e.g. convlstm_unet")
     args = parser.parse_args(argv)

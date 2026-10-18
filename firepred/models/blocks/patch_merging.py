@@ -83,6 +83,7 @@ class PatchMerging(nn.Module):
         self.reduction = nn.Linear(dims_tmp, self.output_dims, bias=False)
 
     def forward(self, x):
+        """Merge neighbouring tokens: (B, D, H, W, C) -> (B, D', H/2, W/2, 2C), D' = D/2 when merging time."""
         # x: (B, D, H, W, C)
 
         # Gather each group of neighbouring tokens (every other row/column, and day

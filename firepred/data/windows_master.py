@@ -1,6 +1,6 @@
 """MASTER for datasets: every window-data step a notebook or the CLI runs.
 
-Level 1 (prep). Notebooks call only this module and prep/tessera_master.py.
+Level 1 (prep). Notebooks call only this module and data/tessera_master.py.
 Each function runs one pipeline step end to end and returns a frozen value
 (reports have .summary()). Progress is printed here and nowhere below.
 
@@ -25,7 +25,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from firepred.config.data import (
+from firepred.config.dataset import (
     DATA_DIR,
     DATA_ZIP,
     ROI_CACHE_DIR,
@@ -41,9 +41,10 @@ from firepred.config.data import (
     window_repo_for,
 )
 from firepred.data.archive import write_fire_archive
-from firepred.prep import repos, staging, tessera_master
-from firepred.prep.roi import fire_id_of, label_rules, read_roi, tessera_excluded_npz
-from firepred.prep.windows import build_fire_windows
+from firepred.data import files, hub, tessera_master
+from firepred.data.fires import fire_id_of, label_rules, read_roi
+from firepred.data.tessera import tessera_excluded_npz
+from firepred.data.windows import build_fire_windows
 
 
 # ----- Paths and credentials ----- #
@@ -194,7 +195,71 @@ class StagedData:
         return f"Data root: {self.data_root} | training root: {self.train_root} | archives: {counts}"
 
 
+# ----- Planning (pure) ----- #
+
+
+@dataclass(frozen=True)
+class WindowJob:
+    """One fire to build: its split, label rule and source GeoTIFFs ({mode: [repo paths]})."""
+
+    split: str
+    fire_id: str
+    label_sel: int
+    files: dict
+
+
+@dataclass(frozen=True)
+class WindowPlan:
+    """What process_windows will build, and the fires it leaves alone (with why)."""
+
+    jobs: tuple
+    already_built: tuple = ()
+    without_geotiffs: tuple = ()
+
+    def jobs_by_split(self, splits):
+        """{split: jobs of that split, in plan order} for every split in `splits`."""
+        return {split: tuple(job for job in self.jobs if job.split == split) for split in splits}
+
+    def summary(self):
+        """One line: how many fires get built and how many are left alone."""
+        return (f"Plan: build {len(self.jobs)} fires; {len(self.already_built)} already in the repo, "
+                f"{len(self.without_geotiffs)} without GeoTIFFs in the source repo")
+
+
+def plan_windows(roi, rules, locations, existing, splits, overwrite=False, only_fires=None,
+                 default_label_sel=TRAIN_VAL_LABEL_SEL):
+    """The WindowPlan for `splits`: every fire with GeoTIFFs, minus those already built (unless `overwrite`).
+
+    `rules` is {fire id: label_sel} (fires.label_rules), `locations` the
+    source repo's GeoTIFFs by fire (hub.list_fire_files), `existing` the window
+    repo's file paths. `only_fires` narrows the plan to those IDs (debugging).
+    """
+    wanted = None if only_fires is None else {str(fire_id) for fire_id in only_fires}
+    jobs, already, missing = [], [], []
+    ids = roi.ids_by_split()
+    for split in splits:
+        for fire_id in ids[split]:
+            if wanted is not None and fire_id not in wanted:
+                continue
+            if fire_id not in locations:
+                missing.append(fire_id)
+            elif f"{split}/p{fire_id}.npz" in existing and not overwrite:
+                already.append(f"{split}/p{fire_id}.npz")
+            else:
+                jobs.append(WindowJob(split, fire_id, int(rules.get(fire_id, default_label_sel)), locations[fire_id]))
+    return WindowPlan(tuple(jobs), tuple(already), tuple(missing))
+
+
 # ----- Building windows ----- #
+
+
+@dataclass(frozen=True)
+class SplitResult:
+    """build_split's result: fires built, fires without a complete window, files uploaded."""
+
+    built: tuple
+    skipped: dict
+    uploaded: tuple
 
 
 def build_and_stage(fire_id, fire_files, label_sel, split_dir, src_repo, token, length, interval, temp_root, debug):
@@ -205,7 +270,7 @@ def build_and_stage(fire_id, fire_files, label_sel, split_dir, src_repo, token, 
     """
     with tempfile.TemporaryDirectory(dir=temp_root) as temp_dir:
         local_map = {
-            path: repos.download_file(src_repo, path, token, cache_dir=temp_dir)
+            path: hub.download_file(src_repo, path, token, cache_dir=temp_dir)
             for paths in fire_files.values()
             for path in paths
         }
@@ -221,10 +286,35 @@ def build_and_stage(fire_id, fire_files, label_sel, split_dir, src_repo, token, 
 def upload_split_batch(split_dir, split, window_repo, token):
     """Upload the staged archives of one split, then empty its staging folder; return the names."""
     print(f"Uploading staged {split} archives to {window_repo}")
-    names = repos.upload_folder(split_dir, window_repo, split, token)
+    names = hub.upload_folder(split_dir, window_repo, split, token)
     shutil.rmtree(split_dir, ignore_errors=True)
     Path(split_dir).mkdir(parents=True, exist_ok=True)
     return [f"{split}/{name}" for name in names]
+
+
+def build_split(jobs, split_dir, window_repo, src_repo, token, length, interval, temp_root, batch_size, debug=False):
+    """Build every job of one split into `split_dir`, uploading `batch_size` archives per commit; return a SplitResult."""
+    split_dir = Path(split_dir)
+    split_dir.mkdir(parents=True, exist_ok=True)
+    built, skipped, uploaded, staged = [], {}, [], 0
+    for number, job in enumerate(jobs, start=1):
+        print(f"[{job.split.upper()} | {number}/{len(jobs)}] Processing: {job.fire_id}")
+        path, notes = build_and_stage(job.fire_id, job.files, job.label_sel, split_dir, src_repo, token,
+                                      length, interval, temp_root, debug)
+        print("\n".join(notes))
+        if path is None:
+            skipped[job.fire_id] = "no complete window"
+        else:
+            built.append(job.fire_id)
+            staged += 1
+        gc.collect()
+        if staged >= batch_size:
+            uploaded += upload_split_batch(split_dir, jobs[0].split, window_repo, token)
+            staged = 0
+    if staged > 0:
+        uploaded += upload_split_batch(split_dir, jobs[0].split, window_repo, token)
+    shutil.rmtree(split_dir, ignore_errors=True)
+    return SplitResult(tuple(built), skipped, tuple(uploaded))
 
 
 def process_windows(
@@ -256,52 +346,32 @@ def process_windows(
     """
     window_repo = window_repo or window_repo_for(length, interval)
     print(f"Windows: {length} input days every {interval} days -> {window_repo}")
-    repos.ensure_repo(window_repo, token)
-    decision = repos.ensure_window_config(
-        window_repo, repos.window_settings(length, interval, train_val_label_sel, use_roi_label_sel),
+    hub.ensure_repo(window_repo, token)
+    decision = hub.ensure_window_config(
+        window_repo, hub.window_settings(length, interval, train_val_label_sel, use_roi_label_sel),
         overwrite=overwrite, token=token,
     )
     print(decision.message)
 
-    roi = read_roi(repos.download_roi_csvs(src_repo, token, roi_dir))
-    rules = label_rules(roi, splits, use_roi_label_sel, train_val_label_sel)
-    locations = repos.list_fire_files(src_repo, token)
-    existing = set(repos.list_repo_files(window_repo, token))
-    wanted = None if only_fires is None else {str(fire_id) for fire_id in only_fires}
+    roi = read_roi(hub.download_roi_csvs(src_repo, token, roi_dir))
+    plan = plan_windows(
+        roi, label_rules(roi, splits, use_roi_label_sel, train_val_label_sel), hub.list_fire_files(src_repo, token),
+        set(hub.list_repo_files(window_repo, token)), splits, overwrite, only_fires, train_val_label_sel,
+    )
+    print(plan.summary())
 
     work_dir = Path(work_dir)
     temp_root = work_dir / "temp"
     temp_root.mkdir(parents=True, exist_ok=True)
     built, skipped, uploaded = {}, {}, []
-    for split in splits:
-        split_dir = work_dir / "staging" / split
-        split_dir.mkdir(parents=True, exist_ok=True)
-        fire_ids = [fire_id for fire_id in roi.ids_by_split()[split]
-                    if fire_id in locations and (wanted is None or fire_id in wanted)]
-        print(f"{split}: {len(fire_ids)} fires with GeoTIFFs")
-        built[split], staged = [], 0
-        for number, fire_id in enumerate(fire_ids, start=1):
-            if f"{split}/p{fire_id}.npz" in existing and not overwrite:
-                print(f"Skipping {fire_id}: already processed")
-                continue
-            print(f"[{split.upper()} | {number}/{len(fire_ids)}] Processing: {fire_id}")
-            path, notes = build_and_stage(fire_id, locations[fire_id], rules.get(fire_id, train_val_label_sel),
-                                          split_dir, src_repo, token, length, interval, temp_root, debug)
-            print("\n".join(notes))
-            if path is None:
-                skipped[fire_id] = "no complete window"
-            else:
-                built[split].append(fire_id)
-                staged += 1
-            gc.collect()
-            if staged >= batch_size:
-                uploaded += upload_split_batch(split_dir, split, window_repo, token)
-                staged = 0
-        if staged > 0:
-            uploaded += upload_split_batch(split_dir, split, window_repo, token)
-        shutil.rmtree(split_dir, ignore_errors=True)
+    for split, jobs in plan.jobs_by_split(splits).items():
+        result = build_split(jobs, work_dir / "staging" / split, window_repo, src_repo, token, length, interval,
+                             temp_root, batch_size, debug)
+        built[split] = result.built
+        skipped.update(result.skipped)
+        uploaded += result.uploaded
 
-    report = WindowBuildReport(window_repo, {s: tuple(ids) for s, ids in built.items()}, skipped,
+    report = WindowBuildReport(window_repo, built, skipped,
                                tuple(uploaded), decision.message)
     print(report.summary())
     return report
@@ -331,16 +401,16 @@ def download_windows(
     """
     window_repo = window_repo or window_repo_for(length, interval)
     data_root = Path(data_root)
-    window_config = repos.read_window_config(window_repo, token)
+    window_config = hub.read_window_config(window_repo, token)
     print(f"Window repo {window_repo}: {window_config}")
-    roi = read_roi(repos.download_roi_csvs(src_repo, token, roi_dir))
+    roi = read_roi(hub.download_roi_csvs(src_repo, token, roi_dir))
     excluded = tessera_excluded_npz(roi) if include_tessera else []
     split_of = roi.split_of()
     for split in SPLITS:
         (data_root / split).mkdir(parents=True, exist_ok=True)
 
     downloaded, present, skipped = [], [], []
-    for name in repos.list_repo_files(window_repo, token):
+    for name in hub.list_repo_files(window_repo, token):
         # Only split folders hold window archives (tessera/p<id>.npz shares their names).
         if name.split("/")[0] not in SPLITS or not name.endswith(".npz"):
             continue
@@ -355,30 +425,16 @@ def download_windows(
         if target.exists():
             present.append(str(target.relative_to(data_root)))
             continue
-        shutil.move(repos.download_file(window_repo, name, token, local_dir=data_root), target)
+        shutil.move(hub.download_file(window_repo, name, token, local_dir=data_root), target)
         downloaded.append(str(target.relative_to(data_root)))
 
     missing = ()
     if include_tessera:
-        missing = tuple(download_tessera_files(data_root, tessera_repo, token))
+        missing = tuple(tessera_master.download_tessera_files(data_root, tessera_repo, token))
     report = DownloadReport(data_root, tuple(downloaded), tuple(present), tuple(skipped), tuple(excluded),
                             missing, window_config)
     print(report.summary())
     return report
-
-
-def download_tessera_files(data_root, tessera_repo, token):
-    """Download tessera/* into <data_root>/tessera; return window archives that have no TESSERA file."""
-    data_root = Path(data_root)
-    for name in repos.list_repo_files(tessera_repo, token):
-        if name.startswith("tessera/") and not (data_root / name).exists():
-            repos.download_file(tessera_repo, name, token, local_dir=data_root)
-    return [
-        f"{split}/{archive.name}"
-        for split in SPLITS
-        for archive in sorted((data_root / split).glob("*.npz"))
-        if not (data_root / "tessera" / archive.name).exists()
-    ]
 
 
 def upload_data_zip(token, data_root=DATA_DIR, zip_path=None, repo_id=None, zip_name=DATA_ZIP, folders=ZIP_FOLDERS):
@@ -389,8 +445,8 @@ def upload_data_zip(token, data_root=DATA_DIR, zip_path=None, repo_id=None, zip_
     """
     repo_id = repo_id or window_repo_for()
     zip_path = Path(zip_path) if zip_path else Path(data_root).parent / zip_name
-    members = staging.zip_folders([Path(data_root) / folder for folder in folders], zip_path)
-    repos.upload_file(zip_path, zip_name, repo_id, token)
+    members = files.zip_folders([Path(data_root) / folder for folder in folders], zip_path)
+    hub.upload_file(zip_path, zip_name, repo_id, token)
     report = ZipUpload(zip_path, tuple(members), repo_id, zip_name)
     print(report.summary())
     return report
@@ -407,7 +463,7 @@ def rebuild_data_zip(token, window_repo=None, length=TS_LENGTH, interval=TS_INTE
 
 def pull_data_zip(data_root, token=None, repo_id=None, zip_name=DATA_ZIP):
     """Download `zip_name` from `repo_id` into `data_root` and unpack it there; return data_root."""
-    data_root = repos.pull_zip(repo_id or window_repo_for(), zip_name, data_root, token)
+    data_root = hub.pull_zip(repo_id or window_repo_for(), zip_name, data_root, token)
     print(f"Extracted {zip_name} into {data_root}")
     return Path(data_root)
 
@@ -423,18 +479,18 @@ def stage_training_data(work, token=None, window_repo=None, tessera_repo=TESSERA
     without the excluded fires (tessera_master.stage_tessera).
     """
     if attached_data_root:
-        data_root = staging.find_data_root(attached_data_root)
+        data_root = files.find_data_root(attached_data_root)
     else:
         archive = Path(attached_zip) if attached_zip else Path(
-            repos.download_file(window_repo or work.window_repo, DATA_ZIP, token, local_dir=work.download_dir)
+            hub.download_file(window_repo or work.window_repo, DATA_ZIP, token, local_dir=work.download_dir)
         )
-        data_root = staging.extract_data(archive, work.extract_dir)
+        data_root = files.extract_data(archive, work.extract_dir)
 
     tessera_dir, train_root = None, data_root
     if work.use_tessera:
         view = tessera_master.stage_tessera(data_root, work, token, tessera_repo,
                                             attached_tessera_dir, attached_tessera_zip)
         train_root, tessera_dir = view.root, view.root / "tessera"
-    staged = StagedData(data_root, train_root, tessera_dir, staging.count_archives(train_root))
+    staged = StagedData(data_root, train_root, tessera_dir, files.count_archives(train_root))
     print(staged.summary())
     return staged

@@ -10,6 +10,7 @@ from firepred.training import accelerator
 
 
 def test_auto_is_the_old_choice_and_cpu_needs_no_xla():
+    """--device auto picks CUDA when visible, else the CPU, and CPU runs never import torch_xla."""
     expected = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     assert accelerator.resolve_device("auto") == expected
     cpu = accelerator.resolve_device("cpu")
@@ -20,18 +21,21 @@ def test_auto_is_the_old_choice_and_cpu_needs_no_xla():
 
 
 def test_tpu_without_torch_xla_explains_itself(monkeypatch):
+    """--device tpu without torch_xla fails with a message that names the missing package."""
     monkeypatch.setitem(sys.modules, "torch_xla", None)  # makes the import fail
     with pytest.raises(RuntimeError, match="torch_xla"):
         accelerator.resolve_device("tpu")
 
 
 def test_unknown_device_is_refused():
+    """Device names outside DEVICES are refused."""
     with pytest.raises(ValueError):
         accelerator.resolve_device("gpu")
 
 
 @pytest.fixture
 def fake_xla(monkeypatch):
+    """Fake torch_xla modules that record mark_step, seeding and saving."""
     calls = []
     xm = types.ModuleType("torch_xla.core.xla_model")
     xm.xla_device = lambda: torch.device("xla", 0)
@@ -50,6 +54,7 @@ def fake_xla(monkeypatch):
 
 
 def test_tpu_path_uses_xla_calls(fake_xla, tmp_path):
+    """On a TPU, seeding, mark_step and saving go through torch_xla."""
     import os
 
     device = accelerator.resolve_device("tpu")
@@ -62,6 +67,7 @@ def test_tpu_path_uses_xla_calls(fake_xla, tmp_path):
 
 
 def test_cpu_checkpoint_is_a_plain_torch_save(tmp_path):
+    """On the CPU a checkpoint is a plain torch.save that loads with weights_only=True."""
     from firepred.training.checkpoints import save_checkpoint
 
     model = torch.nn.Linear(2, 1)
@@ -73,6 +79,7 @@ def test_cpu_checkpoint_is_a_plain_torch_save(tmp_path):
 
 
 def test_cli_device_flag():
+    """The training CLI accepts --device and defaults to auto."""
     from firepred.cli.train import parse_args
 
     required = ["-m", "swinunetr3d", "-mode", "pred", "-b", "1", "-r", "1", "-lr", "0.001",

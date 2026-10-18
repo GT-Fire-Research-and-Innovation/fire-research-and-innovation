@@ -65,7 +65,7 @@ class SwinUNETR(nn.Module):
         drop_rate:      float = 0.0,
         attn_drop_rate: float = 0.0,
         drop_path_rate: float = 0.0,
-        attn_version:   str = 'v2',
+        attn_version:   str = 'v1',
         normalize:      bool = True,
         use_checkpoint: bool = False,
         spatial_dims:   int = 3,
@@ -120,8 +120,8 @@ class SwinUNETR(nn.Module):
         # if feature_size % 4 != 0:
         #     raise ValueError('feature_size should be divisible by 4.')
 
-        if attn_version not in ['v1', 'v2', 'ar']:
-            raise ValueError('attn_version should be v1 or v2 or ar.')
+        if attn_version not in ['v1', 'v2']:
+            raise ValueError('attn_version should be v1 or v2.')
 
         self.normalize = normalize
 
@@ -266,6 +266,7 @@ class SwinUNETR(nn.Module):
 
 
     def forward(self, x_in):
+        """(B, C, T, H, W) input -> (B, K, T, H, W) per-day logits: Swin encoder, conv skips, U-Net decoder."""
         # Shapes for the paper setup: B windows, C=43, T=6, 256x256, F=feature_size=36,
         # no temporal downsampling. docs/swinunetr3d/shapes.md lists them all.
         hidden_states_out = self.swinViT(x_in, self.normalize)   # 5 scales: (B, F*2^i, T, 128/2^i, 128/2^i)
@@ -309,7 +310,8 @@ def build(spec):
         drop_rate=0.0,
         attn_drop_rate=0.0,
         drop_path_rate=0.0,
-        attn_version="v1",
+        # Swin V1 attention as in the released code; --model-option attn_version=v2 for Swin V2.
+        attn_version=spec.options.get("attn_version", "v1"),
         normalize=True,
         use_checkpoint=False,
         spatial_dims=3,

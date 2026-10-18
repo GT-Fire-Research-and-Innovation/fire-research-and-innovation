@@ -5,15 +5,17 @@ import pytest
 
 rasterio = pytest.importorskip("rasterio")
 
-from firepred.prep.windows import binary_mask, build_fire_windows  # noqa: E402
+from firepred.data.windows import binary_mask, build_fire_windows  # noqa: E402
 
 
 def test_binary_mask_treats_nan_inf_and_nodata_as_background():
+    """NaN, infinity, nodata (-1) and 0 are background; positive values are fire."""
     mask = binary_mask(np.array([np.nan, np.inf, -1.0, 0.0, 0.5, 2.0]))
     assert mask.tolist() == [False, False, False, False, True, True]
 
 
 def test_windows_and_targets(tmp_path):
+    """An 8-day fire gives two 6-day windows with finite inputs, binary targets and a non-decreasing I4 maximum."""
     import synth
 
     local_map = synth.fire_geotiffs(tmp_path)  # 8 days
@@ -27,6 +29,7 @@ def test_windows_and_targets(tmp_path):
 
 
 def test_too_few_days_gives_no_windows_and_says_why(tmp_path):
+    """A fire with too few days gives an empty FireWindows whose notes say why."""
     import synth
 
     windows = build_fire_windows("fire", synth.fire_geotiffs(tmp_path, n_days=3), length=6, interval=1)

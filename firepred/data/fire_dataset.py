@@ -17,7 +17,7 @@ data flows through them:
     loaders      make_dataloader, validate_dataset_output, and batch_inputs,
                  which repeats the static map across the T days on the GPU.
 
-TESSERA files are built by prep/tessera_grid.py: tessera/p<id>.npz with a
+TESSERA files are built by data/tessera.py: tessera/p<id>.npz with a
 (128, 256, 256) float16 `embedding` and a (256, 256) `coverage` (fraction of
 10 m pixels with data). [ours]
 """
@@ -28,8 +28,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
 
-from firepred.config.data import (
-    ARCHIVE_FORMAT_VERSION,
+from firepred.config.dataset import (
     BASE_MODEL_CHANNELS,
     CROP_SIZE,
     DEGREE_CHANNELS,
@@ -40,76 +39,9 @@ from firepred.config.data import (
     TESSERA_BANDS,
     TESSERA_CHANNELS,
 )
-from firepred.data.archive import find_fire_sources, fire_name, open_fire
+from firepred.data.archive import find_fire_sources, fire_name, index_fires, open_fire
+from firepred.data.tessera_archive import load_tessera_maps, static_map
 from firepred.data.transforms import Normalize, augment, landcover_one_hot_matrix, preprocess
-
-
-# ----- TESSERA embeddings ----- #
-
-
-def read_tessera(path):
-    """Read one TESSERA file and return its stored (embedding, coverage).
-
-    The arrays are marked read-only: one fire's map is shared by every window
-    of that fire (and by forked DataLoader workers), so nothing may modify it.
-    """
-    path = Path(path)
-    with np.load(path, allow_pickle=False) as archive:
-        embedding = archive["embedding"]
-        coverage = archive["coverage"]
-    if embedding.shape != (TESSERA_BANDS, CROP_SIZE, CROP_SIZE):
-        raise ValueError(
-            f"{path}: embedding has shape {embedding.shape}; "
-            f"expected ({TESSERA_BANDS}, {CROP_SIZE}, {CROP_SIZE})"
-        )
-    embedding.flags.writeable = False
-    coverage.flags.writeable = False
-    return embedding, coverage
-
-
-def load_tessera_maps(tessera_dir, fire_sources):
-    """{fire name: (embedding, coverage)} for every fire archive in `fire_sources`.
-
-    Each file is read once here (about 16 MiB per fire as float16); pass the
-    result to compute_tessera_stats and to FireDataset(tessera_maps=...) so
-    neither reads it again. Raises if any fire has no TESSERA file.
-    """
-    tessera_dir = Path(tessera_dir)
-    names = [fire_name(path) for path in fire_sources]
-    missing = [f"{name}.npz" for name in names if not (tessera_dir / f"{name}.npz").exists()]
-    if missing:
-        raise RuntimeError(f"{len(missing)} fires have no TESSERA file in {tessera_dir}: {missing[:10]}")
-    return {name: read_tessera(tessera_dir / f"{name}.npz") for name in names}
-
-
-def compute_tessera_stats(tessera_maps, min_coverage=0.5):
-    """Per-band mean/std over well-covered pixels of the given (embedding, coverage) maps.
-
-    Compute this from the training fires only and reuse it for validation and
-    test, so no statistics leak from held-out fires. Returns
-    {"mean": (128,), "std": (128,), "min_coverage": float}.
-    """
-    # Accumulate sum and sum of squares over all well-covered pixels of the
-    # training fires (float64 to avoid rounding drift), then mean and std per band.
-    total = np.zeros(TESSERA_BANDS, dtype=np.float64)
-    total_sq = np.zeros(TESSERA_BANDS, dtype=np.float64)
-    count = 0
-    for embedding, coverage in tessera_maps:
-        embedding = embedding.astype(np.float64)
-        valid = coverage.astype(np.float32) >= min_coverage
-        values = embedding[:, valid]
-        total += values.sum(axis=1)
-        total_sq += (values ** 2).sum(axis=1)
-        count += values.shape[1]
-    if count == 0:
-        raise RuntimeError("No TESSERA pixels with sufficient coverage")
-    mean = total / count
-    std = np.sqrt(np.maximum(total_sq / count - mean ** 2, 1e-12))
-    return {
-        "mean": mean.astype(np.float32),
-        "std": std.astype(np.float32),
-        "min_coverage": float(min_coverage),
-    }
 
 
 # ----- FireDataset ----- #
@@ -184,53 +116,10 @@ class FireDataset(Dataset):
         # [released] angles in degrees, transformed with sine after augmentation.
         self.indices_of_degree_features = list(DEGREE_CHANNELS)
 
-        # [ours] a global index lets PyTorch shuffle windows across all fires.
-        # Each entry is `(archive_path, window_index_inside_archive)`.
-        # 4. Build the global index: one (fire, window number) entry per window across
-        # all fires. Its length is the dataset length, and shuffling it mixes fires.
-        self.index = []
-        for npz_path in self.npz_files:
-            with open_fire(npz_path) as archive:
-                # Reject old archives rather than silently loading the whole
-                # `data` member and defeating lazy decompression.
-                if "num_windows" not in archive.files:
-                    raise RuntimeError(
-                        f"{npz_path} uses the old NPZ format. Expected "
-                        "num_windows plus data_###/label_### members."
-                    )
-
-                number_of_windows = int(
-                    np.asarray(archive["num_windows"]).item()
-                )
-
-                if "format_version" in archive.files:
-                    format_version = int(
-                        np.asarray(archive["format_version"]).item()
-                    )
-                    if format_version != ARCHIVE_FORMAT_VERSION:
-                        raise RuntimeError(
-                            f"{npz_path} has unsupported format version "
-                            f"{format_version}; expected version {ARCHIVE_FORMAT_VERSION}"
-                        )
-
-                # Checking member names reads only the ZIP directory; it does
-                # not decompress the large window arrays.
-                for window_idx in range(number_of_windows):
-                    suffix = f"{window_idx:03d}"
-                    data_key = f"data_{suffix}"
-                    label_key = f"label_{suffix}"
-
-                    if data_key not in archive.files:
-                        raise RuntimeError(
-                            f"{npz_path} is missing member {data_key}"
-                        )
-                    if label_key not in archive.files:
-                        raise RuntimeError(
-                            f"{npz_path} is missing member {label_key}"
-                        )
-
-                    self.index.append((npz_path, window_idx))
-
+        # 4. [ours] The global index: one (fire, window number) entry per window
+        # across all fires (data/archive.index_fires), so PyTorch can shuffle
+        # windows across fires.
+        self.index = index_fires(self.npz_files)
         if not self.index:
             raise RuntimeError(
                 f"NPZ files in {self.npz_dir} contain no temporal windows"
@@ -247,6 +136,13 @@ class FireDataset(Dataset):
         )
 
         self.one_hot_matrix = landcover_one_hot_matrix()
+
+    def windows_by_fire(self):
+        """{fire id (no "p"): [dataset indices of its windows]}, in index order."""
+        groups = {}
+        for dataset_index, (archive_path, _) in enumerate(self.index):
+            groups.setdefault(fire_name(archive_path).removeprefix("p"), []).append(dataset_index)
+        return groups
 
     def __len__(self):
         """The number of windows across all fires."""
@@ -362,27 +258,11 @@ class FireDataset(Dataset):
         return x, y
 
     def load_tessera(self, idx):
-        """Return (129, H, W): normalized embedding plus validity mask.
-
-        Pixels whose TESSERA coverage is below the training threshold are
-        zeroed (the normalized mean) and marked 0 in the mask channel.
-        """
+        """Return (129, H, W): this window's fire map, normalized, plus its validity mask (tessera_archive.static_map)."""
         npz_path, _ = self.index[idx]
         # The stored map was read in __init__; only normalization runs per window.
         embedding, valid = self.tessera_maps[fire_name(npz_path)]
-        embedding = embedding.astype(np.float32)
-
-        # Standardize the embedding with training-split statistics; pixels with too
-        # little TESSERA coverage are set to 0 and flagged in the extra mask channel.
-        mean = self.tessera_stats["mean"][:, None, None]
-        std = self.tessera_stats["std"][:, None, None]
-        embedding = np.where(valid, (embedding - mean) / std, 0.0)
-
-        static = np.concatenate(
-            (embedding, valid[None].astype(np.float32)),
-            axis=0,
-        ).astype(np.float32)
-        return torch.from_numpy(static)
+        return torch.from_numpy(static_map(embedding, valid, self.tessera_stats))
 
 
 # ----- Loaders and batches ----- #

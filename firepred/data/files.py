@@ -1,36 +1,24 @@
-"""Local files: zip a data root, unpack zips safely, stage a training root.
+"""Local files: zip a data root, unpack zips safely, find a data root, the code version.
 
-Level 1 (prep). Standard library and config only, so it runs before any
-training dependency is installed (Kaggle/Colab notebooks import it through
-the masters). Every function returns what it made, found or removed; none
-prints.
+Level 1 (data, dataset building). Standard library and config only, so it
+runs before any training dependency is installed (Kaggle/Colab notebooks
+import it through the masters). Every function returns what it made or
+found; none prints.
 
-    zip_folders(folders, zip)              bundle folders (data.zip, tessera.zip)
-    unzip_into(zip, folder)                unpack with a path-escape check
-    extract_zip / extract_data             unpack once per session -> train/val/test root
-    build_tessera_view(root, tessera, out) symlink view: kept fires + tessera/
-    drop_excluded_archives(root, names)    delete listed window archives (explicit)
+    zip_folders(folders, zip)   bundle folders (data.zip, tessera.zip)
+    unzip_into(zip, folder)     unpack with a path-escape check
+    extract_zip / extract_data  unpack once per session -> train/val/test root
+    code_version()              git commit of this checkout (provenance)
 """
 
 import json
+import os
 import shutil
+import subprocess
 import zipfile
-from dataclasses import dataclass
 from pathlib import Path
 
-from firepred.config.data import SPLITS, TESSERA_EXCLUDED_LIST
-
-
-@dataclass(frozen=True)
-class TesseraView:
-    """A symlinked training root with fires lacking TESSERA left out."""
-
-    root: Path
-    dropped: tuple
-
-    def summary(self):
-        """One line: where the view is and how many archives it leaves out."""
-        return f"TESSERA view {self.root}: dropped {len(self.dropped)} archives without prior-year TESSERA"
+from firepred.config.dataset import SPLITS
 
 
 def find_data_root(base):
@@ -135,67 +123,14 @@ def extract_data(archive_path, destination):
     return find_data_root(extract_zip(archive_path, destination))
 
 
-def read_excluded_list(tessera_dir):
-    """The window archives listed in tessera_dir/excluded_npz.txt, e.g. ['train/p1.npz']."""
-    path = Path(tessera_dir) / TESSERA_EXCLUDED_LIST
-    return [line.strip() for line in path.read_text().splitlines() if line.strip()]
-
-
-def write_excluded_list(tessera_dir, excluded):
-    """Write the drop list into tessera_dir/excluded_npz.txt; return its path."""
-    path = Path(tessera_dir) / TESSERA_EXCLUDED_LIST
-    path.write_text("\n".join(excluded) + "\n")
-    return path
-
-
-def drop_excluded_archives(data_root, excluded):
-    """Delete the listed window archives under `data_root`; return the names removed."""
-    removed = []
-    for name in excluded:
-        path = Path(data_root) / name
-        if path.exists():
-            path.unlink()
-            removed.append(name)
-    return removed
-
-
-def clear_view(view_dir):
-    """Remove an old symlink view; refuse a folder that holds real files. Returns view_dir."""
-    view_dir = Path(view_dir)
-    if not view_dir.exists():
-        return view_dir
-    real_files = [p for p in view_dir.rglob("*") if p.is_file() and not p.is_symlink()
-                  and not any(parent.is_symlink() for parent in p.parents)]
-    if real_files:
-        raise RuntimeError(f"{view_dir} holds real files (e.g. {real_files[0]}); refusing to clear it")
-    shutil.rmtree(view_dir)
-    return view_dir
-
-
-def build_tessera_view(data_root, tessera_dir, view_dir):
-    """Symlink the kept window archives and tessera/ into view_dir; return a TesseraView.
-
-    Fires listed in tessera_dir/excluded_npz.txt (no prior-year TESSERA) are
-    left out; the extracted data itself is never modified, so the TESSERA run
-    and its matched no-TESSERA baseline read the same fires. [ours]
-    """
-    data_root, tessera_dir, view_dir = Path(data_root), Path(tessera_dir), Path(view_dir)
-    excluded = set(read_excluded_list(tessera_dir))
-    clear_view(view_dir)
-    dropped = []
-    # Symlink every kept archive into view_dir/<split>/; excluded ones are only counted.
-    for split in SPLITS:
-        (view_dir / split).mkdir(parents=True)
-        for archive in sorted((data_root / split).glob("*.npz")):
-            if f"{split}/{archive.name}" in excluded:
-                dropped.append(f"{split}/{archive.name}")
-            else:
-                (view_dir / split / archive.name).symlink_to(archive.resolve())
-    (view_dir / "tessera").symlink_to(tessera_dir.resolve(), target_is_directory=True)
-    # Every kept archive needs its TESSERA file; fail before training if any is missing.
-    missing = [f"{split}/{archive.name}" for split in SPLITS
-               for archive in (view_dir / split).glob("*.npz")
-               if not (tessera_dir / archive.name).exists()]
-    if missing:
-        raise RuntimeError(f"{len(missing)} kept archives have no TESSERA file: {missing[:10]}")
-    return TesseraView(view_dir, tuple(dropped))
+def code_version():
+    """Git commit of this repository, or "" when not run from a checkout."""
+    try:
+        return subprocess.run(
+            ["git", "-C", os.path.dirname(os.path.abspath(__file__)), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+    except Exception:
+        return ""

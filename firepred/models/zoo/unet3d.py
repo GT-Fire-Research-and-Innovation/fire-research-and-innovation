@@ -1,3 +1,5 @@
+"""U-Net-3D, the paper's U-Net baseline (`-m unet3d`); not used by SwinUNETR-3D."""
+
 # ============================================================================
 # NOT USED BY SWINUNETR-3D (our current work: next-day fire prediction).
 #
@@ -143,6 +145,7 @@ class UNet(nn.Module):
         bias: bool = True,
         adn_ordering: str = "NDA",
     ) -> None:
+        """Build the encoder-decoder from channel widths and strides (MONAI's UNet arguments)."""
         super().__init__()
 
         if len(channels) < 2:
@@ -322,6 +325,7 @@ class UNet(nn.Module):
 
     # (B, C, T, H, W) -> logits (B, K, T, H, W); the trainer averages over T.
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """(B, C, T, H, W) input -> (B, K, T, H, W) logits."""
         x = self.model(x)
         return x
 

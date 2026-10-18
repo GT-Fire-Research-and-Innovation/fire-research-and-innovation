@@ -54,6 +54,7 @@ def resolve_device(name="auto"):
 
 
 def is_xla(device):
+    """True when `device` is a PyTorch/XLA (TPU) device."""
     return torch.device(device).type == "xla"
 
 

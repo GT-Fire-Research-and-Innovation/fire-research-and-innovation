@@ -1,18 +1,11 @@
-# ============================================================================
-# NOT USED BY SWINUNETR-3D (our current work: next-day fire prediction).
-#
-# firepred/models/blocks/swin_block.py imports this file, but SwinUNETR-3D runs
-# never call it. Do not modify it for SwinUNETR-3D work; changes here do not
-# affect those runs. It must still import cleanly, or the training script will
-# not start.
-#
-# What it does: Swin Transformer V2 window attention (scaled cosine attention
-# with a continuous position bias). swin_block.py uses it only when the model is
-# built with attn_version='v2'. Our prediction script builds SwinUNETR-3D with
-# attn_version='v1', which uses window_attention.py.
-#
-# From the original TS-SatFire code (https://github.com/zhaoyutim/TS-SatFire).
-# ============================================================================
+"""Swin Transformer V2 window attention: scaled cosine attention with a continuous position bias.
+
+Level 2 (models/blocks). Used by swin_block.py when attn_version="v2", an
+option of SwinUNETR-3D (`--model-option attn_version=v2`, Liu et al., CVPR
+2022). The default is "v1" (window_attention.py), which the released
+TS-SatFire code trains with; the paper does not say which it used.
+From the original TS-SatFire code (https://github.com/zhaoyutim/TS-SatFire).
+"""
 
 from typing import Sequence
 
@@ -142,6 +135,7 @@ class WindowAttentionV2(nn.Module):
         self.softmax = nn.Softmax(dim=-1)
 
     def forward(self, x, mask):
+        """Scaled cosine window attention with continuous position bias: (windows, tokens, C) -> same shape."""
         b, n, c = x.shape
         device = x.device
 

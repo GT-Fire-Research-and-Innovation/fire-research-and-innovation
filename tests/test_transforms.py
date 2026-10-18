@@ -3,11 +3,12 @@
 import numpy as np
 import torch
 
-from firepred.config.data import BASE_MODEL_CHANNELS, LANDCOVER_CHANNEL, NORMALIZATION_MEAN, NORMALIZATION_STD
+from firepred.config.dataset import BASE_MODEL_CHANNELS, LANDCOVER_CHANNEL, NORMALIZATION_MEAN, NORMALIZATION_STD
 from firepred.data.transforms import Normalize, augment, landcover_one_hot_matrix, preprocess
 
 
 def window(landcover):
+    """A (27, 2, 4, 4) window with wind direction 90 degrees and one land-cover class."""
     x = torch.zeros(27, 2, 4, 4)
     x[12] = 90.0  # wind direction: sin(90) = 1
     x[LANDCOVER_CHANNEL] = landcover
@@ -15,12 +16,14 @@ def window(landcover):
 
 
 def test_preprocess_gives_43_channels_with_sine_angles():
+    """preprocess gives 43 channels with sin(angle) in the angle channels."""
     out = preprocess(window(3.0), landcover_one_hot_matrix())
     assert out.shape == (BASE_MODEL_CHANNELS, 2, 4, 4)
     assert torch.allclose(out[12], torch.ones(2, 4, 4))
 
 
 def test_landcover_classes_become_one_hot_and_zero_means_missing():
+    """Land-cover class k becomes one-hot plane k-1, and 0 (missing) becomes all zeros."""
     out = preprocess(window(3.0), landcover_one_hot_matrix())
     planes = out[LANDCOVER_CHANNEL:LANDCOVER_CHANNEL + 17]
     assert torch.equal(planes[2], torch.ones(2, 4, 4)) and planes.sum() == 2 * 4 * 4
@@ -29,6 +32,7 @@ def test_landcover_classes_become_one_hot_and_zero_means_missing():
 
 
 def test_augment_moves_input_target_and_tessera_together():
+    """Flips and rotations move input, target and TESSERA map together."""
     x = torch.zeros(27, 1, 4, 4)
     x[0, 0, 0, 1] = 1.0
     y = torch.zeros(2, 4, 4, dtype=torch.long)
@@ -42,6 +46,7 @@ def test_augment_moves_input_target_and_tessera_together():
 
 
 def test_augment_draws_exactly_three_random_numbers():
+    """augment draws exactly three numbers from numpy's global generator."""
     np.random.seed(0)
     augment(torch.zeros(27, 1, 4, 4), torch.zeros(2, 4, 4))
     after = np.random.random()

@@ -13,16 +13,13 @@ from scratch in [docs/swinunetr3d/](docs/swinunetr3d/).
     .
     ├── firepred/                 # the package (python -m firepred.cli.<name>)
     │   ├── config/               # L0 every project-wide constant: channels, dataset, paths, training
-    │   ├── data/                 # L1 window archives -> model-ready tensors (FireDataset)
-    │   ├── prep/                 # L1 raw GeoTIFFs -> windows and next-day targets (offline)
+    │   ├── data/                 # L1 GeoTIFFs/TESSERA -> archives -> tensors; notebooks call windows_master.py, tessera_master.py
     │   ├── models/               # L2 blocks/ (Swin pieces), zoo/ (one file per model), registry
-    │   ├── hub/                  # L2 Hugging Face upload/download, local data staging
     │   ├── training/             # L3 loss, metrics, loop, evaluation, W&B, checkpoints
     │   └── cli/                  # L4 train, dataset, check, new_model
     ├── tests/                    # pytest: unit tests, golden/ (same-output values), end-to-end runs
     ├── tools/                    # trace_shapes.py: real tensor shapes through SwinUNETR-3D
-    ├── docs/                     # ARCHITECTURE, MIGRATION, KNOWN_ISSUES, swinunetr3d/ explainer
-    ├── legacy/                   # the paper's unused code (AF/BA tasks, TensorFlow models)
+    ├── docs/                     # ARCHITECTURE, KNOWN_ISSUES, swinunetr3d/ explainer
     ├── roi/                      # fire metadata CSVs (ids, dates, locations, label rule)
     └── figures/                  # dataset figures from the paper
 
@@ -57,8 +54,8 @@ python -m firepred.cli.train -m swinunetr3d -mode pred -b 8 -r 1 -lr 0.001 -nh 3
 python -m firepred.cli.train ... -test --checkpoint <file.pth>
 ```
 Training scores the test fires with its best checkpoint at the end. Add a model with
-`python -m firepred.cli.new_model NAME` (see docs/ARCHITECTURE.md). The paper's
-active-fire and burned-area tasks live in `legacy/` (see legacy/README.md).
+`python -m firepred.cli.new_model NAME` (see docs/ARCHITECTURE.md). This repository
+covers the paper's prediction task only.
 
 ## Author
 

@@ -9,7 +9,8 @@ BasicLayer            `depth` blocks (alternating unshifted/shifted), then an op
                       downsample (PatchMerging). Input/output (B, C, D, H, W).
 
 From the Swin Transformer reference code (Liu et al. 2021) via MONAI, with the
-attention variant selectable by attn_version ("v1" is what SwinUNETR-3D uses).
+attention selectable by attn_version: "v1" (Swin V1, the released code and the
+default) or "v2" (Swin V2 scaled cosine attention).
 """
 
 import numpy as np
@@ -23,7 +24,6 @@ from monai.networks.layers import DropPath
 from torch.nn import LayerNorm
 from typing import Optional, Sequence, Type
 
-from firepred.models.blocks.autoregressive_attention import AutoregressiveAttention
 from firepred.models.blocks.window_attention import WindowAttentionV1
 from firepred.models.blocks.window_attention_v2 import WindowAttentionV2
 from firepred.models.blocks.window_ops import compute_mask, get_window_size, window_partition, window_reverse
@@ -47,7 +47,7 @@ class SwinTransformerBlock(nn.Module):
         qkv_bias:       bool = True,
         drop:           float = 0.0,
         attn_drop:      float = 0.0,
-        attn_version:   str = 'v2',
+        attn_version:   str = 'v1',
         drop_path:      float = 0.0,
         act_layer:      str = 'GELU',
         norm_layer:     Type[LayerNorm] = nn.LayerNorm,
@@ -98,17 +98,8 @@ class SwinTransformerBlock(nn.Module):
                 attn_drop   = attn_drop,
                 proj_drop   = drop,
             )
-        elif attn_version == 'ar':
-            self.attn = AutoregressiveAttention(
-                dim,
-                window_size = self.window_size,
-                num_heads   = num_heads,
-                qkv_bias    = qkv_bias,
-                attn_drop   = attn_drop,
-                proj_drop   = drop,
-            )
         else:
-            raise ValueError('unknown attn_version')
+            raise ValueError(f"unknown attn_version {attn_version!r}; choose 'v1' or 'v2'")
 
         # Stochastic depth (off for SwinUNETR-3D) and the MLP that processes each token
         # on its own after attention (dim -> 4 x dim -> dim).
@@ -123,7 +114,8 @@ class SwinTransformerBlock(nn.Module):
             dropout_mode = 'swin'
         )
 
-    def forward_part1(self, x, mask_matrix, temp_attn_mask):
+    def forward_part1(self, x, mask_matrix):
+        """Attention half of the block: norm, pad, (shift), window attention, unshift, unpad."""
         x_shape = x.size()
         # LayerNorm, then pad the volume so each axis is a whole number of windows.
         x = self.norm1(x)
@@ -163,10 +155,7 @@ class SwinTransformerBlock(nn.Module):
         # Shift_x is the x after cyclic shifting
         # Cut into windows, run attention inside each, and stitch the windows back.
         x_windows = window_partition(shifted_x, window_size)
-        if self.attn_version == 'ar':
-            attn_windows = self.attn(x_windows, mask=attn_mask, temp_attn_mask=temp_attn_mask)
-        else:
-            attn_windows = self.attn(x_windows, mask=attn_mask)
+        attn_windows = self.attn(x_windows, mask=attn_mask)
         attn_windows = attn_windows.view(-1, *(window_size + (c,)))
         shifted_x = window_reverse(attn_windows, window_size, dims)
         if any(i > 0 for i in shift_size):
@@ -188,16 +177,18 @@ class SwinTransformerBlock(nn.Module):
         return x
 
     def forward_part2(self, x):
+        """MLP half of the block: norm, MLP, drop path."""
         return self.drop_path(self.mlp(self.norm2(x)))
 
-    def forward(self, x, mask_matrix, temp_attn_mask):
+    def forward(self, x, mask_matrix):
+        """One Swin block with residual connections: x + attention(x), then x + MLP(x)."""
         # Residual connections: each half adds a correction to its input,
         # x + attention(...) then x + MLP(...), which keeps deep stacks trainable.
         shortcut = x
         if self.use_checkpoint:
             x = checkpoint.checkpoint(self.forward_part1, x, mask_matrix)
         else:
-            x = self.forward_part1(x, mask_matrix, temp_attn_mask)
+            x = self.forward_part1(x, mask_matrix)
         x = shortcut + self.drop_path(x)
         if self.use_checkpoint:
             x = x + checkpoint.checkpoint(self.forward_part2, x)
@@ -225,7 +216,7 @@ class BasicLayer(nn.Module):
         qkv_bias:         bool = False,
         drop:             float = 0.0,
         attn_drop:        float = 0.0,
-        attn_version:     str = 'v2',
+        attn_version:     str = 'v1',
         norm_layer:       Type[LayerNorm] = nn.LayerNorm,
         downsample:       Optional[nn.Module] = None,
         use_checkpoint:   bool = False,
@@ -285,6 +276,7 @@ class BasicLayer(nn.Module):
             )
 
     def forward(self, x):
+        """Run every block of the stage on (B, C, D, H, W) with the shifted-window mask, then merge patches."""
         x_shape = x.size()
         if len(x_shape) == 5:
             b, c, d, h, w = x_shape
@@ -296,9 +288,9 @@ class BasicLayer(nn.Module):
             dp = int(np.ceil(d / window_size[0])) * window_size[0]
             hp = int(np.ceil(h / window_size[1])) * window_size[1]
             wp = int(np.ceil(w / window_size[2])) * window_size[2]
-            attn_mask, temp_attn_mask = compute_mask([dp, hp, wp], window_size, shift_size, x.device)
+            attn_mask = compute_mask([dp, hp, wp], window_size, shift_size, x.device)
             for blk in self.blocks:
-                x = blk(x, attn_mask, temp_attn_mask)
+                x = blk(x, attn_mask)
             x = x.view(b, d, h, w, -1)
             if self.downsample is not None:
                 x = self.downsample(x)
@@ -310,9 +302,9 @@ class BasicLayer(nn.Module):
             x = rearrange(x, 'b c h w -> b h w c')
             hp = int(np.ceil(h / window_size[0])) * window_size[0]
             wp = int(np.ceil(w / window_size[1])) * window_size[1]
-            attn_mask, temp_attn_mask = compute_mask([hp, wp], window_size, shift_size, x.device)
+            attn_mask = compute_mask([hp, wp], window_size, shift_size, x.device)
             for blk in self.blocks:
-                x = blk(x, attn_mask, temp_attn_mask)
+                x = blk(x, attn_mask)
             x = x.view(b, h, w, -1)
             if self.downsample is not None:
                 x = self.downsample(x)

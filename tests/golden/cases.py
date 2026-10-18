@@ -78,7 +78,7 @@ def tiny_spec(channels=43, width=12, **options):
 @group("config")
 def config_values(ctx):
     """Project constants and derived repo names."""
-    from firepred.config import data, training
+    from firepred.config import dataset as data, training
 
     out = {}
     for key in (
@@ -136,13 +136,8 @@ def dataset_values(ctx):
     import torch
 
     from firepred.data.archive import fire_name, find_fire_sources, unzip_data_root
-    from firepred.data.dataset import (
-        FireDataset,
-        batch_inputs,
-        compute_tessera_stats,
-        load_tessera_maps,
-        make_dataloader,
-    )
+    from firepred.data.fire_dataset import FireDataset, batch_inputs, make_dataloader
+    from firepred.data.tessera_archive import compute_tessera_stats, load_tessera_maps
 
     work = ctx.work
     root, _ = synth.data_root(work / "data", synth.QUICK_FIRES)
@@ -193,7 +188,7 @@ def transform_values(ctx):
     import numpy as np
     import torch
 
-    from firepred.config.data import NORMALIZATION_MEAN, NORMALIZATION_STD
+    from firepred.config.dataset import NORMALIZATION_MEAN, NORMALIZATION_STD
     from firepred.data.transforms import Normalize, augment, landcover_one_hot_matrix, preprocess
 
     rng = np.random.default_rng(4)
@@ -222,7 +217,7 @@ def window_values(ctx):
     """binary_mask and build_fire_windows for several (length, interval, label_sel)."""
     import numpy as np
 
-    from firepred.prep.windows import binary_mask, build_fire_windows
+    from firepred.data.windows import binary_mask, build_fire_windows
 
     local_map = synth.fire_geotiffs(ctx.work / "geotiffs")
     out = {"binary_mask": binary_mask(np.array([np.nan, np.inf, -np.inf, -1.0, 0.0, 0.5, 2.0]))}
@@ -241,7 +236,8 @@ def tessera_values(ctx):
     import numpy as np
     import rasterio
 
-    from firepred.prep.tessera_grid import crop_grid, grid_tessera, save_tessera_npz, utm_zones
+    from firepred.data.tessera import crop_grid, grid_tessera, utm_zones
+    from firepred.data.tessera_archive import save_tessera_npz
 
     local_map = synth.fire_geotiffs(ctx.work / "geotiffs", n_days=2)
     with rasterio.open(next(iter(local_map.values()))) as reader:
@@ -260,8 +256,8 @@ def tessera_values(ctx):
 @group("roi")
 def roi_values(ctx):
     """ROI CSV helpers on the real roi/ CSVs and the data-zip listing."""
-    from firepred.prep.roi import fire_label_sel, fire_start_years
-    from firepred.prep.staging import zip_folders
+    from firepred.data.fires import fire_label_sel, fire_start_years
+    from firepred.data.files import zip_folders
 
     roi_paths = sorted(str(path) for path in (TREE / "roi").glob("*.csv"))
     out = {"fire_label_sel": fire_label_sel(roi_paths), "fire_start_years": fire_start_years(roi_paths)}
@@ -365,19 +361,19 @@ def hub_values(ctx):
     """The whole dataset pipeline: windows, downloads, TESSERA, zips and pulls (files only)."""
     work = ctx.work
     fake_hub = install_fake_hub(work)
-    from firepred.prep import dataset_master, tessera_master
+    from firepred.data import tessera_master, windows_master
 
     src, windows, tessera = "owner/src", "owner/windows-6-1", "owner/tessera"
     build_source_repo(fake_hub, src)
     out = {}
     quiet(
-        dataset_master.process_windows, "token", src_repo=src, window_repo=windows, batch_size=2, length=6,
+        windows_master.process_windows, "token", src_repo=src, window_repo=windows, batch_size=2, length=6,
         interval=1, splits=("train", "val", "test"), roi_dir=str(work / "roi1"), work_dir=str(work / "pw"),
     )
     out["process_data.repo"] = repo_contents(fake_hub, windows)
 
     report = quiet(
-        dataset_master.download_windows, "token", window_repo=windows, src_repo=src, data_root=str(work / "dl"),
+        windows_master.download_windows, "token", window_repo=windows, src_repo=src, data_root=str(work / "dl"),
         roi_dir=str(work / "roi2"),
     )
     out["download.files"] = files_under(work / "dl")
@@ -395,15 +391,15 @@ def hub_values(ctx):
     out["tessera.repo"] = repo_contents(fake_hub, tessera, skip_members=("code_version",))
 
     report = quiet(
-        dataset_master.download_windows, "token", window_repo=windows, src_repo=src, data_root=str(work / "dl_t"),
+        windows_master.download_windows, "token", window_repo=windows, src_repo=src, data_root=str(work / "dl_t"),
         roi_dir=str(work / "roi5"), include_tessera=True, tessera_repo=tessera,
     )
     out["download_tessera.files"] = files_under(work / "dl_t")
     out["download_tessera.excluded"] = list(report.excluded)
 
-    quiet(dataset_master.upload_data_zip, "token", data_root=str(work / "dl"), zip_path=str(work / "data.zip"),
+    quiet(windows_master.upload_data_zip, "token", data_root=str(work / "dl"), zip_path=str(work / "data.zip"),
           repo_id=windows)
-    quiet(dataset_master.pull_data_zip, str(work / "pulled"), token="token", repo_id=windows)
+    quiet(windows_master.pull_data_zip, str(work / "pulled"), token="token", repo_id=windows)
     out["pull_tessera.removed"] = list(quiet(
         tessera_master.pull_tessera_zip, str(work / "pulled"), token="token", tessera_repo=tessera
     ).removed)
@@ -421,7 +417,8 @@ def model_values(ctx):
     from torch import nn, optim
 
     from firepred.models.registry import build_model, forward_model
-    from firepred.training.losses import build_criterion, compute_loss
+    from firepred.training.config import LossConfig
+    from firepred.training.objectives import build_criterion
 
     out = {}
     cases = [
@@ -429,6 +426,7 @@ def model_values(ctx):
         ("swinunetr3d", 172, 36, {}, 64),
         ("swinunetr3d", 43, 36, {"swin_temporal_downsample": True}, 64),
         ("swinunetr3d_tpool", 43, 12, {}, 64),
+        ("swinunetr3d", 43, 12, {"attn_version": "v2"}, 64),
         ("unet3d", 43, 36, {}, 64),
         ("attunet", 43, 36, {}, 64),
         ("unetr3d", 43, 36, {"unetr_version": "v1"}, 256),
@@ -438,7 +436,7 @@ def model_values(ctx):
         torch.manual_seed(42)
         try:
             model = nn.DataParallel(build_model(name, tiny_spec(channels, width, **options)))
-        except Exception as error:  # unetr3d is known broken (docs/KNOWN_ISSUES.md)
+        except Exception as error:  # a model that cannot be built is recorded, not skipped
             out[key + ".error"] = (type(error).__name__, str(error))
             continue
         out[key + ".init"] = model.state_dict()
@@ -448,7 +446,7 @@ def model_values(ctx):
         optimizer = optim.Adam(model.parameters(), lr=1e-3)
         model.train()
         outputs = forward_model(model, x)
-        loss, parts = compute_loss(build_criterion("dicece"), outputs, y)
+        loss, parts = build_criterion(LossConfig("dicece"))(outputs, y)
         loss.backward()
         optimizer.step()
         out[key + ".train_out"] = outputs
@@ -471,12 +469,13 @@ def objective_values(ctx):
     from monai.data import decollate_batch
     from torch import nn, optim
 
-    from firepred.training.losses import build_criterion, compute_loss, loss_name_of
-    from firepred.training.metrics import (
-        background_f1, build_post_transform, build_validation_metrics, fire_only_f1, fire_only_iou,
+    from firepred.training.config import LossConfig, ScheduleConfig
+    from firepred.training.objectives import (
+        background_f1, build_criterion, build_post_transform, fire_only_f1, fire_only_iou, validation_dice,
+        validation_iou,
     )
-    from firepred.training.optim import build_lr_scheduler, step_lr_scheduler
-    from firepred.training.tracking import build_wandb_metric_labels
+    from firepred.training.tracker import chart_labels
+    from firepred.training.trainer import build_lr_scheduler, step_lr_scheduler
 
     torch.manual_seed(11)
     logits = torch.randn(3, 2, 32, 32) * 3
@@ -488,9 +487,9 @@ def objective_values(ctx):
         ("dice",), ("dicece",), ("dicece", (1.0, 457.1), 0.7, 1.3),
         ("dicefocal",), ("dicefocal", (1.0, 446.7836), 1.0, 1.0, 2.0, 1.5, 0.25),
     ):
-        criterion = build_criterion(*loss_args)
-        out[f"loss.{loss_args}"] = compute_loss(criterion, logits, labels)
-        out[f"loss_name.{loss_args}"] = loss_name_of(criterion)
+        criterion = build_criterion(LossConfig(*loss_args))
+        out[f"loss.{loss_args}"] = criterion(logits, labels)
+        out[f"loss_name.{loss_args}"] = criterion.name
     post = build_post_transform()
     predictions = torch.stack([post(item) for item in decollate_batch(logits)])
     out["post_transform"] = predictions
@@ -498,22 +497,20 @@ def objective_values(ctx):
     out["metric.fire_only_f1"] = fire_only_f1(predictions, labels)
     out["metric.background_f1"] = background_f1(predictions, labels)
     out["metric.fire_only_iou"] = fire_only_iou(predictions, labels)
-    mean_iou, dice_metric = build_validation_metrics()
-    outputs, targets = decollate_batch(predictions), decollate_batch(labels)
-    out["metric.mean_iou"] = mean_iou(outputs, targets)
-    out["metric.dice"] = dice_metric(y_pred=outputs, y=targets)
+    out["metric.mean_iou"] = validation_iou(predictions, labels)
+    out["metric.dice"] = validation_dice(predictions, labels)
 
     for schedule in ("none", "plateau", "cosine"):
         parameter = nn.Parameter(torch.zeros(1))
         optimizer = optim.Adam([parameter], lr=1e-3)
-        scheduler = build_lr_scheduler(optimizer, schedule, 6, 0.5, 1, 1e-4)
+        scheduler = build_lr_scheduler(optimizer, ScheduleConfig(schedule, 0.5, 1, 1e-4), 6)
         rates = []
         for val_loss in (1.0, 0.9, 0.95, 0.96, 0.97, 0.5):
             step_lr_scheduler(scheduler, val_loss)
             rates.append(optimizer.param_groups[0]["lr"])
         out[f"lr.{schedule}"] = (type(scheduler).__name__, rates)
     for loss in ("dice", "dicece", "dicefocal"):
-        out[f"chart_labels.{loss}"] = build_wandb_metric_labels(loss)
+        out[f"chart_labels.{loss}"] = chart_labels(loss)
     return out
 
 
@@ -533,32 +530,23 @@ NAME_BASE = ["-m", "swinunetr3d", "-mode", "pred", "-b", "8", "-r", "1", "-lr", 
 
 @group("names")
 def name_values(ctx):
-    """Every derived name and recorded setting for a matrix of command lines (as run.py composes them)."""
-    from firepred.config.data import model_input_channels
-    from firepred.cli.train import parse_args
-    from firepred.training import naming
-    from firepred.training.run import default_loss, model_options
+    """Every derived name and recorded setting for a matrix of command lines (RunConfig)."""
+    from firepred.cli.train import config_from_args, parse_args
 
     out = {}
     for argv in NAME_ARGVS:
-        args = parse_args(NAME_BASE + argv)
-        loss = args.loss or default_loss(args.m)
-        channels = model_input_channels(args.tessera)
-        tag = naming.run_tag(args.tessera, loss, args.lr_schedule)
-        template = naming.checkpoint_template(args.m, args.mode, args.nh, args.ed, args.b, channels, args.ts, tag)
+        config = config_from_args(parse_args(NAME_BASE + argv))
         out[" ".join(argv) or "<base>"] = {
-            "loss": loss,
-            "loss_config": naming.loss_config(loss, args.ce_weight, args.lambda_dice, args.lambda_ce,
-                                              args.lambda_focal, args.focal_gamma, args.focal_alpha),
-            "lr_config": naming.lr_config(args.lr_schedule, args.lr_min, args.lr_decay_factor, args.lr_patience),
-            "run_name": naming.run_name(args.run_test, args.mode, args.m, args.nh, args.ed, args.b, args.tessera, loss)
-            + naming.lr_tag(args.lr_schedule),
-            "run_tag": tag,
-            "checkpoint_template": template,
-            "test_checkpoint": naming.default_test_checkpoint(template, args.load_epoch),
-            "artifact_name": naming.artifact_name(args.m, tag, "run123"),
-            "model_options": model_options(args),
-            "input_channels": channels,
+            "loss": config.loss.name,
+            "loss_config": config.loss.record(),
+            "lr_config": config.schedule.record(),
+            "run_name": config.run_name,
+            "run_tag": config.run_tag,
+            "checkpoint_template": config.checkpoint_template,
+            "test_checkpoint": config.test_checkpoint,
+            "artifact_name": config.artifact_name("run123"),
+            "model_options": config.model_options,
+            "input_channels": config.input_channels,
         }
     return out
 
@@ -573,7 +561,7 @@ def checkpoint_values(ctx):
     import torch
     from torch import nn, optim
 
-    from firepred.training.checkpoints import BestCheckpoints, read_checkpoint, save_checkpoint
+    from firepred.training.checkpoints import CheckpointStore, read_checkpoint, save_checkpoint
 
     torch.manual_seed(3)
     model = nn.DataParallel(nn.Conv3d(4, 2, 1))
@@ -590,11 +578,10 @@ def checkpoint_values(ctx):
                 out[f"roundtrip.{label}.{trusted}"] = read_checkpoint(str(path), "cpu", trusted=trusted)
             except RuntimeError as error:  # a restricted load may refuse numpy objects
                 out[f"roundtrip.{label}.{trusted}.error"] = type(error).__name__
-    store = BestCheckpoints(2)
+    store = CheckpointStore(ctx.work, "best_{epoch}.pth", {}, keep=2)
     for epoch, loss in enumerate((0.9, 0.7, 0.8, 0.95, 0.6)):
-        path = ctx.work / f"best_{epoch}.pth"
-        store.offer(loss, str(path), lambda path=path: path.write_text("x"))
-    out["best.path"] = Path(store.best_path()).name
+        store.offer(epoch - 1, loss, model, optimizer)  # file names use epoch + 1: best_0 .. best_4
+    out["best.path"] = store.best.name
     out["best.kept"] = sorted(p.name for p in ctx.work.glob("best_*.pth"))
     return out
 
@@ -608,13 +595,11 @@ def training_values(ctx):
     import torch
     from torch import nn
 
-    from firepred.data.dataset import FireDataset, make_dataloader
+    from firepred.data.fire_dataset import FireDataset, make_dataloader
     from firepred.models.registry import build_model
-    from firepred.training.evaluation import evaluate_model
-    from firepred.training.loop import train_one_epoch, validate
-    from firepred.training.losses import build_criterion
-    from firepred.training.metrics import build_post_transform, build_validation_metrics
-    from firepred.training.optim import build_grad_scaler, build_optimizer
+    from firepred.training.config import RunConfig
+    from firepred.training.evaluator import Evaluator
+    from firepred.training.trainer import Trainer
 
     root, csv_path = synth.data_root(ctx.work / "data", synth.QUICK_FIRES)
     kwargs = dict(ts_length=6, n_channel=27, target_is_single_day=True, use_augmentations=False)
@@ -622,29 +607,21 @@ def training_values(ctx):
     val_ds = FireDataset(npz_dir=root / "val", **kwargs)
     test_ds = FireDataset(npz_dir=root / "test", **kwargs)
     device = torch.device("cpu")
+    config = RunConfig("swinunetr3d", batch_size=2, feature_size=12, epochs=1, num_workers=0, test_csv=csv_path)
     torch.manual_seed(42)
     model = nn.DataParallel(build_model("swinunetr3d", tiny_spec(43, 12)))
-    criterion = build_criterion("dicece")
-    optimizer = build_optimizer(model, 1e-3)
-    scaler = build_grad_scaler(device)
-    post = build_post_transform()
-    mean_iou, dice_metric = build_validation_metrics()
+    trainer = Trainer(config, model, device)
 
     def loader(dataset):
         """Unshuffled single-process loader with batch size 2."""
         return make_dataloader(dataset, batch_size=2, shuffle=False, num_workers=0, pin_memory=False)
 
     out = {}
-    out["train_epoch"] = quiet(train_one_epoch, model, train_ds, loader(train_ds), optimizer, criterion, scaler, post,
-                               device, 0, 1)
+    out["train_epoch"] = quiet(trainer.train_epoch, loader(train_ds), 0).as_dict()
     out["after_epoch"] = model.state_dict()
-    out["validate"] = quiet(validate, model, val_ds, loader(val_ds), criterion, mean_iou, dice_metric, post, device, 0, 1)
+    out["validate"] = quiet(trainer.validate, loader(val_ds), 0).as_dict()
     plot_dir = ctx.work / "plots"
-    out["evaluate"] = quiet(
-        evaluate_model, model=model, test_dataset=test_ds, batch_size=2, num_workers=0, pin_memory=False,
-        post_trans=post, device=device, test_csv_path=csv_path, plot_dir=plot_dir, num_heads=3, hidden_size=12,
-        model_input_channels=43, save_plots=True, verbose=False,
-    )
+    out["evaluate"] = quiet(Evaluator(config, device, test_ds).score, model, plot_dir).as_dict()
     out["plots"] = files_under(plot_dir)
     return out
 
@@ -698,7 +675,8 @@ def cli_values(ctx):
     args, parser = capture_parser(lambda: train.parse_args(NAME_BASE))
     out["train.defaults"] = vars(args)
     out["train.options"] = describe_parser(parser)
-    for command in ("process", "tessera", "tessera-zip", "pull-tessera", "download", "upload-zip", "pull-zip"):
+    for command in ("process", "tessera", "tessera-zip", "pull-tessera", "download", "upload-zip", "pull-zip",
+                    "rebuild-zip", "stage"):
         args, parser = capture_parser(lambda: dataset.parse_args([command]))
         out[f"dataset.{command}"] = vars(args)
     out["dataset.options"] = describe_parser(parser)

@@ -1,6 +1,6 @@
 """MASTER for TESSERA: every TESSERA step a notebook or the CLI runs.
 
-Level 1 (prep). Notebooks call only this module and prep/dataset_master.py.
+Level 1 (prep). Notebooks call only this module and data/windows_master.py.
 Each function runs one pipeline step end to end and returns a frozen report
 (with .summary()). Progress is printed here and nowhere below. [ours]
 
@@ -10,7 +10,7 @@ Each function runs one pipeline step end to end and returns a frozen report
     stage_tessera       training notebooks: extract (or reuse) TESSERA, build the view
     excluded_fires      the window archives TESSERA mode leaves out
 
-TESSERA embeddings come from the year before the fire (prep/tessera_grid.py);
+TESSERA embeddings come from the year before the fire (data/tessera.py);
 fires without one (the 2017 fires) are left out of TESSERA runs and their
 matched baselines.
 """
@@ -23,7 +23,7 @@ import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from firepred.config.data import (
+from firepred.config.dataset import (
     ROI_CACHE_DIR,
     SPLITS,
     SRC_REPO,
@@ -33,9 +33,9 @@ from firepred.config.data import (
     TESSERA_ZIP,
     WORK_DIR,
 )
-from firepred.prep import repos, staging
-from firepred.prep.roi import has_prior_year_tessera, read_roi, tessera_excluded_npz
-from firepred.prep.tessera_grid import build_fire_tessera
+from firepred.data import files, hub, tessera
+from firepred.data.fires import read_roi
+from firepred.data.tessera import build_fire_tessera, has_prior_year_tessera, missing_tessera, tessera_excluded_npz
 
 
 # ----- Reports ----- #
@@ -117,14 +117,49 @@ def skip_reason(fire_id, day_files, years, available_years):
     return ""
 
 
-def missing_tessera(roi, present_names, excluded):
-    """Kept window archives ('split/p<id>.npz') whose fire has no TESSERA file in `present_names`."""
-    return sorted(
-        f"{split}/p{fire_id}.npz"
-        for split, fire_ids in roi.ids_by_split().items()
-        for fire_id in fire_ids
-        if f"{split}/p{fire_id}.npz" not in excluded and f"p{fire_id}.npz" not in present_names
-    )
+@dataclass(frozen=True)
+class TesseraJob:
+    """One fire to build: its first and last VIIRS_Day GeoTIFF (repo paths) and its start year."""
+
+    fire_id: str
+    day_files: tuple
+    start_year: int
+
+
+@dataclass(frozen=True)
+class TesseraPlan:
+    """What process_tessera will build, the fires it skips (with why) and those already uploaded."""
+
+    fire_ids: tuple
+    jobs: tuple
+    skipped: dict
+    already_built: tuple = ()
+
+    def summary(self):
+        """One line: fires to build, skipped, already uploaded."""
+        return (f"Plan: build {len(self.jobs)} TESSERA files; skip {len(self.skipped)}; "
+                f"{len(self.already_built)} already in the repo")
+
+
+def plan_tessera(roi, splits, locations, existing, available_years, overwrite=False, only_fires=None):
+    """The TesseraPlan for `splits`: which fires get a TESSERA file now, and why the others do not.
+
+    `locations` is the source repo's GeoTIFFs by fire, `existing` the TESSERA
+    repo's file paths, `available_years` the store's published years.
+    """
+    fire_ids = fires_to_build(roi, splits, only_fires)
+    jobs, skipped, already = [], {}, []
+    for fire_id in fire_ids:
+        if f"tessera/p{fire_id}.npz" in existing and not overwrite:
+            already.append(fire_id)
+            continue
+        day_files = locations.get(fire_id, {}).get("VIIRS_Day", [])
+        reason = skip_reason(fire_id, day_files, roi.start_years, available_years)
+        if reason:
+            skipped[fire_id] = reason
+        else:
+            jobs.append(TesseraJob(fire_id, tuple(dict.fromkeys((day_files[0], day_files[-1]))), roi.start_years[fire_id]))
+    return TesseraPlan(tuple(fire_ids), tuple(jobs), skipped, tuple(already))
 
 
 # ----- Steps ----- #
@@ -132,11 +167,11 @@ def missing_tessera(roi, present_names, excluded):
 
 def excluded_fires(token=None, src_repo=SRC_REPO, roi_dir=ROI_CACHE_DIR):
     """The window archives TESSERA mode drops (fires without prior-year TESSERA)."""
-    return tessera_excluded_npz(read_roi(repos.download_roi_csvs(src_repo, token, roi_dir)))
+    return tessera_excluded_npz(read_roi(hub.download_roi_csvs(src_repo, token, roi_dir)))
 
 
 def build_one(gt, fire_id, day_files, start_year, src_repo, token, staging_dir, strip_rows, temp_root):
-    """Download a fire's first and last VIIRS_Day GeoTIFF, build its TESSERA file; return a FireTessera.
+    """Download a fire's `day_files` (first and last VIIRS_Day GeoTIFF), build its TESSERA file; return a FireTessera.
 
     The two days must share one grid, and that grid decides which TESSERA
     pixels the fire's crop covers. Downloads go to a temporary folder that is
@@ -144,8 +179,8 @@ def build_one(gt, fire_id, day_files, start_year, src_repo, token, staging_dir, 
     """
     with tempfile.TemporaryDirectory(dir=temp_root) as temp_dir:
         day_paths = {
-            remote_name: repos.download_file(src_repo, remote_name, token, cache_dir=temp_dir)
-            for remote_name in dict.fromkeys((day_files[0], day_files[-1]))
+            remote_name: hub.download_file(src_repo, remote_name, token, cache_dir=temp_dir)
+            for remote_name in day_files
         }
         return build_fire_tessera(
             gt, fire_id, day_paths, start_year, Path(staging_dir) / f"p{fire_id}.npz", strip_rows=strip_rows
@@ -176,12 +211,13 @@ def process_tessera(
     """
     from geotessera import GeoTesseraZarr
 
-    repos.ensure_repo(tessera_repo, token, private=True)  # a new repo is created private
-    roi = read_roi(repos.download_roi_csvs(src_repo, token, roi_dir))
-    locations = repos.list_fire_files(src_repo, token)
-    existing = set(repos.list_repo_files(tessera_repo, token))
+    hub.ensure_repo(tessera_repo, token, private=True)  # a new repo is created private
+    roi = read_roi(hub.download_roi_csvs(src_repo, token, roi_dir))
     gt = GeoTesseraZarr() if store_url is None else GeoTesseraZarr(store_url)
     print(f"TESSERA store {gt.url}, years {gt.years}")
+    plan = plan_tessera(roi, splits, hub.list_fire_files(src_repo, token), set(hub.list_repo_files(tessera_repo, token)),
+                        gt.years, overwrite, only_fires)
+    print(plan.summary())
 
     work_dir = Path(work_dir)
     temp_root = work_dir / "temp"
@@ -189,38 +225,28 @@ def process_tessera(
     temp_root.mkdir(parents=True, exist_ok=True)
     staging_dir.mkdir(parents=True, exist_ok=True)
 
-    fire_ids = fires_to_build(roi, splits, only_fires)
-    reasons, built, uploaded, staged = {}, [], [], 0
-    for fire_number, fire_id in enumerate(fire_ids, start=1):
-        if f"tessera/p{fire_id}.npz" in existing and not overwrite:
-            print(f"Skipping {fire_id}: already processed")
-            continue
-        day_files = locations.get(fire_id, {}).get("VIIRS_Day", [])
-        reason = skip_reason(fire_id, day_files, roi.start_years, gt.years)
-        if reason:
-            reasons[fire_id] = reason
-            continue
-
-        print(f"[TESSERA | {fire_number}/{len(fire_ids)}] Processing: {fire_id}")
+    failures, built, uploaded, staged = {}, [], [], 0
+    for number, job in enumerate(plan.jobs, start=1):
+        print(f"[TESSERA | {number}/{len(plan.jobs)}] Processing: {job.fire_id}")
         started = time.time()
         try:
-            result = build_one(gt, fire_id, day_files, roi.start_years[fire_id], src_repo, token,
+            result = build_one(gt, job.fire_id, job.day_files, job.start_year, src_repo, token,
                                staging_dir, strip_rows, temp_root)
-            print(f"{fire_id}: {result.summary()}; built in {(time.time() - started) / 60:.1f} min")
-            built.append(fire_id)
+            print(f"{job.fire_id}: {result.summary()}; built in {(time.time() - started) / 60:.1f} min")
+            built.append(job.fire_id)
             staged += 1
         except Exception as error:  # one bad fire must not stop the run
             traceback.print_exc()
-            reasons[fire_id] = f"{type(error).__name__}: {error}"
+            failures[job.fire_id] = f"{type(error).__name__}: {error}"
         gc.collect()
-
         if staged >= batch_size:
             uploaded += upload_staged(staging_dir, tessera_repo, token)
             staged = 0
     if staged > 0:
         uploaded += upload_staged(staging_dir, tessera_repo, token)
 
-    skipped = {fire_id: reasons[fire_id] for fire_id in fire_ids if fire_id in reasons}
+    reasons = {**plan.skipped, **failures}
+    skipped = {fire_id: reasons[fire_id] for fire_id in plan.fire_ids if fire_id in reasons}
     report = TesseraBuildReport(tessera_repo, tuple(built), skipped, tuple(uploaded))
     print(report.summary())
     return report
@@ -229,7 +255,7 @@ def process_tessera(
 def upload_staged(staging_dir, tessera_repo, token):
     """Upload the staged TESSERA files to tessera_repo/tessera, then empty the folder; return their names."""
     print(f"Uploading staged TESSERA files to {tessera_repo}")
-    names = repos.upload_folder(staging_dir, tessera_repo, "tessera", token)
+    names = hub.upload_folder(staging_dir, tessera_repo, "tessera", token)
     shutil.rmtree(staging_dir, ignore_errors=True)
     Path(staging_dir).mkdir(parents=True, exist_ok=True)
     return names
@@ -253,7 +279,7 @@ def upload_tessera_zip(
     tessera_dir = bundle_root / "tessera"
     tessera_dir.mkdir(parents=True, exist_ok=True)
     remote_files = [
-        name for name in repos.list_repo_files(tessera_repo, token)
+        name for name in hub.list_repo_files(tessera_repo, token)
         if name.startswith("tessera/") and name.endswith(".npz")
     ]
     if not remote_files:
@@ -261,17 +287,17 @@ def upload_tessera_zip(
     print(f"Downloading {len(remote_files)} TESSERA files from {tessera_repo}")
     for name in remote_files:
         if not (bundle_root / name).exists():
-            repos.download_file(tessera_repo, name, token, local_dir=bundle_root)
+            hub.download_file(tessera_repo, name, token, local_dir=bundle_root)
 
     # The drop list ships inside the zip, so every training run drops the same fires.
-    roi = read_roi(repos.download_roi_csvs(src_repo, token, roi_dir))
+    roi = read_roi(hub.download_roi_csvs(src_repo, token, roi_dir))
     excluded = tessera_excluded_npz(roi)
-    staging.write_excluded_list(tessera_dir, excluded)
+    tessera.write_excluded_list(tessera_dir, excluded)
     missing = missing_tessera(roi, {Path(name).name for name in remote_files}, excluded)
 
     zip_path = Path(work_dir) / zip_name
-    staging.zip_folders([tessera_dir], zip_path)
-    repos.upload_file(zip_path, zip_name, tessera_repo, token)
+    files.zip_folders([tessera_dir], zip_path)
+    hub.upload_file(zip_path, zip_name, tessera_repo, token)
     report = TesseraZipReport(zip_path, len(remote_files), tuple(excluded), tuple(missing), tessera_repo)
     print(report.summary())
     return report
@@ -284,10 +310,10 @@ def pull_tessera_zip(data_root, token=None, tessera_repo=TESSERA_REPO, zip_name=
     archives listed in tessera/excluded_npz.txt makes the TESSERA run and the
     matched no-TESSERA run see the same fires.
     """
-    repos.pull_zip(tessera_repo, zip_name, data_root, token)
+    hub.pull_zip(tessera_repo, zip_name, data_root, token)
     tessera_dir = Path(data_root) / "tessera"
-    excluded = staging.read_excluded_list(tessera_dir)
-    removed = staging.drop_excluded_archives(data_root, excluded) if drop_excluded else []
+    excluded = tessera.read_excluded_list(tessera_dir)
+    removed = tessera.drop_excluded_archives(data_root, excluded) if drop_excluded else []
     report = TesseraPull(tessera_dir, tuple(excluded), tuple(removed))
     print(report.summary())
     return report
@@ -296,19 +322,33 @@ def pull_tessera_zip(data_root, token=None, tessera_repo=TESSERA_REPO, zip_name=
 def stage_tessera(data_root, work, token=None, tessera_repo=TESSERA_REPO, attached_dir=None, attached_zip=None):
     """Training notebooks: find (or download and extract) the TESSERA files and build the training view.
 
-    `work` is a dataset_master.Workspace. Priority: an attached folder, an
+    `work` is a windows_master.Workspace. Priority: an attached folder, an
     attached tessera.zip, else tessera.zip from `tessera_repo`. Returns a
-    staging.TesseraView whose root is the training root (window archives of
+    tessera.TesseraView whose root is the training root (window archives of
     excluded fires left out, tessera/ linked in).
     """
     if attached_dir:
         tessera_dir = Path(attached_dir)
     else:
         archive = Path(attached_zip) if attached_zip else Path(
-            repos.download_file(tessera_repo, TESSERA_ZIP, token, local_dir=work.download_dir)
+            hub.download_file(tessera_repo, TESSERA_ZIP, token, local_dir=work.download_dir)
         )
-        tessera_dir = staging.extract_zip(archive, work.tessera_extract_dir) / "tessera"
+        tessera_dir = files.extract_zip(archive, work.tessera_extract_dir) / "tessera"
     print("TESSERA files:", sum(1 for _ in tessera_dir.glob("*.npz")), "in", tessera_dir)
-    view = staging.build_tessera_view(data_root, tessera_dir, work.view_dir)
+    view = tessera.build_tessera_view(data_root, tessera_dir, work.view_dir)
     print(view.summary())
     return view
+
+
+def download_tessera_files(data_root, tessera_repo, token):
+    """Download tessera/* into <data_root>/tessera; return window archives that have no TESSERA file."""
+    data_root = Path(data_root)
+    for name in hub.list_repo_files(tessera_repo, token):
+        if name.startswith("tessera/") and not (data_root / name).exists():
+            hub.download_file(tessera_repo, name, token, local_dir=data_root)
+    return [
+        f"{split}/{archive.name}"
+        for split in SPLITS
+        for archive in sorted((data_root / split).glob("*.npz"))
+        if not (data_root / "tessera" / archive.name).exists()
+    ]

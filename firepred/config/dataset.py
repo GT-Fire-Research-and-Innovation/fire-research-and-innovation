@@ -1,12 +1,12 @@
 """Every data constant: input channels, dataset settings, repositories, paths.
 
 Level 0 (config). Used by data/ (normalization, preprocessing, archives),
-models/ (input width), prep/ and hub/ (building and publishing windows),
+models/ (input width), prep/ (building, publishing and staging windows),
 training/ (channel checks) and the CLIs. Every function that uses a setting
 also accepts it as an argument, so a notebook can override it for one call
 without editing this file.
 
-Sections: input channels, dataset settings, filesystem paths.
+Sections: input channels, dataset settings, filesystem paths, preprocessing defaults.
 
 Input channels. A stored window holds 27 channels, in the order of the
 TS-SatFire paper's Table 1 (figures/Bands.png), 0-based here. Before the
@@ -26,7 +26,7 @@ from pathlib import Path
 # Stored channel order. Channels 0-5 are VIIRS day bands, 6-7 VIIRS night
 # bands, 8-26 the FirePred auxiliary bands (vegetation, weather, terrain,
 # fuel). Channels 3, 4, 6, 7 hold the running maximum over the window's days
-# (see firepred/prep/windows.py).
+# (see firepred/data/windows.py).
 STORED_CHANNEL_NAMES = (
     "VIIRS I1",                      # 0
     "VIIRS I2",                      # 1
@@ -223,7 +223,7 @@ VAL_IDS = [
 
 # ----- TESSERA embeddings ----- #
 
-# Per-fire files tessera/p<id>.npz (see firepred/prep/tessera_grid.py). [ours]
+# Per-fire files tessera/p<id>.npz (see firepred/data/tessera.py). [ours]
 TESSERA_FORMAT_VERSION = 1
 # First year of published TESSERA embeddings; fires need the year before.
 FIRST_TESSERA_YEAR = 2017
@@ -233,7 +233,7 @@ TESSERA_EXCLUDED_LIST = "excluded_npz.txt"
 
 # =============================== Filesystem paths =============================== #
 
-# firepred/config/data.py -> the repository root.
+# firepred/config/dataset.py -> the repository root.
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Fire metadata (Id, start_date, lat/lon, label_sel) shipped with the repo.
@@ -242,8 +242,10 @@ ROI_DIR = REPO_ROOT / "roi"
 # Test fires in scoring order: the 2021 fires. [released]
 DEFAULT_TEST_CSV = ROI_DIR / "us_fire_2021_out_new.csv"
 
-# Where Colab's data-grab notebook unpacks the window archives.
-DEFAULT_DATA_ROOT = Path("/content/data")
+# Training's data root without --data-root: ./data, where
+# `python -m firepred.cli.dataset download` / `pull-zip` put the archives.
+# The notebooks always pass --data-root.
+DEFAULT_DATA_ROOT = Path("data")
 
 
 # ============================ Preprocessing defaults ============================ #

@@ -28,7 +28,7 @@ import importlib
 import pkgutil
 from dataclasses import dataclass, field
 
-from firepred.config.data import CROP_SIZE
+from firepred.config.dataset import CROP_SIZE
 from firepred.models import zoo
 
 
@@ -84,6 +84,7 @@ def register_model(name):
     """Decorator: make `builder(spec) -> nn.Module` available as `name`."""
 
     def decorator(builder):
+        """Register `builder` under `name`; refuses a name already taken by another module."""
         existing = _BUILDERS.get(name)
         if existing is not None and existing.__module__ != builder.__module__:
             raise ValueError(f"Model name {name!r} is already registered by {existing.__module__}")
@@ -94,6 +95,7 @@ def register_model(name):
 
 
 def _import_zoo():
+    """Import every public module of models/zoo/, so their @register_model decorators run."""
     for module in pkgutil.iter_modules(zoo.__path__):
         if not module.name.startswith("_"):
             importlib.import_module(f"{zoo.__name__}.{module.name}")

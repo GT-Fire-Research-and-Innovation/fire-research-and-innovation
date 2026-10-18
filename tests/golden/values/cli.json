@@ -1097,17 +1097,17 @@ null
 "process"
 ],
 [
-"ts",
+"length",
 6
 ],
 [
-"it",
+"interval",
 1
 ],
 [
-"mode",
+"splits",
 [
-"list",
+"tuple",
 [
 "train",
 "val",
@@ -1128,8 +1128,12 @@ false
 false
 ],
 [
-"ignore_roi_label_sel",
-false
+"only_fires",
+null
+],
+[
+"use_roi_label_sel",
+true
 ],
 [
 "train_val_label_sel",
@@ -1169,9 +1173,9 @@ null
 "tessera"
 ],
 [
-"mode",
+"splits",
 [
-"list",
+"tuple",
 [
 "train",
 "val",
@@ -1266,8 +1270,8 @@ null
 "./data"
 ],
 [
-"keep_excluded",
-false
+"drop_excluded",
+true
 ]
 ]
 ],
@@ -1303,11 +1307,11 @@ null
 "download"
 ],
 [
-"ts",
+"length",
 6
 ],
 [
-"it",
+"interval",
 1
 ],
 [
@@ -1315,7 +1319,7 @@ null
 "./data"
 ],
 [
-"tessera",
+"include_tessera",
 false
 ]
 ]
@@ -1352,11 +1356,11 @@ null
 "upload-zip"
 ],
 [
-"ts",
+"length",
 6
 ],
 [
-"it",
+"interval",
 1
 ],
 [
@@ -1365,7 +1369,7 @@ null
 ],
 [
 "zip_path",
-"./data.zip"
+null
 ],
 [
 "zip_repo",
@@ -1409,11 +1413,11 @@ null
 "pull-zip"
 ],
 [
-"ts",
+"length",
 6
 ],
 [
-"it",
+"interval",
 1
 ],
 [
@@ -1427,6 +1431,108 @@ null
 [
 "zip_name",
 "data.zip"
+]
+]
+],
+"dataset.rebuild-zip": [
+"dict",
+[
+[
+"token",
+null
+],
+[
+"src_repo",
+"SamuelWu318/ts-satfire"
+],
+[
+"window_repo",
+null
+],
+[
+"tessera_repo",
+"SamuelWu318/ts-tesserafire"
+],
+[
+"roi_dir",
+"hf_roi"
+],
+[
+"work_dir",
+"."
+],
+[
+"command",
+"rebuild-zip"
+],
+[
+"length",
+6
+],
+[
+"interval",
+1
+]
+]
+],
+"dataset.stage": [
+"dict",
+[
+[
+"token",
+null
+],
+[
+"src_repo",
+"SamuelWu318/ts-satfire"
+],
+[
+"window_repo",
+null
+],
+[
+"tessera_repo",
+"SamuelWu318/ts-tesserafire"
+],
+[
+"roi_dir",
+"hf_roi"
+],
+[
+"work_dir",
+"."
+],
+[
+"command",
+"stage"
+],
+[
+"length",
+6
+],
+[
+"interval",
+1
+],
+[
+"use_tessera",
+false
+],
+[
+"attached_data_root",
+null
+],
+[
+"attached_zip",
+null
+],
+[
+"attached_tessera_dir",
+null
+],
+[
+"attached_tessera_zip",
+null
 ]
 ]
 ],
@@ -1605,9 +1711,9 @@ false
 "--length"
 ]
 ],
-"ts",
+"length",
 6,
-"Input days per window (default 6)",
+"Input days per window",
 null,
 null,
 "int",
@@ -1625,9 +1731,9 @@ false
 "--interval"
 ]
 ],
-"it",
+"interval",
 1,
-"Days between window starts (default 1)",
+"Days between window starts",
 null,
 null,
 "int",
@@ -1644,16 +1750,16 @@ false
 "-mode"
 ]
 ],
-"mode",
+"splits",
 [
-"list",
+"tuple",
 [
 "train",
 "val",
 "test"
 ]
 ],
-null,
+"Splits to build",
 [
 "tuple",
 [
@@ -1731,11 +1837,30 @@ false
 [
 "tuple",
 [
+"--only-fires"
+]
+],
+"only_fires",
+null,
+"Restrict to these fire IDs (debugging)",
+null,
+"+",
+"None",
+null,
+false
+]
+],
+[
+"tuple",
+[
+[
+"tuple",
+[
 "--ignore-roi-label-sel"
 ]
 ],
-"ignore_roi_label_sel",
-false,
+"use_roi_label_sel",
+true,
 "Use --train-val-label-sel for test fires too instead of their ROI value",
 null,
 0,
@@ -1810,16 +1935,16 @@ false
 "-mode"
 ]
 ],
-"mode",
+"splits",
 [
-"list",
+"tuple",
 [
 "train",
 "val",
 "test"
 ]
 ],
-null,
+"Splits whose fires get TESSERA",
 [
 "tuple",
 [
@@ -2002,8 +2127,8 @@ false
 "--keep-excluded"
 ]
 ],
-"keep_excluded",
-false,
+"drop_excluded",
+true,
 null,
 null,
 0,
@@ -2054,9 +2179,9 @@ false
 "--length"
 ]
 ],
-"ts",
+"length",
 6,
-"Input days per window (default 6)",
+"Input days per window",
 null,
 null,
 "int",
@@ -2074,9 +2199,9 @@ false
 "--interval"
 ]
 ],
-"it",
+"interval",
 1,
-"Days between window starts (default 1)",
+"Days between window starts",
 null,
 null,
 "int",
@@ -2112,7 +2237,7 @@ false
 "--tessera"
 ]
 ],
-"tessera",
+"include_tessera",
 false,
 "TESSERA mode: drop fires without prior-year TESSERA and download --tessera-repo embeddings into --data-root/tessera",
 null,
@@ -2164,9 +2289,9 @@ false
 "--length"
 ]
 ],
-"ts",
+"length",
 6,
-"Input days per window (default 6)",
+"Input days per window",
 null,
 null,
 "int",
@@ -2184,9 +2309,9 @@ false
 "--interval"
 ]
 ],
-"it",
+"interval",
 1,
-"Days between window starts (default 1)",
+"Days between window starts",
 null,
 null,
 "int",
@@ -2223,8 +2348,8 @@ false
 ]
 ],
 "zip_path",
-"./data.zip",
 null,
+"Local zip file (default: <data-root>/../<zip-name>)",
 null,
 null,
 "None",
@@ -2318,9 +2443,9 @@ false
 "--length"
 ]
 ],
-"ts",
+"length",
 6,
-"Input days per window (default 6)",
+"Input days per window",
 null,
 null,
 "int",
@@ -2338,9 +2463,9 @@ false
 "--interval"
 ]
 ],
-"it",
+"interval",
 1,
-"Days between window starts (default 1)",
+"Days between window starts",
 null,
 null,
 "int",
@@ -2404,6 +2529,245 @@ false
 "zip_name",
 "data.zip",
 null,
+null,
+null,
+"None",
+null,
+false
+]
+]
+]
+]
+]
+],
+[
+"tuple",
+[
+"subcommand",
+"rebuild-zip",
+[
+"list",
+[
+[
+"tuple",
+[
+[
+"tuple",
+[
+"-h",
+"--help"
+]
+],
+"help",
+"==SUPPRESS==",
+"show this help message and exit",
+null,
+0,
+"None",
+null,
+false
+]
+],
+[
+"tuple",
+[
+[
+"tuple",
+[
+"-ts",
+"--length"
+]
+],
+"length",
+6,
+"Input days per window",
+null,
+null,
+"int",
+null,
+false
+]
+],
+[
+"tuple",
+[
+[
+"tuple",
+[
+"-it",
+"--interval"
+]
+],
+"interval",
+1,
+"Days between window starts",
+null,
+null,
+"int",
+null,
+false
+]
+]
+]
+]
+]
+],
+[
+"tuple",
+[
+"subcommand",
+"stage",
+[
+"list",
+[
+[
+"tuple",
+[
+[
+"tuple",
+[
+"-h",
+"--help"
+]
+],
+"help",
+"==SUPPRESS==",
+"show this help message and exit",
+null,
+0,
+"None",
+null,
+false
+]
+],
+[
+"tuple",
+[
+[
+"tuple",
+[
+"-ts",
+"--length"
+]
+],
+"length",
+6,
+"Input days per window",
+null,
+null,
+"int",
+null,
+false
+]
+],
+[
+"tuple",
+[
+[
+"tuple",
+[
+"-it",
+"--interval"
+]
+],
+"interval",
+1,
+"Days between window starts",
+null,
+null,
+"int",
+null,
+false
+]
+],
+[
+"tuple",
+[
+[
+"tuple",
+[
+"--tessera"
+]
+],
+"use_tessera",
+false,
+"Also stage TESSERA and drop excluded fires",
+null,
+0,
+"None",
+null,
+false
+]
+],
+[
+"tuple",
+[
+[
+"tuple",
+[
+"--attached-data-root"
+]
+],
+"attached_data_root",
+null,
+"An extracted data root to use as is",
+null,
+null,
+"None",
+null,
+false
+]
+],
+[
+"tuple",
+[
+[
+"tuple",
+[
+"--attached-zip"
+]
+],
+"attached_zip",
+null,
+"A local data.zip instead of downloading it",
+null,
+null,
+"None",
+null,
+false
+]
+],
+[
+"tuple",
+[
+[
+"tuple",
+[
+"--attached-tessera-dir"
+]
+],
+"attached_tessera_dir",
+null,
+"A folder of TESSERA files",
+null,
+null,
+"None",
+null,
+false
+]
+],
+[
+"tuple",
+[
+[
+"tuple",
+[
+"--attached-tessera-zip"
+]
+],
+"attached_tessera_zip",
+null,
+"A local tessera.zip",
 null,
 null,
 "None",
@@ -2498,7 +2862,7 @@ false
 ],
 "nh",
 3,
-"Attention heads per stage",
+"Number of heads",
 null,
 null,
 "int",
@@ -2517,7 +2881,7 @@ false
 ],
 "ed",
 36,
-"Base feature size",
+"Embedding size",
 null,
 null,
 "int",
@@ -2536,7 +2900,7 @@ false
 ],
 "lr",
 0.001,
-null,
+"Learning rate",
 null,
 null,
 "float",
@@ -2555,7 +2919,7 @@ false
 ],
 "loss",
 "dicece",
-null,
+"dice: released TS-SatFire code. dicece: the paper's prediction loss, 1:1 Dice + CE with --ce-weight (use with -lr 0.001). dicefocal (NEW, not in the paper): --lambda-dice x Dice + --lambda-focal x focal loss on the fire channel, no CE. Default: the paper's choice per model, dice for attunet and dicece otherwise",
 [
 "tuple",
 [
@@ -2587,11 +2951,17 @@ false
 446.7836
 ]
 ],
-null,
+"dicece class weights (default: the paper's 1.0 446.7836)",
 null,
 2,
 "float",
-null,
+[
+"tuple",
+[
+"BACKGROUND",
+"FIRE"
+]
+],
 false
 ]
 ],
@@ -2701,7 +3071,7 @@ false
 ],
 "model_option",
 null,
-null,
+"Model-specific setting passed to the model builder as ModelSpec.options[KEY]; repeatable. VALUE is read as a Python literal when possible (3, 0.5, True, (1, 2)), else as text",
 null,
 null,
 "parse_model_option",
@@ -2720,8 +3090,16 @@ false
 ],
 "device",
 "auto",
-"auto, cpu or cuda",
-null,
+"auto (default): the GPU when visible, else the CPU. NEW: tpu trains on one TPU core/chip through PyTorch/XLA (torch_xla); results are close to, not identical to, a GPU run",
+[
+"tuple",
+[
+"auto",
+"cpu",
+"cuda",
+"tpu"
+]
+],
 null,
 "None",
 null,
@@ -2886,7 +3264,7 @@ false
 ],
 "nh",
 3,
-"Attention heads per stage",
+"Number of heads",
 null,
 null,
 "int",
@@ -2905,7 +3283,7 @@ false
 ],
 "ed",
 36,
-"Base feature size",
+"Embedding size",
 null,
 null,
 "int",
@@ -2924,7 +3302,7 @@ false
 ],
 "lr",
 0.001,
-null,
+"Learning rate",
 null,
 null,
 "float",
@@ -2943,7 +3321,7 @@ false
 ],
 "loss",
 "dicece",
-null,
+"dice: released TS-SatFire code. dicece: the paper's prediction loss, 1:1 Dice + CE with --ce-weight (use with -lr 0.001). dicefocal (NEW, not in the paper): --lambda-dice x Dice + --lambda-focal x focal loss on the fire channel, no CE. Default: the paper's choice per model, dice for attunet and dicece otherwise",
 [
 "tuple",
 [
@@ -2975,11 +3353,17 @@ false
 446.7836
 ]
 ],
-null,
+"dicece class weights (default: the paper's 1.0 446.7836)",
 null,
 2,
 "float",
-null,
+[
+"tuple",
+[
+"BACKGROUND",
+"FIRE"
+]
+],
 false
 ]
 ],
@@ -3089,7 +3473,7 @@ false
 ],
 "model_option",
 null,
-null,
+"Model-specific setting passed to the model builder as ModelSpec.options[KEY]; repeatable. VALUE is read as a Python literal when possible (3, 0.5, True, (1, 2)), else as text",
 null,
 null,
 "parse_model_option",
@@ -3108,8 +3492,16 @@ false
 ],
 "device",
 "auto",
-"auto, cpu or cuda",
-null,
+"auto (default): the GPU when visible, else the CPU. NEW: tpu trains on one TPU core/chip through PyTorch/XLA (torch_xla); results are close to, not identical to, a GPU run",
+[
+"tuple",
+[
+"auto",
+"cpu",
+"cuda",
+"tpu"
+]
+],
 null,
 "None",
 null,

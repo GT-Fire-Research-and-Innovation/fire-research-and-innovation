@@ -1,6 +1,6 @@
 """GeoTIFF frames -> model-ready windows and next-day targets, for one fire.
 
-Level 1 (prep). Used by prep/dataset_master.py while building the dataset.
+Level 1 (prep). Used by data/windows_master.py while building the dataset.
 Functions return values and print nothing; build_fire_windows returns its
 progress notes for the caller to show.
 
@@ -25,7 +25,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from firepred.config.data import CROP_OFFSET, CROP_SIZE, N_STORED_CHANNELS, TS_INTERVAL, TS_LENGTH
+from firepred.config.dataset import CROP_OFFSET, CROP_SIZE, N_STORED_CHANNELS, TS_INTERVAL, TS_LENGTH
 
 
 @dataclass(frozen=True)

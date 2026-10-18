@@ -20,12 +20,16 @@ from firepred.models.zoo.swinunetr3d import build as build_swinunetr3d
 
 
 class TemporalPooledSwinUNETR(nn.Module):
+    """SwinUNETR-3D whose per-day maps are averaged with learned day weights (softmax over T)."""
+
     def __init__(self, backbone, ts_length):
+        """Wrap `backbone` and add one learned logit per input day (all zero: a plain mean at start)."""
         super().__init__()
         self.backbone = backbone
         self.day_logits = nn.Parameter(torch.zeros(ts_length))
 
     def forward(self, x):                                         # (B, C, T, H, W)
+        """(B, C, T, H, W) input -> (B, K, H, W): the day-weighted average of the backbone's per-day logits."""
         per_day = self.backbone(x)                                # (B, K, T, H, W) one map per input day
         weights = torch.softmax(self.day_logits, dim=0)           # (T,) positive, sums to 1
         return torch.einsum("bkthw,t->bkhw", per_day, weights)    # (B, K, H, W) weighted average
@@ -33,4 +37,5 @@ class TemporalPooledSwinUNETR(nn.Module):
 
 @register_model("swinunetr3d_tpool")
 def build(spec):
+    """Build the temporally pooled SwinUNETR-3D for a ModelSpec."""
     return TemporalPooledSwinUNETR(build_swinunetr3d(spec), spec.ts_length)
