@@ -68,6 +68,12 @@
         "cli"
       ],
       "reason": "check help lists the new swinunetr3d_tessera model"
+    },
+    {
+      "groups": [
+        "cli"
+      ],
+      "reason": "check help lists the new swinunetr3d_tessera_tpool model"
     }
   ]
 }

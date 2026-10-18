@@ -41,19 +41,21 @@ class TemporalPooledSwinUNETR(nn.Module):
         self.backbone = backbone
         self.day_logits = nn.Parameter(torch.zeros(ts_length))
 
-    def forward(self, x):                                         # (B, C, T, H, W)
+    def forward(self, x, *extra):                                 # (B, C, T, H, W)
         """Run the backbone and combine its per-day maps with the learned weights.
 
         The result is one map, not one per day. The weights are a softmax over
-        the days.
+        the days. Extra inputs (a fine TESSERA map for swinunetr3d_tessera_tpool)
+        go to the backbone unchanged.
 
         Args:
             x (torch.Tensor): input of shape (B, C, T, H, W).
+            *extra: further backbone inputs, e.g. static (B, 129, k H, k W).
 
         Returns:
             torch.Tensor: logits of shape (B, K, H, W).
         """
-        per_day = self.backbone(x)                                # (B, K, T, H, W) one map per input day
+        per_day = self.backbone(x, *extra)                        # (B, K, T, H, W) one map per input day
         weights = torch.softmax(self.day_logits, dim=0)           # (T,) positive, sums to 1
         return torch.einsum("bkthw,t->bkhw", per_day, weights)    # (B, K, H, W) weighted average
 

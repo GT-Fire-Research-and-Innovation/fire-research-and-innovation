@@ -144,3 +144,27 @@ def test_tessera_context_model_needs_tessera():
     with pytest.raises(ValueError, match="--tessera"):
         build_model("swinunetr3d_tessera", ModelSpec(in_channels=43, num_classes=2, ts_length=2, num_heads=3,
                                                      feature_size=6, image_size=(32, 32)))
+
+
+def test_tessera_tpool_starts_as_the_plain_model_and_learns_day_weights():
+    """swinunetr3d_tessera_tpool starts as a 43-channel SwinUNETR-3D's day mean, for one tensor or the pair input."""
+    base = dict(num_classes=2, ts_length=2, num_heads=3, feature_size=6, image_size=(32, 32))
+    torch.manual_seed(0)
+    plain = build_model("swinunetr3d", ModelSpec(in_channels=5, **base)).eval()
+    data = torch.randn(1, 5, 2, 32, 32)
+    for cells in (1, 2):
+        model = build_model("swinunetr3d_tessera_tpool",
+                            ModelSpec(in_channels=5 + 129, tessera_cells_per_pixel=cells, **base))
+        assert model_takes_tessera("swinunetr3d_tessera_tpool")
+        assert type(model.backbone).__name__ == "TesseraContextSwinUNETR"
+        missing, unexpected = model.backbone.load_state_dict(plain.state_dict(), strict=False)
+        assert not unexpected and all(key.startswith(("context.", "film.")) for key in missing)
+        model.eval()
+        static = torch.randn(1, 129, 32 * cells, 32 * cells)
+        inputs = (torch.cat((data, static.unsqueeze(2).expand(-1, -1, 2, -1, -1)), dim=1) if cells == 1
+                  else (data, static))
+        with torch.no_grad():
+            assert torch.allclose(forward_model(model, inputs), plain(data).mean(dim=2), atol=1e-6)
+    model.train()
+    forward_model(model, inputs).mean().backward()
+    assert model.day_logits.grad is not None
