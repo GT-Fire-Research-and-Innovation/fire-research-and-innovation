@@ -6,8 +6,8 @@ __pycache__/
 .DS_Store
 
 # Notebooks stay local: they are shared on Kaggle / Colab, not versioned here.
-#/notebooks/
-#/docs/
+/notebooks/
+/docs/
 
 # Dataset pipeline outputs (python -m firepred.cli.dataset run from the repo root).
 # Anchored with a leading "/" so package folders such as firepred/data/ stay tracked.
