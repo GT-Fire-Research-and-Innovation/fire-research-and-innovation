@@ -42,6 +42,8 @@ class FireScore:
         iou (float): fire-class IoU (the paper's Equation 2).
         background_f1 (float): background-class F1.
         windows (int): the fire's windows.
+        false_positives (float): false-alarm pixels per window. [ours]
+        false_negatives (float): missed fire pixels per window. [ours]
     """
 
     fire_id: str
@@ -49,6 +51,8 @@ class FireScore:
     iou: float
     background_f1: float
     windows: int
+    false_positives: float = 0.0
+    false_negatives: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -64,6 +68,8 @@ class TestScores:
         background_f1 (float): mean background F1 over fires.
         fires (int): fires scored.
         per_fire (tuple[FireScore, ...]): each fire's scores.
+        false_positives (float): mean over fires of false-alarm pixels per window. [ours]
+        false_negatives (float): mean over fires of missed fire pixels per window. [ours]
     """
 
     f1: float
@@ -71,12 +77,14 @@ class TestScores:
     background_f1: float
     fires: int
     per_fire: tuple = ()
+    false_positives: float = 0.0
+    false_negatives: float = 0.0
 
     def as_dict(self):
         """Give the four headline scores as a plain dict.
 
-        The golden tests and older code compare these keys. Per-fire scores are
-        left out.
+        The golden tests and older code compare these keys. Per-fire scores and
+        the false-positive and false-negative counts are left out.
 
         Returns:
             dict: {"f1", "iou", "background_f1", "fires"}.
@@ -297,7 +305,7 @@ class Evaluator:
         Returns:
             FireScore | None: the fire's scores, or None when it has no windows.
         """
-        f1 = background = iou = 0.0
+        f1 = background = iou = false_positives = false_negatives = 0.0
         windows = 0
         for batch_number, batch in enumerate(self.loader(fire_id)):
             data, labels = batch["data"], batch["labels"]
@@ -307,6 +315,8 @@ class Evaluator:
             f1 += self.scorer.fire_f1(predictions, labels).sum().item()
             background += self.scorer.background_f1(predictions, labels).sum().item()
             iou += self.scorer.fire_iou(predictions, labels).sum().item()
+            false_positives += self.scorer.fire_false_positives(predictions, labels).sum().item()
+            false_negatives += self.scorer.fire_false_negatives(predictions, labels).sum().item()
             windows += data.shape[0]
             if plot_dir is None:
                 continue
@@ -319,7 +329,8 @@ class Evaluator:
                 )
         if windows == 0:
             return None
-        return FireScore(fire_id, f1 / windows, iou / windows, background / windows, windows)
+        return FireScore(fire_id, f1 / windows, iou / windows, background / windows, windows,
+                         false_positives / windows, false_negatives / windows)
 
     def score(self, model, plot_dir=None):
         """Score the model on every test fire and average over fires.
@@ -351,9 +362,12 @@ class Evaluator:
             raise RuntimeError("No test fires were evaluated")
         count = len(fires)
         # Accumulate in fire order, as sums of fire means, then divide once.
-        f1 = iou = background = 0.0
+        f1 = iou = background = false_positives = false_negatives = 0.0
         for fire in fires:
             f1 += fire.f1
             background += fire.background_f1
             iou += fire.iou
-        return TestScores(f1 / count, iou / count, background / count, count, tuple(fires))
+            false_positives += fire.false_positives
+            false_negatives += fire.false_negatives
+        return TestScores(f1 / count, iou / count, background / count, count, tuple(fires),
+                          false_positives / count, false_negatives / count)

@@ -153,8 +153,8 @@ class Trainer:
     def train_epoch(self, loader, epoch):
         """Train for one pass over the training windows.
 
-        Every batch takes one step, and F1/IoU are computed on its predictions for
-        the charts. Losses are weighted by batch size, so the results are
+        Every batch takes one step, and F1, IoU and the false-positive and
+        false-negative counts are computed on its predictions for the charts. Losses are weighted by batch size, so the results are
         per-window means. A loss that becomes infinite stops the run.
 
         Args:
@@ -168,7 +168,8 @@ class Trainer:
             RuntimeError: if the loss becomes non-finite.
         """
         windows = len(loader.dataset)
-        totals = {"loss": 0.0, "fire_f1": 0.0, "background_f1": 0.0, "fire_iou": 0.0}
+        totals = {"loss": 0.0, "fire_f1": 0.0, "background_f1": 0.0, "fire_iou": 0.0,
+                  "fire_false_positives": 0.0, "fire_false_negatives": 0.0}
         components = {}
         bar = tqdm(loader, total=len(loader), desc=f"Train epoch {epoch + 1}/{self.config.epochs}")
         for batch_idx, batch in enumerate(bar):
@@ -181,6 +182,8 @@ class Trainer:
                 totals["fire_f1"] += self.scorer.fire_f1(predictions, labels).sum().item()
                 totals["background_f1"] += self.scorer.background_f1(predictions, labels).sum().item()
                 totals["fire_iou"] += self.scorer.fire_iou(predictions, labels).sum().item()
+                totals["fire_false_positives"] += self.scorer.fire_false_positives(predictions, labels).sum().item()
+                totals["fire_false_negatives"] += self.scorer.fire_false_negatives(predictions, labels).sum().item()
             # Losses weighted by batch size, so the epoch value is a per-window mean.
             totals["loss"] += loss.detach().item() * labels.size(0)
             for name, value in parts.items():
@@ -196,6 +199,8 @@ class Trainer:
             fire_f1=totals["fire_f1"] / windows,
             background_f1=totals["background_f1"] / windows,
             fire_iou=totals["fire_iou"] / windows,
+            fire_false_positives=totals["fire_false_positives"] / windows,
+            fire_false_negatives=totals["fire_false_negatives"] / windows,
         )
 
     def validate(self, loader, epoch):
@@ -213,7 +218,8 @@ class Trainer:
         """
         self.model.eval()
         windows = len(loader.dataset)
-        totals = {"loss": 0.0, "fire_f1": 0.0, "background_f1": 0.0, "fire_iou": 0.0}
+        totals = {"loss": 0.0, "fire_f1": 0.0, "background_f1": 0.0, "fire_iou": 0.0,
+                  "fire_false_positives": 0.0, "fire_false_negatives": 0.0}
         components, iou_values, dice_values = {}, [], []
         bar = tqdm(loader, total=len(loader), desc=f"Validation epoch {epoch + 1}/{self.config.epochs}")
         with torch.no_grad():
@@ -230,6 +236,8 @@ class Trainer:
                 totals["fire_f1"] += self.scorer.fire_f1(predictions, labels).sum().item()
                 totals["background_f1"] += self.scorer.background_f1(predictions, labels).sum().item()
                 totals["fire_iou"] += self.scorer.fire_iou(predictions, labels).sum().item()
+                totals["fire_false_positives"] += self.scorer.fire_false_positives(predictions, labels).sum().item()
+                totals["fire_false_negatives"] += self.scorer.fire_false_negatives(predictions, labels).sum().item()
                 iou_values.append(self.scorer.mean_iou(predictions, labels).mean().item())
                 dice_values.append(self.scorer.mean_dice(predictions, labels).mean().item())
                 bar.set_postfix(loss=f"{totals['loss'] / ((batch_idx + 1) * labels.size(0)):.4f}")
@@ -242,6 +250,8 @@ class Trainer:
             fire_iou=totals["fire_iou"] / windows,
             miou=float(np.mean(iou_values)),
             mdice=float(np.mean(dice_values)),
+            fire_false_positives=totals["fire_false_positives"] / windows,
+            fire_false_negatives=totals["fire_false_negatives"] / windows,
         )
 
     def periodic_test_due(self, epoch, evaluator):

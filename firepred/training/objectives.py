@@ -118,6 +118,8 @@ class EpochScores:
         fire_iou (float): mean fire-class IoU.
         miou (float | None): validation only: MONAI mean IoU over both classes.
         mdice (float | None): validation only: MONAI mean Dice over both classes.
+        fire_false_positives (float): mean false-alarm pixels per window. [ours]
+        fire_false_negatives (float): mean missed fire pixels per window. [ours]
     """
 
     split: str
@@ -128,12 +130,15 @@ class EpochScores:
     fire_iou: float = 0.0
     miou: float = None
     mdice: float = None
+    fire_false_positives: float = 0.0
+    fire_false_negatives: float = 0.0
 
     def as_dict(self):
         """Give the scores as a plain dict, in the order the old code returned them.
 
         The golden tests compare this. Validation adds miou and mdice after the
-        components.
+        components. The false-positive and false-negative counts are left out:
+        the old code had none, so this dict stays comparable with it.
 
         Returns:
             dict: the scores.
@@ -291,3 +296,41 @@ class Scorer:
             intersection / union.clamp_min(1.0),
             torch.ones_like(union),
         )
+
+    @staticmethod
+    def fire_false_positives(predictions, labels):
+        """Count the false alarms in every window of a batch.
+
+        A false positive is a pixel predicted to burn tomorrow that does not.
+        Together with fire_false_negatives it splits the errors in IoU's
+        denominator (TP + FP + FN) into their two kinds. It is logged, never
+        trained on. [ours]
+
+        Args:
+            predictions (torch.Tensor): binary masks of shape (B, 2, H, W).
+            labels (torch.Tensor): one-hot targets of shape (B, 2, H, W).
+
+        Returns:
+            torch.Tensor: shape (B,), pixels per window (as floats).
+        """
+        predicted = predictions[:, 1].bool().flatten(start_dim=1)
+        target = (labels[:, 1] > 0).flatten(start_dim=1)
+        return (predicted & ~target).sum(dim=1).float()
+
+    @staticmethod
+    def fire_false_negatives(predictions, labels):
+        """Count the missed fire pixels in every window of a batch.
+
+        A false negative is a pixel that burns tomorrow but was not predicted.
+        It is logged, never trained on. [ours]
+
+        Args:
+            predictions (torch.Tensor): binary masks of shape (B, 2, H, W).
+            labels (torch.Tensor): one-hot targets of shape (B, 2, H, W).
+
+        Returns:
+            torch.Tensor: shape (B,), pixels per window (as floats).
+        """
+        predicted = predictions[:, 1].bool().flatten(start_dim=1)
+        target = (labels[:, 1] > 0).flatten(start_dim=1)
+        return (~predicted & target).sum(dim=1).float()

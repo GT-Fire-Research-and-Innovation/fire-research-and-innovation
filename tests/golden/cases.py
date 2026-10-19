@@ -493,6 +493,8 @@ def objective_values(ctx):
     out["metric.fire_only_f1"] = scorer.fire_f1(predictions, labels)
     out["metric.background_f1"] = scorer.background_f1(predictions, labels)
     out["metric.fire_only_iou"] = scorer.fire_iou(predictions, labels)
+    out["metric.fire_false_positives"] = scorer.fire_false_positives(predictions, labels)
+    out["metric.fire_false_negatives"] = scorer.fire_false_negatives(predictions, labels)
     out["metric.mean_iou"] = scorer.mean_iou(predictions, labels)
     out["metric.dice"] = scorer.mean_dice(predictions, labels)
 

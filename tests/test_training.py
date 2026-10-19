@@ -50,6 +50,17 @@ def test_f1_and_iou_on_a_known_case():
     assert scorer.background_f1(prediction, target).item() == 0.5
 
 
+def test_false_positives_and_negatives_on_a_known_case():
+    """False alarms and missed fire pixels are counted per window, on the fire channel only."""
+    prediction = torch.cat((masks([[1, 1], [0, 0]]), masks([[0, 0], [0, 0]])))
+    target = torch.cat((masks([[1, 0], [1, 0]]), masks([[0, 0], [0, 0]])))
+    # Window 0: (0, 1) predicted but not burned; (1, 0) burned but not predicted. Window 1: empty.
+    assert scorer.fire_false_positives(prediction, target).tolist() == [1.0, 0.0]
+    assert scorer.fire_false_negatives(prediction, target).tolist() == [1.0, 0.0]
+    # With the one true positive they make IoU's denominator: 1 / (1 + 1 + 1).
+    assert abs(scorer.fire_iou(prediction, target)[0].item() - 1 / 3) < 1e-7
+
+
 def test_dicece_reports_its_two_parts():
     """Dice+CE returns its total and both parts; plain Dice has no parts."""
     logits = torch.randn(2, 2, 8, 8)
@@ -107,6 +118,10 @@ def test_wandb_chart_names_are_stable():
     assert labels["val_fire_f1"] == "Validation F1 — Next-Day Fire Growth"
     assert labels["train_ce_loss"] == "Training Weighted Cross-Entropy Loss — Next-Day Fire Growth"
     assert "train_ce_loss" not in Tracker.chart_labels("dice")
+    assert labels["val_fire_false_positives"] == "Validation False Positives — Next-Day Fire Growth (pixels per window)"
+    assert labels["train_fire_false_negatives"] == "Training False Negatives — Next-Day Fire Growth (pixels per window)"
+    for loss_name in ("dice", "dicefocal"):
+        assert {"periodic_test_false_positives", "periodic_test_false_negatives"} <= set(Tracker.chart_labels(loss_name))
 
 
 def test_checkpoints_load_without_running_pickled_code(tmp_path):

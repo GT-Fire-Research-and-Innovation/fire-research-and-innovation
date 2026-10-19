@@ -136,6 +136,20 @@ def test_training_run_logs_every_epoch(dicece_run):
     assert all(log[LEARNING_RATE] == pytest.approx(1e-3) for log in val)
 
 
+def test_training_run_logs_false_positives_and_negatives(dicece_run):
+    """Train, validation, periodic and final test logs each chart both error counts, in pixels per window."""
+    window_pixels = 256 * 256
+    logs = dicece_run.train_logs() + dicece_run.val_logs() + dicece_run.periodic_logs() + [dicece_run.final_log()]
+    for log in logs:
+        for kind in ("False Positives", "False Negatives"):
+            values = [value for key, value in log.items() if kind in key]
+            assert len(values) == 1, (kind, sorted(log))
+            assert 0.0 <= values[0] <= window_pixels, (kind, values[0])
+    final = dicece_run.final_log()
+    assert final["test_false_positives"] == final["Test False Positives — Next-Day Fire Growth (pixels per window)"]
+    assert final["test_false_negatives"] == final["Test False Negatives — Next-Day Fire Growth (pixels per window)"]
+
+
 def test_training_run_keeps_the_best_checkpoint(dicece_run):
     """One checkpoint is kept: the lowest validation loss, with every recorded setting."""
     assert len(dicece_run.checkpoints) == 1

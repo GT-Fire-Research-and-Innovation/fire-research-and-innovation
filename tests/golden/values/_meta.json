@@ -80,6 +80,12 @@
         "cli"
       ],
       "reason": "dataset tessera flag renamed --cells-per-pixel -> --tessera-cells-per-pixel to match training"
+    },
+    {
+      "groups": [
+        "objectives"
+      ],
+      "reason": "W&B charts gain false positives and false negatives (pixels per window) for train, validation, periodic and final test; Scorer gains fire_false_positives / fire_false_negatives"
     }
   ]
 }

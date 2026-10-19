@@ -58,10 +58,22 @@ class Tracker:
             # The paper's IoU (Equation 2) for the fire class; logged, never trained on.
             "train_fire_iou": "Training IoU — Next-Day Fire Growth",
             "val_fire_iou": "Validation IoU — Next-Day Fire Growth",
+            # [ours] the two kinds of error behind IoU: false alarms and missed fire
+            # pixels, as mean pixels per window (a window has 256 x 256 pixels).
+            "train_fire_false_positives": "Training False Positives — Next-Day Fire Growth (pixels per window)",
+            "train_fire_false_negatives": "Training False Negatives — Next-Day Fire Growth (pixels per window)",
+            "val_fire_false_positives": "Validation False Positives — Next-Day Fire Growth (pixels per window)",
+            "val_fire_false_negatives": "Validation False Negatives — Next-Day Fire Growth (pixels per window)",
             # [ours] test fires scored with the current weights every --test-every
             # epochs (logging only).
             "periodic_test_f1": "Test F1 — Next-Day Fire Growth (periodic, current weights)",
             "periodic_test_iou": "Test IoU — Next-Day Fire Growth (periodic, current weights)",
+            "periodic_test_false_positives": (
+                "Test False Positives — Next-Day Fire Growth (pixels per window, periodic, current weights)"
+            ),
+            "periodic_test_false_negatives": (
+                "Test False Negatives — Next-Day Fire Growth (pixels per window, periodic, current weights)"
+            ),
             # Constant unless the [ours] --lr-schedule is used.
             "learning_rate": "Learning Rate",
         }
@@ -177,6 +189,8 @@ class Tracker:
             labels["train_fire_f1"]: scores.fire_f1,
             labels["train_background_f1"]: scores.background_f1,
             labels["train_fire_iou"]: scores.fire_iou,
+            labels["train_fire_false_positives"]: scores.fire_false_positives,
+            labels["train_fire_false_negatives"]: scores.fire_false_negatives,
             **{labels[name]: value for name, value in scores.components.items()},
         })
         return scores
@@ -204,6 +218,8 @@ class Tracker:
             labels["val_fire_f1"]: scores.fire_f1,
             labels["val_background_f1"]: scores.background_f1,
             labels["val_fire_iou"]: scores.fire_iou,
+            labels["val_fire_false_positives"]: scores.fire_false_positives,
+            labels["val_fire_false_negatives"]: scores.fire_false_negatives,
             labels["learning_rate"]: learning_rate,
             **{labels[name]: value for name, value in scores.components.items()},
         })
@@ -226,6 +242,8 @@ class Tracker:
             self.labels["epoch"]: epoch,
             self.labels["periodic_test_f1"]: scores.f1,
             self.labels["periodic_test_iou"]: scores.iou,
+            self.labels["periodic_test_false_positives"]: scores.false_positives,
+            self.labels["periodic_test_false_negatives"]: scores.false_negatives,
         })
         return scores
 
@@ -276,6 +294,11 @@ class Tracker:
             "Test IoU — Next-Day Fire Growth": scores.iou,
             "Test F1 — Background": scores.background_f1,
             "test_fires": scores.fires,
+            # [ours] mean over fires of each fire's per-window error counts.
+            "test_false_positives": scores.false_positives,
+            "test_false_negatives": scores.false_negatives,
+            "Test False Positives — Next-Day Fire Growth (pixels per window)": scores.false_positives,
+            "Test False Negatives — Next-Day Fire Growth (pixels per window)": scores.false_negatives,
         }
         self.wandb.log(metrics)
         self.wandb.run.summary.update(metrics)
