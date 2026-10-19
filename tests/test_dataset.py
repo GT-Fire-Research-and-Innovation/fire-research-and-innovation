@@ -9,7 +9,7 @@ from firepred.data.tessera_archive import compute_tessera_stats, load_tessera_ma
 def test_items_have_model_shapes(data_root):
     """Items are windows (not fires) with model-ready shapes and complementary one-hot labels."""
     root, _ = data_root
-    dataset = FireDataset(root / "train", ts_length=6, target_is_single_day=True, use_augmentations=True)
+    dataset = FireDataset(root / "train", ts_length=6, target_is_single_day=True, augment=True)
     assert len(dataset) == 3  # windows across fires, not fires
     sample = dataset[0]
     assert tuple(sample["data"].shape) == (BASE_MODEL_CHANNELS, 6, 256, 256)

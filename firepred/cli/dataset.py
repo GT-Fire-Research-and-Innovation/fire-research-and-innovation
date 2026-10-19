@@ -131,7 +131,7 @@ COMMANDS = (
                 Option(("--strip-rows",), "strip_rows", {"type": int}),
                 Option(("--overwrite",), "overwrite", {"action": "store_true"}),
                 Option(("--only-fires",), "only_fires", {"nargs": "+", "help": "Restrict to these fire IDs (timing test)"}),
-                Option(("--cells-per-pixel",), "cells_per_pixel", {
+                Option(("--tessera-cells-per-pixel",), "cells_per_pixel", {
                     "type": int, "help": "TESSERA cells per VIIRS pixel side: 1 averages each pixel, 5 keeps 5x5 "
                     "cells of 75 m (use a separate --tessera-repo per value)"}),
             )),

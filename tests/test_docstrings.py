@@ -129,3 +129,16 @@ def test_api_docstrings_follow_the_format():
     """Every package and tool docstring: one-sentence summary, a plain explanation, typed Args and Returns."""
     problems = api_docstring_problems()
     assert not problems, f"{len(problems)} problems:\n" + "\n".join(problems[:60])
+
+
+def test_package_docstrings_list_their_modules():
+    """Every package __init__ docstring names each module of its package, so the overview stays complete."""
+    missing = []
+    for init in sorted((ROOT / "firepred").rglob("__init__.py")):
+        doc = ast.get_docstring(ast.parse(init.read_text())) or ""
+        if init.parent == ROOT / "firepred":
+            continue  # the top-level package names its subpackages, not modules
+        for module in sorted(init.parent.glob("*.py")):
+            if module.name != "__init__.py" and module.stem not in doc:
+                missing.append(f"{init.relative_to(ROOT)}: {module.stem}")
+    assert not missing, "package docstrings do not mention:\n" + "\n".join(missing)

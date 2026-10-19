@@ -2068,7 +2068,7 @@ false
 [
 "tuple",
 [
-"--cells-per-pixel"
+"--tessera-cells-per-pixel"
 ]
 ],
 "cells_per_pixel",

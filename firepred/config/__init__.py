@@ -1,2 +1,6 @@
 """Level 0: constants only. Import the module you need, e.g.
-`from firepred.config.dataset import BASE_MODEL_CHANNELS`."""
+`from firepred.config.dataset import BASE_MODEL_CHANNELS`.
+
+    dataset.py   data constants: channels, crop, splits, repos, TESSERA, normalization
+    training.py  training defaults: seed, epochs, losses, schedules, W&B
+"""

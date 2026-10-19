@@ -258,8 +258,8 @@ def check_timing(args):
     Returns:
         float: seconds per window.
     """
-    train = FireDataset(npz_dir=args.data_root / "train", ts_length=args.ts, n_channel=N_STORED_CHANNELS,
-                        target_is_single_day=True, use_augmentations=True)
+    train = FireDataset(split_dir=args.data_root / "train", ts_length=args.ts, stored_channels=N_STORED_CHANNELS,
+                        target_is_single_day=True, augment=True)
     count = min(args.windows, len(train))
     started = time.time()
     for index in range(count):

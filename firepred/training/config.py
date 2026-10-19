@@ -328,6 +328,19 @@ class RunConfig:
     # ----- model ----- #
 
     @property
+    def is_swinunetr3d(self):
+        """Say whether the model is SwinUNETR-3D or one of its variants.
+
+        Variants are named swinunetr3d_<something> (tpool, tessera, ...) and
+        share its settings, such as --swin-temporal-downsample. Checks of those
+        settings use this, so a new variant is covered without editing them.
+
+        Returns:
+            bool: True for "swinunetr3d" and "swinunetr3d_*".
+        """
+        return self.model == "swinunetr3d" or self.model.startswith("swinunetr3d_")
+
+    @property
     def model_options(self):
         """Collect the model-specific settings handed to the model builder.
 
@@ -501,7 +514,7 @@ class RunConfig:
             config["tessera_cells_per_pixel"] = self.tessera_cells
         if on_tpu:
             config["device"] = "tpu"
-        if self.model == "swinunetr3d":
+        if self.is_swinunetr3d:
             config["swin_temporal_downsample"] = self.swin_temporal_downsample
         if self.extra_model_options:
             config["model_options"] = dict(self.extra_model_options)

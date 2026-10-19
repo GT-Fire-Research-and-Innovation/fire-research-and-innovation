@@ -259,9 +259,9 @@ class CheckpointLoader:
         """Load a checkpoint and refuse it if it was trained with other inputs than this run.
 
         A TESSERA mismatch (on or off, or another number of cells per pixel), a
-        different input width or (SwinUNETR-3D) a different temporal-merging setting
-        would silently give wrong results. Loading follows
-        read's safety rules.
+        different input width or (SwinUNETR-3D and its variants) a different
+        temporal-merging setting would silently give wrong results. Loading
+        follows read's safety rules.
 
         Args:
             checkpoint_path (str | Path): the checkpoint file.
@@ -271,10 +271,14 @@ class CheckpointLoader:
             dict: the checkpoint.
 
         Raises:
-            ValueError: if the checkpoint's inputs differ from this run's.
+            ValueError: if the checkpoint's inputs differ from this run's, or the loader
+                has no config to compare with.
             RuntimeError: if a restricted load fails and the file is not trusted.
         """
         config = self.config
+        if config is None:
+            raise ValueError("CheckpointLoader.load compares a checkpoint with this run's settings; "
+                             "create the loader with a config, or use read() for an unchecked load")
         checkpoint = self.read(checkpoint_path, trusted)
         # Checkpoints from before TESSERA support carry no flag: they are 43-channel.
         trained_with_tessera = bool(checkpoint.get("use_tessera", False))
@@ -298,7 +302,7 @@ class CheckpointLoader:
             )
         # Checkpoints from before this flag used the released code's merging.
         trained_temporal_downsample = bool(checkpoint.get("swin_temporal_downsample", True))
-        if config.model == "swinunetr3d" and trained_temporal_downsample != config.swin_temporal_downsample:
+        if config.is_swinunetr3d and trained_temporal_downsample != config.swin_temporal_downsample:
             raise ValueError(
                 f"{checkpoint_path} was trained "
                 f"{'with' if trained_temporal_downsample else 'without'} temporal "

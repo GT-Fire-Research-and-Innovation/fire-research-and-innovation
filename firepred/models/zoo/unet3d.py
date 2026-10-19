@@ -1,4 +1,8 @@
-"""U-Net-3D, the paper's U-Net baseline (`-m unet3d`); not used by SwinUNETR-3D."""
+"""U-Net-3D, the paper's U-Net baseline (`-m unet3d`); not used by SwinUNETR-3D.
+
+Level 2 (models/zoo). Registered as "unet3d"; a baseline from the paper,
+kept for comparison with SwinUNETR-3D.
+"""
 
 # ============================================================================
 # NOT USED BY SWINUNETR-3D (our current work: next-day fire prediction).

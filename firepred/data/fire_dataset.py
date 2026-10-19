@@ -48,7 +48,8 @@ from firepred.config.dataset import (
 )
 from firepred.data.archive import find_fire_sources, fire_name, index_fires, open_fire
 from firepred.data.tessera_archive import load_tessera_maps, read_tessera, static_map, tessera_paths
-from firepred.data.transforms import augment, landcover_one_hot_matrix, normalize, preprocess
+from firepred.data import transforms
+from firepred.data.transforms import landcover_one_hot_matrix
 
 
 # ----- One window: read, then prepare ----- #
@@ -57,7 +58,7 @@ from firepred.data.transforms import augment, landcover_one_hot_matrix, normaliz
 NORMALIZE_SKIP = (*DEGREE_CHANNELS, LANDCOVER_CHANNEL)
 
 
-def read_window(source, window_idx, n_channel, ts_length, target_is_single_day):
+def read_window(source, window_idx, stored_channels, ts_length, target_is_single_day):
     """Read exactly one window and its target from a fire archive, and check their shapes.
 
     Only this window's two members are decompressed. The target becomes two
@@ -67,7 +68,7 @@ def read_window(source, window_idx, n_channel, ts_length, target_is_single_day):
     Args:
         source (Path): a p<id>.npz archive or unzipped p<id>/ folder.
         window_idx (int): the window's number inside the fire.
-        n_channel (int): stored channels per window (27).
+        stored_channels (int): stored channels per window (27).
         ts_length (int): input days per window.
         target_is_single_day (bool): the target is one (H, W) next-day map rather
             than a (T, H, W) sequence.
@@ -90,7 +91,7 @@ def read_window(source, window_idx, n_channel, ts_length, target_is_single_day):
     x = torch.from_numpy(data_array).to(dtype=torch.float32)
     label = torch.from_numpy(label_array)
 
-    expected_x_shape = (n_channel, ts_length, CROP_SIZE, CROP_SIZE)
+    expected_x_shape = (stored_channels, ts_length, CROP_SIZE, CROP_SIZE)
     if tuple(x.shape) != expected_x_shape:
         raise ValueError(f"{source}:{data_key} has shape {tuple(x.shape)}; expected {expected_x_shape}")
 
@@ -125,7 +126,7 @@ def read_window(source, window_idx, n_channel, ts_length, target_is_single_day):
     return x, y
 
 
-def prepare_window(x, y, one_hot_matrix, static=None, augment_window=False, rng=np.random):
+def prepare_window(x, y, one_hot_matrix, static=None, augment=False, rng=np.random):
     """Turn a read window into model input: standardize, (training only) augment, encode.
 
     The steps run in the released order: normalize before augmentation, then
@@ -137,19 +138,19 @@ def prepare_window(x, y, one_hot_matrix, static=None, augment_window=False, rng=
         y (torch.Tensor): the two-channel target, (2, H, W).
         one_hot_matrix (torch.Tensor): landcover_one_hot_matrix().
         static (torch.Tensor | None): the fire's TESSERA map (129, H, W), or None.
-        augment_window (bool): random flips and rotation (training only).
+        augment (bool): random flips and rotation (training only).
         rng (np.random.Generator | module): where augmentation draws come from.
 
     Returns:
         dict[str, torch.Tensor]: {"data": (43, T, H, W), "labels": (2, H, W)}, plus
         "static": (129, H, W) when a TESSERA map is given.
     """
-    x = normalize(x, NORMALIZATION_MEAN, NORMALIZATION_STD, skip=NORMALIZE_SKIP)
+    x = transforms.normalize(x, NORMALIZATION_MEAN, NORMALIZATION_STD, skip=NORMALIZE_SKIP)
     # [released] augment training examples but leave validation unchanged.
-    if augment_window:
-        x, y, static = augment(x, y, static, list(DEGREE_CHANNELS), rng=rng)
+    if augment:
+        x, y, static = transforms.augment(x, y, static, list(DEGREE_CHANNELS), rng=rng)
     # [released] degrees -> sine, land cover -> one-hot.
-    x = preprocess(x, one_hot_matrix, list(DEGREE_CHANNELS))
+    x = transforms.preprocess(x, one_hot_matrix, list(DEGREE_CHANNELS))
     sample = {"data": x, "labels": y}
     if static is not None:
         sample["static"] = static
@@ -211,10 +212,10 @@ class FireDataset(Dataset):
 
     def __init__(
         self,
-        npz_dir,
+        split_dir,
         ts_length,
-        use_augmentations=False,
-        n_channel=N_STORED_CHANNELS,
+        augment=False,
+        stored_channels=N_STORED_CHANNELS,
         target_is_single_day=False,
         tessera_dir=None,
         tessera_stats=None,
@@ -229,10 +230,10 @@ class FireDataset(Dataset):
         current format. Windows themselves are read only when asked for.
 
         Args:
-            npz_dir (str | Path): a split folder of p<id>.npz archives or p<id>/ folders.
+            split_dir (str | Path): a split folder of p<id>.npz archives or p<id>/ folders.
             ts_length (int): input days per window.
-            use_augmentations (bool): random flips and rotation (training split only).
-            n_channel (int): stored channels per window (27).
+            augment (bool): random flips and rotation (training split only).
+            stored_channels (int): stored channels per window (27).
             target_is_single_day (bool): targets are one (H, W) next-day map
                 (prediction) rather than a (T, H, W) sequence.
             tessera_dir (str | Path | None): folder of tessera/p<id>.npz files, or None.
@@ -250,10 +251,10 @@ class FireDataset(Dataset):
         """
         # [ours] data and labels live together in version-2 archives, or in
         # unzipped p<id>/ folders of the same members.
-        self.npz_dir = Path(npz_dir)
-        self.npz_files = find_fire_sources(self.npz_dir)
-        if not self.npz_files:
-            raise RuntimeError(f"No .npz archives or unzipped fire folders found in {self.npz_dir}")
+        self.split_dir = Path(split_dir)
+        self.sources = find_fire_sources(self.split_dir)
+        if not self.sources:
+            raise RuntimeError(f"No .npz archives or unzipped fire folders found in {self.split_dir}")
 
         # [ours] optional TESSERA mode: each p<id>.npz pairs with <tessera_dir>/p<id>.npz.
         # Every fire's map is read here, once, rather than in every __getitem__;
@@ -270,23 +271,23 @@ class FireDataset(Dataset):
             if tessera_stats is None:
                 raise ValueError("tessera_stats is required with tessera_dir")
             if self.lazy_tessera:
-                self.tessera_files = tessera_paths(self.tessera_dir, self.npz_files)
+                self.tessera_files = tessera_paths(self.tessera_dir, self.sources)
             else:
                 if tessera_maps is None:
-                    tessera_maps = load_tessera_maps(self.tessera_dir, self.npz_files, cells_per_pixel)
-                self.tessera_maps = valid_tessera_maps(tessera_maps, self.npz_files, tessera_stats["min_coverage"])
+                    tessera_maps = load_tessera_maps(self.tessera_dir, self.sources, cells_per_pixel)
+                self.tessera_maps = valid_tessera_maps(tessera_maps, self.sources, tessera_stats["min_coverage"])
 
-        self.n_channel = n_channel
+        self.stored_channels = stored_channels
         self.ts_length = ts_length
         self.target_is_single_day = target_is_single_day
-        self.use_augmentations = use_augmentations
+        self.augment = augment
 
         # [ours] the global index: one (fire, window number) entry per window
         # across all fires (data/archive.index_fires), so PyTorch can shuffle
         # windows across fires.
-        self.index = index_fires(self.npz_files)
+        self.index = index_fires(self.sources)
         if not self.index:
-            raise RuntimeError(f"NPZ files in {self.npz_dir} contain no temporal windows")
+            raise RuntimeError(f"NPZ files in {self.split_dir} contain no temporal windows")
         self.one_hot_matrix = landcover_one_hot_matrix()
 
     def windows_by_fire(self):
@@ -327,11 +328,11 @@ class FireDataset(Dataset):
             "static": (129, H, W), or (129, k H, k W) float16 when lazy, in TESSERA mode.
         """
         source, window_idx = self.index[idx]
-        x, y = read_window(source, window_idx, self.n_channel, self.ts_length, self.target_is_single_day)
+        x, y = read_window(source, window_idx, self.stored_channels, self.ts_length, self.target_is_single_day)
         static = None
         if self.tessera_dir is not None:
             static = torch.from_numpy(self.static_tessera(fire_name(source)))
-        sample = prepare_window(x, y, self.one_hot_matrix, static, self.use_augmentations)
+        sample = prepare_window(x, y, self.one_hot_matrix, static, self.augment)
         if self.lazy_tessera and "static" in sample:
             # float16 halves the host memory of a large map (the mask, 0 or 1, stays exact);
             # it is cast only after augmentation, which needs float32 on the CPU.

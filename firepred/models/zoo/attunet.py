@@ -1,4 +1,8 @@
-"""Attention-U-Net-3D, the paper's Attention U-Net baseline (`-m attunet`); not used by SwinUNETR-3D."""
+"""Attention-U-Net-3D, the paper's Attention U-Net baseline (`-m attunet`); not used by SwinUNETR-3D.
+
+Level 2 (models/zoo). Registered as "attunet"; a baseline from the paper,
+kept for comparison with SwinUNETR-3D.
+"""
 
 # ============================================================================
 # NOT USED BY SWINUNETR-3D (our current work: next-day fire prediction).

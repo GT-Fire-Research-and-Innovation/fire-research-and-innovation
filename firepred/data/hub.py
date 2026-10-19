@@ -1,6 +1,6 @@
 """Hugging Face I/O: list, download and upload repo files; window_config.json.
 
-Level 1 (prep). The only module that talks to Hugging Face. `huggingface_hub`
+Level 1 (data, dataset building). The only module that talks to Hugging Face. `huggingface_hub`
 is imported inside each call (never at import time), so a notebook can pin
 its cache folders after importing the masters. There is no global login:
 every call takes the token explicitly. Every function returns what it

@@ -143,7 +143,7 @@ def dataset_values(ctx):
     work = ctx.work
     root, _ = synth.data_root(work / "data", synth.QUICK_FIRES)
     quiet(unzip_data_root, root, work / "data-npy", splits=("train",))
-    kwargs = dict(ts_length=6, n_channel=27, target_is_single_day=True)
+    kwargs = dict(ts_length=6, stored_channels=27, target_is_single_day=True)
 
     def items(dataset, seed=None):
         """Every sample of `dataset`, after seeding numpy when `seed` is given."""
@@ -152,27 +152,27 @@ def dataset_values(ctx):
         return [dataset[index] for index in range(len(dataset))]
 
     out = {}
-    plain_ds = FireDataset(npz_dir=root / "train", use_augmentations=False, **kwargs)
+    plain_ds = FireDataset(split_dir=root / "train", augment=False, **kwargs)
     out["len"] = len(plain_ds)
     out["index"] = [(fire_name(path), window) for path, window in plain_ds.index]
     out["normalizer"] = (NORMALIZATION_MEAN, NORMALIZATION_STD, sorted(NORMALIZE_SKIP))  # what every item is normalized with
     out["items.plain"] = items(plain_ds)
-    out["items.augmented"] = items(FireDataset(npz_dir=root / "train", use_augmentations=True, **kwargs), seed=123)
+    out["items.augmented"] = items(FireDataset(split_dir=root / "train", augment=True, **kwargs), seed=123)
     out["items.folders"] = items(
-        FireDataset(npz_dir=work / "data-npy" / "train", use_augmentations=False, **kwargs)
+        FireDataset(split_dir=work / "data-npy" / "train", augment=False, **kwargs)
     )
-    out["items.val"] = items(FireDataset(npz_dir=root / "val", use_augmentations=False, **kwargs))
+    out["items.val"] = items(FireDataset(split_dir=root / "val", augment=False, **kwargs))
 
     train_maps = load_tessera_maps(root / "tessera", find_fire_sources(root / "train"))
     stats = compute_tessera_stats(train_maps.values(), min_coverage=0.5)
     out["tessera.stats"] = stats
     out["tessera.stats.0.7"] = compute_tessera_stats(train_maps.values(), min_coverage=0.7)
     tessera_ds = FireDataset(
-        npz_dir=root / "train", use_augmentations=False, tessera_dir=root / "tessera", tessera_stats=stats, **kwargs
+        split_dir=root / "train", augment=False, tessera_dir=root / "tessera", tessera_stats=stats, **kwargs
     )
     out["items.tessera"] = items(tessera_ds)
     out["items.tessera.augmented"] = items(
-        FireDataset(npz_dir=root / "train", use_augmentations=True, tessera_dir=root / "tessera",
+        FireDataset(split_dir=root / "train", augment=True, tessera_dir=root / "tessera",
                     tessera_stats=stats, **kwargs),
         seed=7,
     )
@@ -598,10 +598,10 @@ def training_values(ctx):
     from firepred.training.trainer import Trainer
 
     root, csv_path = synth.data_root(ctx.work / "data", synth.QUICK_FIRES)
-    kwargs = dict(ts_length=6, n_channel=27, target_is_single_day=True, use_augmentations=False)
-    train_ds = FireDataset(npz_dir=root / "train", **kwargs)
-    val_ds = FireDataset(npz_dir=root / "val", **kwargs)
-    test_ds = FireDataset(npz_dir=root / "test", **kwargs)
+    kwargs = dict(ts_length=6, stored_channels=27, target_is_single_day=True, augment=False)
+    train_ds = FireDataset(split_dir=root / "train", **kwargs)
+    val_ds = FireDataset(split_dir=root / "val", **kwargs)
+    test_ds = FireDataset(split_dir=root / "test", **kwargs)
     device = torch.device("cpu")
     config = RunConfig("swinunetr3d", batch_size=2, feature_size=12, epochs=1, num_workers=0, test_csv=csv_path)
     torch.manual_seed(42)

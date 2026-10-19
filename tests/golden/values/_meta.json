@@ -74,6 +74,12 @@
         "cli"
       ],
       "reason": "check help lists the new swinunetr3d_tessera_tpool model"
+    },
+    {
+      "groups": [
+        "cli"
+      ],
+      "reason": "dataset tessera flag renamed --cells-per-pixel -> --tessera-cells-per-pixel to match training"
     }
   ]
 }

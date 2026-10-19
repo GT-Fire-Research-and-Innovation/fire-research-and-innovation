@@ -218,3 +218,25 @@ def test_test_mode_builds_no_trainer(data_root, tmp_path, monkeypatch):
     ).run()
     assert result.checkpoint == checkpoint and result.scores.fires == 2
     assert not any(call[0] == "define_metric" for call in fake_wandb.CALLS)
+
+
+def test_swinunetr3d_variants_share_its_checks(tmp_path):
+    """Every swinunetr3d_* variant gets the temporal-downsampling refusal and W&B record."""
+    path = tmp_path / "c.pth"
+    torch.save({"use_tessera": False, "model_input_channels": 43, "swin_temporal_downsample": True}, path)
+    for model in ("swinunetr3d", "swinunetr3d_tpool"):
+        config = RunConfig(model)
+        assert config.is_swinunetr3d and config.wandb_config()["swin_temporal_downsample"] is False
+        with pytest.raises(ValueError, match="temporal"):
+            CheckpointLoader("cpu", config).load(path)
+    assert not RunConfig("unet3d").is_swinunetr3d and "swin_temporal_downsample" not in RunConfig("unet3d").wandb_config()
+    assert CheckpointLoader("cpu", RunConfig("unet3d")).load(path)["swin_temporal_downsample"] is True
+
+
+def test_loader_without_config_reads_but_refuses_to_check(tmp_path):
+    """read() needs no config; load() without one fails with a clear message."""
+    path = tmp_path / "c.pth"
+    torch.save({"use_tessera": False}, path)
+    assert CheckpointLoader("cpu").read(path) == {"use_tessera": False}
+    with pytest.raises(ValueError, match="with a config"):
+        CheckpointLoader("cpu").load(path)

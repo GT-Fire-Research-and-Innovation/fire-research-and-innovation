@@ -1,6 +1,6 @@
 """MASTER for datasets: every window-data step a notebook or the CLI runs.
 
-Level 1 (prep). Notebooks call only this module and data/tessera_master.py.
+Level 1 (data, dataset building). Notebooks call only this module and data/tessera_master.py.
 Each function runs one pipeline step end to end and returns a frozen value
 (reports have .summary()). Progress is printed here and nowhere below.
 

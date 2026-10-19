@@ -1,6 +1,7 @@
 """Model registry: ModelSpec, model names -> builder functions, and the model I/O contract.
 
-Level 2 (models). Used by training/run.py, cli/check.py, cli/train.py and tools/.
+Level 2 (models). Used by training/ (config.model_spec, experiment, trainer,
+evaluator), cli/check.py, every zoo file (@register_model) and tools/trace_shapes.py.
 
 ModelSpec is everything a builder needs to know about the data; training
 builds one from the command line and passes it to build_model(name, spec).

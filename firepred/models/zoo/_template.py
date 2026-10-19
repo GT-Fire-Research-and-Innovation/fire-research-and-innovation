@@ -2,6 +2,8 @@
 
 (Files whose name starts with "_" are never registered, so this one is inert.)
 
+Level 2 (models/zoo).
+
 A model is one file in firepred/models/zoo/ holding three things, top to bottom:
 architecture constants, the nn.Module, and a builder decorated with
 @register_model. Dropping the file in zoo/ is all it takes for `-m NAME` to

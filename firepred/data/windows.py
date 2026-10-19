@@ -1,6 +1,6 @@
 """GeoTIFF frames -> model-ready windows and next-day targets, for one fire.
 
-Level 1 (prep). Used by data/windows_master.py while building the dataset.
+Level 1 (data, dataset building). Used by data/windows_master.py while building the dataset.
 Functions return values and print nothing; build_fire_windows returns its
 progress notes for the caller to show.
 

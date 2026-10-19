@@ -123,11 +123,11 @@ class FireData:
             FireDataset: the dataset.
         """
         return FireDataset(
-            npz_dir=self.root / split,
+            split_dir=self.root / split,
             ts_length=self.config.ts_length,
-            n_channel=N_STORED_CHANNELS,
+            stored_channels=N_STORED_CHANNELS,
             target_is_single_day=True,
-            use_augmentations=augment,
+            augment=augment,
             tessera_dir=self.tessera_dir,
             tessera_stats=tessera_stats,
             tessera_maps=tessera_maps,
