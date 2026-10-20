@@ -8,10 +8,12 @@ back into an earlier step:
 
     1. the Device, then seed numpy, torch, Python's random (and XLA on a TPU)
     2. FireData: where the data is (unzipped once if asked)
-    3. the Tracker (the W&B run)
-    4. the model (registry), wrapped in DataParallel
-    5. training only: datasets and loaders -> Trainer.fit -> best checkpoint
-    6. testing: CheckpointLoader.load that (or the given) checkpoint, Evaluator.score,
+    3. training with --ce-weight auto only: count the training labels and fix
+       the class weights in the RunConfig, before anything records them
+    4. the Tracker (the W&B run)
+    5. the model (registry), wrapped in DataParallel
+    6. training only: datasets and loaders -> Trainer.fit -> best checkpoint
+    7. testing: CheckpointLoader.load that (or the given) checkpoint, Evaluator.score,
        Tracker.log_final
 """
 
@@ -25,6 +27,7 @@ from torch import nn
 
 from firepred.config.dataset import N_STORED_CHANNELS
 from firepred.data.archive import find_fire_sources, unzip_data_root
+from firepred.data.class_balance import count_labels
 from firepred.data.fire_dataset import FireDataset, make_dataloader, validate_dataset_output
 from firepred.data.tessera_archive import compute_tessera_stats, iter_tessera_maps, load_tessera_maps
 from firepred.models.registry import build_model
@@ -106,6 +109,19 @@ class FireData:
             bool: True when there are test archives.
         """
         return bool(find_fire_sources(self.root / "test"))
+
+    def label_counts(self):
+        """Count the training split's background and fire pixels.
+
+        --ce-weight auto turns them into the class weights. Only the training
+        fires count, so held-out fires never shape the loss.
+
+        Returns:
+            LabelCounts: the training split's counts.
+        """
+        counts = count_labels(self.root / "train")
+        print(f"Training labels: {counts.summary()}")
+        return counts
 
     def dataset(self, split, augment, tessera_stats=None, tessera_maps=None):
         """Build the FireDataset of one split with the run's settings.
@@ -359,7 +375,9 @@ class Experiment:
         """Run the experiment: seed, find the data, start W&B, build the model, train, test.
 
         With -test only the testing runs, and no loss or optimizer is built. The
-        W&B run is finished when this returns, even after an error.
+        W&B run is finished when this returns, even after an error. With
+        --ce-weight auto the settings get their counted class weights first, so
+        W&B, the loss and the checkpoints all see the same numbers.
 
         Returns:
             RunResult: the tested checkpoint and the final scores.
@@ -368,6 +386,10 @@ class Experiment:
         device = Device.resolve(config.device)
         self.seed(device)
         data = FireData.locate(config)
+        if config.needs_label_counts:
+            config = self.config = config.with_label_counts(data.label_counts())
+            data = FireData(config, data.root, data.tessera_dir)
+            print(f"Class weights from the training labels: --ce-weight {' '.join(map(repr, config.loss.ce_weight))}")
         with Tracker(config, device) as tracker:
             model = self.prepare_model(device)
             if config.test_only:

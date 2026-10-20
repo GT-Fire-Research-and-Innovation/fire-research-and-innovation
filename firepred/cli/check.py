@@ -10,22 +10,27 @@ Level 4 (cli).
         shapes; with --train-step also take one real training step.
     python -m firepred.cli.check timing --data-root <root> [--windows 10]
         Average time to load one training window.
+    python -m firepred.cli.check labels --data-root <root> [--split train]
+        Exact background and fire pixel counts of a split, and the --ce-weight
+        that --ce-weight auto would train the Dice + CE loss with.
 
 Every check is disposable: nothing is saved, nothing is logged to W&B.
 """
 
 import argparse
 import time
+from pathlib import Path
 
 import torch
 
 from firepred.config.dataset import BASE_MODEL_CHANNELS, CROP_SIZE, N_STORED_CHANNELS, TESSERA_CHANNELS, TS_LENGTH
 from firepred.config.training import NUM_CLASSES
+from firepred.data.class_balance import count_labels
 from firepred.data.fire_dataset import FireDataset, batch_inputs, make_dataloader
 from firepred.models.registry import available_models
 from firepred.training.accelerator import Device
 from firepred.training.config import LossConfig, RunConfig
-from firepred.training.flags import add_flags
+from firepred.training.flags import add_flags, ce_weight_value
 from firepred.training.experiment import Experiment, FireData
 from firepred.training.trainer import Trainer
 
@@ -35,7 +40,8 @@ def check_config(args):
 
     The checks use the same settings objects as a real run, so a check that
     passes means training will start. Settings the check flags lack keep their
-    defaults.
+    defaults. --ce-weight auto is counted from the data root's training labels,
+    as training does.
 
     Args:
         args (argparse.Namespace): the parsed check flags.
@@ -43,7 +49,7 @@ def check_config(args):
     Returns:
         RunConfig: the settings.
     """
-    return RunConfig(
+    config = RunConfig(
         model=args.m,
         learning_rate=args.lr,
         num_heads=args.nh,
@@ -54,11 +60,16 @@ def check_config(args):
         data_root=getattr(args, "data_root", RunConfig.data_root),
         tessera=args.tessera,
         tessera_cells_per_pixel=args.tessera_cells_per_pixel,
-        loss=LossConfig(args.loss, tuple(args.ce_weight), args.lambda_dice, args.lambda_ce,
+        loss=LossConfig(args.loss, ce_weight_value(args.ce_weight), args.lambda_dice, args.lambda_ce,
                         args.lambda_focal, args.focal_gamma, args.focal_alpha),
         extra_model_options=tuple(dict(args.model_option or ()).items()),
         batch_size=args.batch,
     )
+    if config.needs_label_counts:
+        counts = count_labels(Path(config.data_root) / "train")
+        print(f"Training labels: {counts.summary()}")
+        config = config.with_label_counts(counts)
+    return config
 
 
 # Peak GPU memory is reset before, and printed after, the step being measured.
@@ -269,6 +280,28 @@ def check_timing(args):
     return seconds
 
 
+def check_labels(args):
+    """Count a split's background and fire pixels and print the matching --ce-weight.
+
+    The counts are exact and always the same for the same data
+    (data/class_balance.py). The printed weight is what --ce-weight auto trains
+    with when the split is train.
+
+    Args:
+        args (argparse.Namespace): the parsed `labels` flags.
+
+    Returns:
+        LabelCounts: the split's counts.
+    """
+    started = time.time()
+    counts = count_labels(args.data_root / args.split, workers=args.workers)
+    print(counts.summary())
+    if counts.fire:
+        print(f"--ce-weight 1.0 {counts.background_per_fire!r}  (the paper's: 1.0 446.7836)")
+    print(f"Counted in {time.time() - started:.1f} s")
+    return counts
+
+
 # Model and loss flags shared by `model` and `data`: the training flags themselves
 # (training/flags.py), with defaults where training requires a value.
 CHECK_FLAGS = ("model", "num_heads", "feature_size", "learning_rate", "loss.name", "loss.ce_weight",
@@ -336,6 +369,11 @@ def parse_args(argv=None):
     timing.add_argument("--data-root", type=Path, required=True)
     timing.add_argument("-ts", "--ts", dest="ts", type=int, default=TS_LENGTH)
     timing.add_argument("--windows", type=int, default=10)
+
+    labels = commands.add_parser("labels", help="Background and fire pixel counts of a split, and --ce-weight auto")
+    labels.add_argument("--data-root", type=Path, required=True)
+    labels.add_argument("--split", default="train", choices=("train", "val", "test"))
+    labels.add_argument("--workers", type=int, default=None, help="Reading threads (default: up to 8)")
     return parser.parse_args(argv)
 
 
@@ -351,7 +389,8 @@ def main(argv=None):
         object: the check's result.
     """
     args = parse_args(argv)
-    return {"model": check_model, "data": check_data, "timing": check_timing}[args.command](args)
+    checks = {"model": check_model, "data": check_data, "timing": check_timing, "labels": check_labels}
+    return checks[args.command](args)
 
 
 if __name__ == "__main__":

@@ -26,7 +26,7 @@
 [
 1
 ],
-"1ydqQw=="
+"h0/KQQ=="
 ],
 [
 "dict",
@@ -39,7 +39,7 @@
 [
 1
 ],
-"FIFRQw=="
+"yi0jPw=="
 ]
 ],
 [
@@ -67,7 +67,7 @@
 [
 1
 ],
-"JcU2Qw=="
+"H7gEQg=="
 ],
 [
 "dict",
@@ -80,7 +80,7 @@
 [
 1
 ],
-"fVZWQw=="
+"TnPkPg=="
 ]
 ],
 [
@@ -91,7 +91,7 @@
 [
 1
 ],
-"CHDJQQ=="
+"OO8CQg=="
 ]
 ]
 ]
@@ -173,7 +173,7 @@
 [
 1
 ],
-"Dz5ZPw=="
+"Dz7ZPw=="
 ]
 ]
 ]
@@ -243,23 +243,13 @@
 ],
 "AADgQQAAoEEAAAAA"
 ],
-"metric.mean_iou": [
+"metric.background_iou": [
 "array",
 "float32",
 [
-3,
-2
+3
 ],
-"zsT5Pq+PWj1nsP0+0eM7PQAAAAAAAIA/"
-],
-"metric.dice": [
-"array",
-"float32",
-[
-3,
-2
-],
-"5N8nP1x9zz3xoik/LaazPQAAAAAAAIA/"
+"zsT5Pmew/T4AAAAA"
 ],
 "lr.none": [
 "tuple",
@@ -328,14 +318,6 @@
 "Validation Dice Loss \u2014 Next-Day Fire Growth"
 ],
 [
-"miou",
-"Validation Mean IoU \u2014 Background & Fire Growth"
-],
-[
-"mdice",
-"Validation Mean Dice (F1) \u2014 Background & Fire Growth"
-],
-[
 "train_fire_f1",
 "Training F1 \u2014 Next-Day Fire Growth"
 ],
@@ -356,8 +338,16 @@
 "Training IoU \u2014 Next-Day Fire Growth"
 ],
 [
+"train_background_iou",
+"Training IoU \u2014 Background"
+],
+[
 "val_fire_iou",
 "Validation IoU \u2014 Next-Day Fire Growth"
+],
+[
+"val_background_iou",
+"Validation IoU \u2014 Background"
 ],
 [
 "train_fire_false_positives",
@@ -382,6 +372,14 @@
 [
 "periodic_test_iou",
 "Test IoU \u2014 Next-Day Fire Growth (periodic, current weights)"
+],
+[
+"periodic_test_background_f1",
+"Test F1 \u2014 Background (periodic, current weights)"
+],
+[
+"periodic_test_background_iou",
+"Test IoU \u2014 Background (periodic, current weights)"
 ],
 [
 "periodic_test_false_positives",
@@ -406,19 +404,11 @@
 ],
 [
 "train_loss",
-"Training Weighted Dice + Cross-Entropy Loss \u2014 Next-Day Fire Growth"
+"Training Dice + Weighted Cross-Entropy Loss \u2014 Next-Day Fire Growth"
 ],
 [
 "val_loss",
-"Validation Weighted Dice + Cross-Entropy Loss \u2014 Next-Day Fire Growth"
-],
-[
-"miou",
-"Validation Mean IoU \u2014 Background & Fire Growth"
-],
-[
-"mdice",
-"Validation Mean Dice (F1) \u2014 Background & Fire Growth"
+"Validation Dice + Weighted Cross-Entropy Loss \u2014 Next-Day Fire Growth"
 ],
 [
 "train_fire_f1",
@@ -441,8 +431,16 @@
 "Training IoU \u2014 Next-Day Fire Growth"
 ],
 [
+"train_background_iou",
+"Training IoU \u2014 Background"
+],
+[
 "val_fire_iou",
 "Validation IoU \u2014 Next-Day Fire Growth"
+],
+[
+"val_background_iou",
+"Validation IoU \u2014 Background"
 ],
 [
 "train_fire_false_positives",
@@ -469,6 +467,14 @@
 "Test IoU \u2014 Next-Day Fire Growth (periodic, current weights)"
 ],
 [
+"periodic_test_background_f1",
+"Test F1 \u2014 Background (periodic, current weights)"
+],
+[
+"periodic_test_background_iou",
+"Test IoU \u2014 Background (periodic, current weights)"
+],
+[
 "periodic_test_false_positives",
 "Test False Positives \u2014 Next-Day Fire Growth (pixels per window, periodic, current weights)"
 ],
@@ -482,19 +488,19 @@
 ],
 [
 "train_dice_loss",
-"Training Weighted Dice Loss \u2014 Next-Day Fire Growth"
+"Training Dice Loss (x lambda_dice) \u2014 Next-Day Fire Growth"
 ],
 [
 "train_ce_loss",
-"Training Weighted Cross-Entropy Loss \u2014 Next-Day Fire Growth"
+"Training Weighted Cross-Entropy Loss (x lambda_ce) \u2014 Next-Day Fire Growth"
 ],
 [
 "val_dice_loss",
-"Validation Weighted Dice Loss \u2014 Next-Day Fire Growth"
+"Validation Dice Loss (x lambda_dice) \u2014 Next-Day Fire Growth"
 ],
 [
 "val_ce_loss",
-"Validation Weighted Cross-Entropy Loss \u2014 Next-Day Fire Growth"
+"Validation Weighted Cross-Entropy Loss (x lambda_ce) \u2014 Next-Day Fire Growth"
 ]
 ]
 ],
@@ -514,14 +520,6 @@
 "Validation Dice + Focal Loss \u2014 Next-Day Fire Growth"
 ],
 [
-"miou",
-"Validation Mean IoU \u2014 Background & Fire Growth"
-],
-[
-"mdice",
-"Validation Mean Dice (F1) \u2014 Background & Fire Growth"
-],
-[
 "train_fire_f1",
 "Training F1 \u2014 Next-Day Fire Growth"
 ],
@@ -542,8 +540,16 @@
 "Training IoU \u2014 Next-Day Fire Growth"
 ],
 [
+"train_background_iou",
+"Training IoU \u2014 Background"
+],
+[
 "val_fire_iou",
 "Validation IoU \u2014 Next-Day Fire Growth"
+],
+[
+"val_background_iou",
+"Validation IoU \u2014 Background"
 ],
 [
 "train_fire_false_positives",
@@ -570,6 +576,14 @@
 "Test IoU \u2014 Next-Day Fire Growth (periodic, current weights)"
 ],
 [
+"periodic_test_background_f1",
+"Test F1 \u2014 Background (periodic, current weights)"
+],
+[
+"periodic_test_background_iou",
+"Test IoU \u2014 Background (periodic, current weights)"
+],
+[
 "periodic_test_false_positives",
 "Test False Positives \u2014 Next-Day Fire Growth (pixels per window, periodic, current weights)"
 ],
@@ -583,19 +597,19 @@
 ],
 [
 "train_dice_loss",
-"Training Dice Loss \u2014 Next-Day Fire Growth"
+"Training Dice Loss (x lambda_dice) \u2014 Next-Day Fire Growth"
 ],
 [
 "train_focal_loss",
-"Training Focal Loss \u2014 Next-Day Fire Growth"
+"Training Focal Loss (x lambda_focal) \u2014 Next-Day Fire Growth"
 ],
 [
 "val_dice_loss",
-"Validation Dice Loss \u2014 Next-Day Fire Growth"
+"Validation Dice Loss (x lambda_dice) \u2014 Next-Day Fire Growth"
 ],
 [
 "val_focal_loss",
-"Validation Focal Loss \u2014 Next-Day Fire Growth"
+"Validation Focal Loss (x lambda_focal) \u2014 Next-Day Fire Growth"
 ]
 ]
 ]

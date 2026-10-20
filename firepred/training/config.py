@@ -17,7 +17,7 @@ change. A run with the paper's Dice+CE loss and TESSERA inputs, for example:
                 checkpoint_epoch_12_nc_172_ts_6_tessera_dicece.pth
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from firepred.config.dataset import (
@@ -51,22 +51,29 @@ from firepred.config.training import (
     WANDB_ENTITY,
 )
 
+# --ce-weight auto: the fire weight is the training split's background-to-fire pixel ratio. [ours]
+AUTO_CE_WEIGHT = "auto"
+
 
 @dataclass(frozen=True)
 class LossConfig:
     """Hold the training loss and its weights.
 
     The loss is built from this by objectives.TrainingLoss. The weights that
-    do not apply to the chosen loss are kept but ignored.
+    do not apply to the chosen loss are kept but ignored. A ce_weight of
+    "auto" stands for weights counted from the training labels; the run fills
+    them in (with_label_counts) before anything reads them.
 
     Attributes:
         name (str): "dice", "dicece" or "dicefocal".
-        ce_weight (tuple[float, float]): class weights (background, fire) for dicece.
+        ce_weight (tuple[float, float] | str): class weights (background, fire) for dicece, or "auto".
         lambda_dice (float): weight of the Dice term.
         lambda_ce (float): weight of the cross-entropy term (dicece).
         lambda_focal (float): weight of the focal term (dicefocal).
         focal_gamma (float): focal exponent (dicefocal).
         focal_alpha (float | None): weight of fire pixels in the focal term (dicefocal).
+        ce_weight_counts (tuple[int, int] | None): the (background, fire) training pixels an
+            automatic ce_weight was computed from; None for weights given by hand.
     """
 
     name: str = "dicece"
@@ -76,6 +83,51 @@ class LossConfig:
     lambda_focal: float = LAMBDA_FOCAL
     focal_gamma: float = FOCAL_GAMMA
     focal_alpha: float = FOCAL_ALPHA
+    ce_weight_counts: tuple = None
+
+    def __post_init__(self):
+        """Check that ce_weight is two numbers or "auto".
+
+        A misspelt "auto" or a single number would otherwise reach the loss and
+        fail there, mid-run. The check runs whenever a LossConfig is built.
+
+        Raises:
+            ValueError: on any other ce_weight.
+        """
+        if self.ce_weight == AUTO_CE_WEIGHT:
+            return
+        if isinstance(self.ce_weight, str) or len(self.ce_weight) != 2:
+            raise ValueError(f"ce_weight must be (background, fire) or {AUTO_CE_WEIGHT!r}, got {self.ce_weight!r}")
+
+    @property
+    def is_auto(self):
+        """Say whether the class weights still wait to be counted from the training labels.
+
+        Only the Dice + CE loss uses them, so other losses never wait. Once
+        with_label_counts has run, this is False.
+
+        Returns:
+            bool: True for dicece with ce_weight "auto".
+        """
+        return self.name == "dicece" and self.ce_weight == AUTO_CE_WEIGHT
+
+    def with_label_counts(self, counts):
+        """Fill in "auto" class weights from the training split's pixel counts.
+
+        The fire weight becomes the background-to-fire ratio and background stays
+        1, as in the paper's (1.0, 446.7836). The counts are kept for the record.
+        Weights given by hand are returned unchanged.
+
+        Args:
+            counts (LabelCounts): the training split's counts (data/class_balance.py).
+
+        Returns:
+            LossConfig: this config, with numeric weights when they were "auto".
+        """
+        if not self.is_auto:
+            return self
+        return replace(self, ce_weight=(1.0, counts.background_per_fire),
+                       ce_weight_counts=(counts.background, counts.fire))
 
     @staticmethod
     def paper_loss(model_name):
@@ -96,14 +148,18 @@ class LossConfig:
         """List the loss settings recorded in W&B and in every checkpoint.
 
         Only the weights the chosen loss uses are listed. The record is how a run's
-        loss is found again later.
+        loss is found again later. Weights counted from the training labels also
+        list the counts they came from.
 
         Returns:
             dict: e.g. {"loss": "dicece", "ce_weight": [...], "lambda_dice": 1.0, "lambda_ce": 1.0}.
         """
         config = {"loss": self.name}
         if self.name == "dicece":
-            config.update(ce_weight=list(self.ce_weight), lambda_dice=self.lambda_dice, lambda_ce=self.lambda_ce)
+            weight = self.ce_weight if self.ce_weight == AUTO_CE_WEIGHT else list(self.ce_weight)
+            config.update(ce_weight=weight, lambda_dice=self.lambda_dice, lambda_ce=self.lambda_ce)
+            if self.ce_weight_counts is not None:
+                config["ce_weight_counts"] = list(self.ce_weight_counts)
         if self.name == "dicefocal":
             config.update(
                 lambda_dice=self.lambda_dice,
@@ -271,6 +327,35 @@ class RunConfig:
                 f"-nc {self.expected_channels} does not match the preprocessing: expected "
                 f"{self.input_channels} {'with' if self.tessera else 'without'} --tessera"
             )
+
+    # ----- loss ----- #
+
+    @property
+    def needs_label_counts(self):
+        """Say whether training must count the training labels before it starts.
+
+        That is the case for --ce-weight auto with the Dice + CE loss. A -test run
+        builds no loss, so it never needs them.
+
+        Returns:
+            bool: True when the class weights are still "auto" and the run trains.
+        """
+        return self.loss.is_auto and not self.test_only
+
+    def with_label_counts(self, counts):
+        """Give a copy of these settings with "auto" class weights filled in from label counts.
+
+        The copy is made once, before the W&B run, the loss or any checkpoint reads
+        the weights, so every record shows the numbers that were trained with.
+        Settings without "auto" weights come back unchanged.
+
+        Args:
+            counts (LabelCounts): the training split's counts (data/class_balance.py).
+
+        Returns:
+            RunConfig: the settings with numeric class weights.
+        """
+        return replace(self, loss=self.loss.with_label_counts(counts))
 
     # ----- data ----- #
 

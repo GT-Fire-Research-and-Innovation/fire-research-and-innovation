@@ -464,7 +464,7 @@ def model_values(ctx):
 
 @group("objectives")
 def objective_values(ctx):
-    """Losses (with parts), per-window metrics, MONAI validation metrics, LR schedules, chart labels."""
+    """Losses (with parts), per-window metrics, LR schedules, chart labels."""
     import torch
     from torch import nn, optim
 
@@ -495,8 +495,7 @@ def objective_values(ctx):
     out["metric.fire_only_iou"] = scorer.fire_iou(predictions, labels)
     out["metric.fire_false_positives"] = scorer.fire_false_positives(predictions, labels)
     out["metric.fire_false_negatives"] = scorer.fire_false_negatives(predictions, labels)
-    out["metric.mean_iou"] = scorer.mean_iou(predictions, labels)
-    out["metric.dice"] = scorer.mean_dice(predictions, labels)
+    out["metric.background_iou"] = scorer.background_iou(predictions, labels)
 
     for schedule in ("none", "plateau", "cosine"):
         parameter = nn.Parameter(torch.zeros(1))

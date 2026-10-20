@@ -50,10 +50,14 @@ python -m firepred.cli.dataset download -ts 6 -it 1 --data-root ./data
 ## Train and test
 ```
 python -m firepred.cli.check model -m swinunetr3d            # model sanity check, one step
+python -m firepred.cli.check labels --data-root ./data        # background vs fire pixels of train/
 python -m firepred.cli.train -m swinunetr3d -mode pred -b 8 -r 1 -lr 0.001 -nh 3 -ed 36 -ts 6 -it 1 --data-root ./data
 python -m firepred.cli.train ... -test --checkpoint <file.pth>
 ```
-Training scores the test fires with its best checkpoint at the end. Add a model with
+Training scores the test fires with its best checkpoint at the end. The Dice + CE class
+weights default to the paper's `--ce-weight 1.0 446.7836`; `--ce-weight auto` instead uses
+1.0 and the background-to-fire pixel ratio of the training split, counted exactly from
+the labels when training starts (`check labels` prints the same number). Add a model with
 `python -m firepred.cli.new_model NAME` (see docs/ARCHITECTURE.md). This repository
 covers the paper's prediction task only.
 

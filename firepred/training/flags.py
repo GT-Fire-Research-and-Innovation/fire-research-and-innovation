@@ -21,7 +21,7 @@ from firepred.config.dataset import DEFAULT_TEST_CSV
 from firepred.config.training import LOSSES, LR_SCHEDULES, PAPER_CE_WEIGHT
 from firepred.models.registry import parse_model_option
 from firepred.training.accelerator import DEVICES
-from firepred.training.config import LossConfig, RunConfig, ScheduleConfig
+from firepred.training.config import AUTO_CE_WEIGHT, LossConfig, RunConfig, ScheduleConfig
 
 FROM_FIELD = object()   # default: the RunConfig field's own default
 OMIT = object()         # a converted value that leaves the field at its default
@@ -89,6 +89,53 @@ def path_or_omit(value):
     return OMIT if value is None else Path(value).expanduser()
 
 
+class CeWeightAction(argparse.Action):
+    """Read --ce-weight: two class weights (background, fire), or the word "auto".
+
+    argparse cannot say "two numbers or one word" by itself, so this action
+    checks the values and rejects anything else with a usage error. The parsed
+    value is a list of two floats or "auto".
+    """
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        """Store the weights as two floats, or "auto".
+
+        Any other count of values, or a value that is not a number, stops the
+        parser with a usage message. Nothing is stored then.
+
+        Args:
+            parser (argparse.ArgumentParser): the parser, for the error.
+            namespace (argparse.Namespace): where the value goes.
+            values (list[str]): the words after the flag.
+            option_string (str | None): the flag as written.
+        """
+        if values == [AUTO_CE_WEIGHT]:
+            setattr(namespace, self.dest, AUTO_CE_WEIGHT)
+            return
+        try:
+            weights = [float(value) for value in values]
+        except ValueError:
+            weights = []
+        if len(weights) != 2:
+            parser.error(f"{option_string} takes BACKGROUND FIRE or {AUTO_CE_WEIGHT}, got: {' '.join(values)}")
+        setattr(namespace, self.dest, weights)
+
+
+def ce_weight_value(value):
+    """Turn the parsed --ce-weight into the LossConfig value.
+
+    Two weights become a tuple of floats. "auto" stays "auto" and is counted
+    from the training labels when the run starts.
+
+    Args:
+        value (list[float] | str): the parsed value.
+
+    Returns:
+        tuple[float, float] | str: the weights, or "auto".
+    """
+    return value if value == AUTO_CE_WEIGHT else tuple(float(v) for v in value)
+
+
 FLAGS = (
     Flag(("-m",), "model", {"required": True, "help": "Model name"}),
     Flag(("-mode",), "mode", {"required": True, "help": "Task name, e.g. pred"}),
@@ -142,9 +189,12 @@ FLAGS = (
     Flag(("--swin-temporal-downsample",), "swin_temporal_downsample", {
         "action": "store_true", "help": "swinunetr3d: also halve the days in patch merging, as the released code "
         "does. Default follows the paper: no temporal downsampling"}),
-    Flag(("--ce-weight",), "loss.ce_weight", {"type": float, "nargs": 2, "metavar": ("BACKGROUND", "FIRE"),
-                                              "help": "dicece class weights (default: the paper's 1.0 446.7836)"},
-         default=list(PAPER_CE_WEIGHT), to_config=lambda value: tuple(float(v) for v in value)),
+    Flag(("--ce-weight",), "loss.ce_weight", {
+        "action": CeWeightAction, "nargs": "+", "metavar": "WEIGHT",
+        "help": "dicece class weights BACKGROUND FIRE (default: the paper's 1.0 446.7836), or 'auto' (NEW): 1.0 "
+                "and the training split's background-to-fire pixel ratio, counted from the labels when training "
+                "starts (python -m firepred.cli.check labels shows it)"},
+         default=list(PAPER_CE_WEIGHT), to_config=ce_weight_value),
     Flag(("--lambda-dice",), "loss.lambda_dice", {"type": float}),
     Flag(("--lambda-ce",), "loss.lambda_ce", {"type": float}),
     Flag(("--lambda-focal",), "loss.lambda_focal", {
@@ -324,8 +374,8 @@ def argv_for(config):
         elif flag.action == "append":
             for key, item in value:
                 argv += [name, f"{key}={item!r}"]
-        elif flag.options.get("nargs") == 2:
-            argv += [name, *(repr(float(item)) for item in value)]
+        elif flag.action is CeWeightAction:
+            argv += [name, value] if value == AUTO_CE_WEIGHT else [name, *(repr(float(item)) for item in value)]
         elif value is not None:
             argv += [name, text(value)]
     return argv

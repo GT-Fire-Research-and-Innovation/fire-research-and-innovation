@@ -86,6 +86,20 @@
         "objectives"
       ],
       "reason": "W&B charts gain false positives and false negatives (pixels per window) for train, validation, periodic and final test; Scorer gains fire_false_positives / fire_false_negatives"
+    },
+    {
+      "groups": [
+        "cli"
+      ],
+      "reason": "--ce-weight also takes 'auto' (counted from the training labels); check gains the labels subcommand"
+    },
+    {
+      "groups": [
+        "objectives",
+        "models",
+        "training"
+      ],
+      "reason": "dicece: class weight on cross entropy only (unweighted Dice, the paper's 1:1 mix; KNOWN_ISSUES #2); loss parts are lambda-weighted; validation mIoU/mDice replaced by per-window background IoU (KNOWN_ISSUES #4)"
     }
   ]
 }

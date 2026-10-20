@@ -20,7 +20,7 @@ import torch
 RUN_CLI = Path(__file__).resolve().parent / "support" / "run_cli.py"
 EPOCH = "Training Epoch (Starting at 0)"
 LEARNING_RATE = "Learning Rate"
-VAL_LOSS_DICECE = "Validation Weighted Dice + Cross-Entropy Loss — Next-Day Fire Growth"
+VAL_LOSS_DICECE = "Validation Dice + Weighted Cross-Entropy Loss — Next-Day Fire Growth"
 PERIODIC_F1 = "Test F1 — Next-Day Fire Growth (periodic, current weights)"
 CHECKPOINT_FIELDS = {
     "epoch", "model_state_dict", "optimizer_state_dict", "loss", "use_tessera", "model_input_channels",
@@ -136,6 +136,21 @@ def test_training_run_logs_every_epoch(dicece_run):
     assert all(log[LEARNING_RATE] == pytest.approx(1e-3) for log in val)
 
 
+def test_training_run_charts_fire_and_background_scores(dicece_run):
+    """Train, validation and periodic test logs chart F1 and IoU for both classes; Dice+CE charts its parts."""
+    for split, logs in (("Training", dicece_run.train_logs()), ("Validation", dicece_run.val_logs()),
+                        ("Test", dicece_run.periodic_logs())):
+        suffix = " (periodic, current weights)" if split == "Test" else ""
+        for score in ("F1", "IoU"):
+            for target in ("Next-Day Fire Growth", "Background"):
+                assert all(f"{split} {score} — {target}{suffix}" in log for log in logs), (split, score, target)
+    for log in dicece_run.train_logs():
+        parts = (log["Training Dice Loss (x lambda_dice) — Next-Day Fire Growth"]
+                 + log["Training Weighted Cross-Entropy Loss (x lambda_ce) — Next-Day Fire Growth"])
+        assert parts == pytest.approx(log["Training Dice + Weighted Cross-Entropy Loss — Next-Day Fire Growth"])
+    assert not any("Mean" in key for log in dicece_run.val_logs() for key in log)
+
+
 def test_training_run_logs_false_positives_and_negatives(dicece_run):
     """Train, validation, periodic and final test logs each chart both error counts, in pixels per window."""
     window_pixels = 256 * 256
@@ -185,6 +200,23 @@ def test_tessera_plateau_run(e2e_root, tmp_path):
     assert len(stats["mean"]) == len(stats["std"]) == 128
     assert "_tessera" in finished.checkpoints[0].name
     assert finished.final_log() is not None
+
+
+def test_auto_ce_weight_run(e2e_root, tmp_path):
+    """--ce-weight auto trains with (1, background / fire) of the training labels and records it everywhere."""
+    from firepred.data.class_balance import count_labels
+
+    root, _ = e2e_root
+    counts = count_labels(root / "train")
+    flags = base_flags() + data_flags(e2e_root) + [
+        "--loss", "dicece", "--ce-weight", "auto", "--epochs", "1", "--no-test-after-train"]
+    finished = run(tmp_path, flags)
+    expected = [1.0, counts.background / counts.fire]
+    recorded = finished.named("config.update")[0][1][0]
+    assert recorded["ce_weight"] == expected
+    assert recorded["ce_weight_counts"] == [counts.background, counts.fire]
+    assert finished.checkpoint()["loss_config"]["ce_weight"] == expected
+    assert all(math.isfinite(log[VAL_LOSS_DICECE]) for log in finished.val_logs())
 
 
 def test_worker_cosine_run_without_final_test(e2e_root, tmp_path):

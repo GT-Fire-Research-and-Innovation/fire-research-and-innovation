@@ -6,6 +6,7 @@ two masters. Modules in import order (each imports only earlier ones):
 
     fires.py            pure: ROI CSVs -> splits, label rules, fire ids
     archive.py          the window archive format (write, index, open, unzip)
+    class_balance.py    exact background and fire pixel counts of a split (--ce-weight auto)
     tessera_archive.py  the TESSERA file format (write, read, statistics, model input)
     transforms.py       normalize, augment, preprocess one window
     fire_dataset.py     FireDataset, DataLoaders and batch assembly (training)

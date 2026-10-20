@@ -81,7 +81,7 @@ def test_training_path_skips_dataset_building_dependencies():
 
 # Import order inside a subpackage: each module imports only modules listed before it.
 ORDER = {
-    "data": ["fires", "archive", "tessera_archive", "transforms", "fire_dataset", "files", "tessera", "hub",
+    "data": ["fires", "archive", "class_balance", "tessera_archive", "transforms", "fire_dataset", "files", "tessera", "hub",
              "windows", "tessera_master", "windows_master"],
     "training": ["config", "accelerator", "flags", "objectives", "checkpoints", "tracker", "evaluator", "trainer",
                  "experiment"],

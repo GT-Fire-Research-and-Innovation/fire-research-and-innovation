@@ -4,7 +4,8 @@ Level 3 (training). Used by training/trainer.py, training/evaluator.py and
 cli/check.py.
 
 Loss: TrainingLoss(LossConfig), whose forward gives (total, {part name: value})
-so the parts can be logged.
+so the parts can be logged. Each part is already multiplied by its lambda, so
+the parts add up to the total.
 
 Scores: a Scorer turns logits into masks (sigmoid, then threshold 0.5) and
 scores them. All per-sample scores treat "empty prediction and empty target"
@@ -16,8 +17,7 @@ from dataclasses import dataclass, field
 import torch
 from monai.data import decollate_batch
 from monai.losses import FocalLoss
-from monai.losses.dice import DiceCELoss, DiceLoss
-from monai.metrics import compute_dice, compute_iou
+from monai.losses.dice import DiceLoss
 from monai.transforms import Activations, AsDiscrete, Compose
 from torch import nn
 
@@ -38,30 +38,32 @@ class TrainingLoss(nn.Module):
     def __init__(self, config):
         """Build the MONAI loss terms for a LossConfig.
 
-        Dice+CE keeps MONAI's DiceCELoss intact, so its weights and reductions are
-        exactly MONAI's. Dice+focal builds its two terms itself.
+        Dice+CE is the paper's 1:1 mixture: an unweighted sigmoid Dice plus a
+        class-weighted cross entropy. The class weight goes to the cross entropy
+        only. MONAI's DiceCELoss (>= 1.2) also puts it on the Dice term, which
+        made Dice about 40 times larger than CE (docs/KNOWN_ISSUES.md #2).
 
         Args:
             config (LossConfig): which loss, with its weights.
 
         Raises:
-            ValueError: on an unknown loss name.
+            ValueError: on an unknown loss name, or Dice + CE weights still "auto".
         """
         super().__init__()
         self.name = config.name
         if config.name == "dice":
             self.dice = DiceLoss(include_background=True, reduction="mean", sigmoid=True)
         elif config.name == "dicece":
-            # The terms live inside one DiceCELoss (as MONAI builds them), so
-            # its weights and reductions are exactly MONAI's.
-            self.dicece = DiceCELoss(
-                include_background=True,
-                sigmoid=True,
-                reduction="mean",
-                weight=torch.tensor(config.ce_weight, dtype=torch.float32),
-                lambda_dice=config.lambda_dice,
-                lambda_ce=config.lambda_ce,
-            )
+            if config.is_auto:
+                raise ValueError("ce_weight 'auto' must be counted from the training labels before the loss is "
+                                 "built (RunConfig.with_label_counts)")
+            self.dice = DiceLoss(include_background=True, reduction="mean", sigmoid=True)
+            # Softmax cross entropy over the two channels, with the one-hot labels as
+            # class probabilities (what MONAI's DiceCELoss does for two channels).
+            self.ce = nn.CrossEntropyLoss(weight=torch.tensor(config.ce_weight, dtype=torch.float32),
+                                          reduction="mean")
+            self.lambda_dice = config.lambda_dice
+            self.lambda_ce = config.lambda_ce
         elif config.name == "dicefocal":
             self.dice = DiceLoss(include_background=True, reduction="mean", sigmoid=True)
             self.focal = FocalLoss(
@@ -76,7 +78,8 @@ class TrainingLoss(nn.Module):
         """Compute the loss and its parts for one batch.
 
         The total is what training minimizes. The parts are detached copies for
-        the charts, e.g. {"dice_loss": ..., "ce_loss": ...}.
+        the charts, each multiplied by its lambda, e.g. {"dice_loss": ...,
+        "ce_loss": ...}; they add up to the total.
 
         Args:
             outputs (torch.Tensor): logits of shape (B, 2, H, W).
@@ -88,14 +91,12 @@ class TrainingLoss(nn.Module):
         if self.name == "dice":
             return self.dice(outputs, labels), {}
         if self.name == "dicece":
-            dice = self.dicece.dice(outputs, labels)
-            ce = self.dicece.ce(outputs, labels)
-            total = self.dicece.lambda_dice * dice + self.dicece.lambda_ce * ce
-            return total, {"dice_loss": dice.detach(), "ce_loss": ce.detach()}
-        dice = self.dice(outputs, labels)
-        focal = self.focal(outputs, labels)
-        total = self.lambda_dice * dice + self.lambda_focal * focal
-        return total, {"dice_loss": dice.detach(), "focal_loss": focal.detach()}
+            dice = self.lambda_dice * self.dice(outputs, labels)
+            ce = self.lambda_ce * self.ce(outputs, labels.to(outputs.dtype))
+            return dice + ce, {"dice_loss": dice.detach(), "ce_loss": ce.detach()}
+        dice = self.lambda_dice * self.dice(outputs, labels)
+        focal = self.lambda_focal * self.focal(outputs, labels)
+        return dice + focal, {"dice_loss": dice.detach(), "focal_loss": focal.detach()}
 
 
 # ----- Scores ----- #
@@ -112,12 +113,12 @@ class EpochScores:
     Attributes:
         split (str): "train" or "val".
         loss (float): mean loss per window.
-        components (dict[str, float]): loss parts with the split prefix, e.g. {"val_dice_loss": ...}.
+        components (dict[str, float]): lambda-weighted loss parts with the split prefix,
+            e.g. {"val_dice_loss": ...}.
         fire_f1 (float): mean fire-class F1.
         background_f1 (float): mean background F1.
         fire_iou (float): mean fire-class IoU.
-        miou (float | None): validation only: MONAI mean IoU over both classes.
-        mdice (float | None): validation only: MONAI mean Dice over both classes.
+        background_iou (float): mean background IoU.
         fire_false_positives (float): mean false-alarm pixels per window. [ours]
         fire_false_negatives (float): mean missed fire pixels per window. [ours]
     """
@@ -128,26 +129,22 @@ class EpochScores:
     fire_f1: float = 0.0
     background_f1: float = 0.0
     fire_iou: float = 0.0
-    miou: float = None
-    mdice: float = None
+    background_iou: float = 0.0
     fire_false_positives: float = 0.0
     fire_false_negatives: float = 0.0
 
     def as_dict(self):
-        """Give the scores as a plain dict, in the order the old code returned them.
+        """Give the scores as a plain dict.
 
-        The golden tests compare this. Validation adds miou and mdice after the
-        components. The false-positive and false-negative counts are left out:
-        the old code had none, so this dict stays comparable with it.
+        The golden tests compare this. The false-positive and false-negative
+        counts are left out.
 
         Returns:
             dict: the scores.
         """
-        scores = {"loss": self.loss, "components": dict(self.components)}
-        if self.split == "val":
-            scores.update(miou=self.miou, mdice=self.mdice)
-        scores.update(fire_f1=self.fire_f1, background_f1=self.background_f1, fire_iou=self.fire_iou)
-        return scores
+        return {"loss": self.loss, "components": dict(self.components), "fire_f1": self.fire_f1,
+                "background_f1": self.background_f1, "fire_iou": self.fire_iou,
+                "background_iou": self.background_iou}
 
 
 class Scorer:
@@ -185,38 +182,6 @@ class Scorer:
             torch.Tensor: binary masks of shape (B, 2, H, W).
         """
         return torch.stack([self.post_transform(item) for item in decollate_batch(outputs)])
-
-    @staticmethod
-    def mean_iou(predictions, labels):
-        """Compute MONAI's IoU over both classes for every window of a batch.
-
-        Because the background class is averaged in, this is not the paper's
-        number. The paper's fire-class scores are fire_f1 and fire_iou.
-
-        Args:
-            predictions (torch.Tensor): binary masks of shape (B, 2, H, W).
-            labels (torch.Tensor): one-hot targets of shape (B, 2, H, W).
-
-        Returns:
-            torch.Tensor: shape (B, 2), the IoU per window and class.
-        """
-        return compute_iou(predictions, labels, include_background=True, ignore_empty=False)
-
-    @staticmethod
-    def mean_dice(predictions, labels):
-        """Compute MONAI's Dice over both classes for every window of a batch.
-
-        Like mean_iou, it averages in the background class. It is logged during
-        validation only.
-
-        Args:
-            predictions (torch.Tensor): binary masks of shape (B, 2, H, W).
-            labels (torch.Tensor): one-hot targets of shape (B, 2, H, W).
-
-        Returns:
-            torch.Tensor: shape (B, 2), the Dice per window and class.
-        """
-        return compute_dice(predictions, labels, include_background=True, ignore_empty=False)
 
     @staticmethod
     def channel_f1(predictions, labels, channel):
@@ -274,11 +239,35 @@ class Scorer:
         return self.channel_f1(predictions, labels, channel=0)
 
     @staticmethod
-    def fire_iou(predictions, labels):
-        """Compute the fire-class IoU for every window of a batch (the paper's Equation 2).
+    def channel_iou(predictions, labels, channel):
+        """Compute the IoU of one class for every window of a batch (the paper's Equation 2).
 
         IoU = TP / (TP + FP + FN). An empty prediction with an empty target scores
         1, like the released code. It is logged, never trained on.
+
+        Args:
+            predictions (torch.Tensor): binary masks of shape (B, 2, H, W).
+            labels (torch.Tensor): one-hot targets of shape (B, 2, H, W).
+            channel (int): 0 for background, 1 for fire.
+
+        Returns:
+            torch.Tensor: shape (B,), the IoU per window.
+        """
+        predicted = predictions[:, channel].bool().flatten(start_dim=1)
+        target = (labels[:, channel] > 0).flatten(start_dim=1)
+        intersection = (predicted & target).sum(dim=1).float()
+        union = (predicted | target).sum(dim=1).float()
+        return torch.where(
+            union > 0,
+            intersection / union.clamp_min(1.0),
+            torch.ones_like(union),
+        )
+
+    def fire_iou(self, predictions, labels):
+        """Compute the fire-class IoU for every window of a batch.
+
+        This is the paper's IoU: how well the newly burned pixels are found. It
+        is logged, never trained on.
 
         Args:
             predictions (torch.Tensor): binary masks of shape (B, 2, H, W).
@@ -287,15 +276,22 @@ class Scorer:
         Returns:
             torch.Tensor: shape (B,).
         """
-        predicted = predictions[:, 1].bool().flatten(start_dim=1)
-        target = (labels[:, 1] > 0).flatten(start_dim=1)
-        intersection = (predicted & target).sum(dim=1).float()
-        union = (predicted | target).sum(dim=1).float()
-        return torch.where(
-            union > 0,
-            intersection / union.clamp_min(1.0),
-            torch.ones_like(union),
-        )
+        return self.channel_iou(predictions, labels, channel=1)
+
+    def background_iou(self, predictions, labels):
+        """Compute the background-class IoU for every window of a batch.
+
+        It shows how well unburned pixels are kept unburned. It is logged, not
+        optimized.
+
+        Args:
+            predictions (torch.Tensor): binary masks of shape (B, 2, H, W).
+            labels (torch.Tensor): one-hot targets of shape (B, 2, H, W).
+
+        Returns:
+            torch.Tensor: shape (B,).
+        """
+        return self.channel_iou(predictions, labels, channel=0)
 
     @staticmethod
     def fire_false_positives(predictions, labels):

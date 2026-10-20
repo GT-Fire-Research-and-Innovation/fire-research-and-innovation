@@ -9,8 +9,8 @@ training/trainer.py (it reports to it). Nothing else imports wandb.
         tracker.log_final(scores)
     # leaving the block finishes the run
 
-Chart names (Tracker.chart_labels) are what the dashboards are built on; they
-never change. Tracker.check_access checks a W&B key before a long run.
+Chart names (Tracker.chart_labels) are what the dashboards are built on; a
+name changes only when what it charts changes. Tracker.check_access checks a W&B key before a long run.
 """
 
 import os
@@ -31,8 +31,9 @@ class Tracker:
     def chart_labels(loss_name):
         """Give the W&B chart name of every logged value for a loss.
 
-        Dashboards are built on these names, so they never change. Dice+CE and
-        Dice+focal also chart their two parts.
+        Dashboards are built on these names, so a name changes only when what it
+        charts changes. Dice+CE and Dice+focal also chart their two parts, each
+        multiplied by its lambda, so the parts add up to the total.
 
         Args:
             loss_name (str): "dice", "dicece" or "dicefocal".
@@ -42,22 +43,24 @@ class Tracker:
         """
         loss_title = {
             "dice": "Dice Loss",
-            "dicece": "Weighted Dice + Cross-Entropy Loss",
+            # Named apart from the old "Weighted Dice + Cross-Entropy Loss", whose Dice
+            # term carried the class weight (docs/KNOWN_ISSUES.md #2).
+            "dicece": "Dice + Weighted Cross-Entropy Loss",
             "dicefocal": "Dice + Focal Loss",
         }[loss_name]
         labels = {
             "epoch": "Training Epoch (Starting at 0)",
             "train_loss": f"Training {loss_title} — Next-Day Fire Growth",
             "val_loss": f"Validation {loss_title} — Next-Day Fire Growth",
-            "miou": "Validation Mean IoU — Background & Fire Growth",
-            "mdice": "Validation Mean Dice (F1) — Background & Fire Growth",
             "train_fire_f1": "Training F1 — Next-Day Fire Growth",
             "train_background_f1": "Training F1 — Background",
             "val_fire_f1": "Validation F1 — Next-Day Fire Growth",
             "val_background_f1": "Validation F1 — Background",
             # The paper's IoU (Equation 2) for the fire class; logged, never trained on.
             "train_fire_iou": "Training IoU — Next-Day Fire Growth",
+            "train_background_iou": "Training IoU — Background",
             "val_fire_iou": "Validation IoU — Next-Day Fire Growth",
+            "val_background_iou": "Validation IoU — Background",
             # [ours] the two kinds of error behind IoU: false alarms and missed fire
             # pixels, as mean pixels per window (a window has 256 x 256 pixels).
             "train_fire_false_positives": "Training False Positives — Next-Day Fire Growth (pixels per window)",
@@ -68,6 +71,8 @@ class Tracker:
             # epochs (logging only).
             "periodic_test_f1": "Test F1 — Next-Day Fire Growth (periodic, current weights)",
             "periodic_test_iou": "Test IoU — Next-Day Fire Growth (periodic, current weights)",
+            "periodic_test_background_f1": "Test F1 — Background (periodic, current weights)",
+            "periodic_test_background_iou": "Test IoU — Background (periodic, current weights)",
             "periodic_test_false_positives": (
                 "Test False Positives — Next-Day Fire Growth (pixels per window, periodic, current weights)"
             ),
@@ -79,16 +84,14 @@ class Tracker:
         }
         if loss_name == "dicece":
             for prefix, split in (("train", "Training"), ("val", "Validation")):
-                labels[f"{prefix}_dice_loss"] = (
-                    f"{split} Weighted Dice Loss — Next-Day Fire Growth"
-                )
+                labels[f"{prefix}_dice_loss"] = f"{split} Dice Loss (x lambda_dice) — Next-Day Fire Growth"
                 labels[f"{prefix}_ce_loss"] = (
-                    f"{split} Weighted Cross-Entropy Loss — Next-Day Fire Growth"
+                    f"{split} Weighted Cross-Entropy Loss (x lambda_ce) — Next-Day Fire Growth"
                 )
         if loss_name == "dicefocal":
             for prefix, split in (("train", "Training"), ("val", "Validation")):
-                labels[f"{prefix}_dice_loss"] = f"{split} Dice Loss — Next-Day Fire Growth"
-                labels[f"{prefix}_focal_loss"] = f"{split} Focal Loss — Next-Day Fire Growth"
+                labels[f"{prefix}_dice_loss"] = f"{split} Dice Loss (x lambda_dice) — Next-Day Fire Growth"
+                labels[f"{prefix}_focal_loss"] = f"{split} Focal Loss (x lambda_focal) — Next-Day Fire Growth"
         return labels
 
     def __init__(self, config, device):
@@ -189,6 +192,7 @@ class Tracker:
             labels["train_fire_f1"]: scores.fire_f1,
             labels["train_background_f1"]: scores.background_f1,
             labels["train_fire_iou"]: scores.fire_iou,
+            labels["train_background_iou"]: scores.background_iou,
             labels["train_fire_false_positives"]: scores.fire_false_positives,
             labels["train_fire_false_negatives"]: scores.fire_false_negatives,
             **{labels[name]: value for name, value in scores.components.items()},
@@ -213,11 +217,10 @@ class Tracker:
         self.wandb.log({
             labels["epoch"]: epoch,
             labels["val_loss"]: scores.loss,
-            labels["miou"]: scores.miou,
-            labels["mdice"]: scores.mdice,
             labels["val_fire_f1"]: scores.fire_f1,
             labels["val_background_f1"]: scores.background_f1,
             labels["val_fire_iou"]: scores.fire_iou,
+            labels["val_background_iou"]: scores.background_iou,
             labels["val_fire_false_positives"]: scores.fire_false_positives,
             labels["val_fire_false_negatives"]: scores.fire_false_negatives,
             labels["learning_rate"]: learning_rate,
@@ -242,6 +245,8 @@ class Tracker:
             self.labels["epoch"]: epoch,
             self.labels["periodic_test_f1"]: scores.f1,
             self.labels["periodic_test_iou"]: scores.iou,
+            self.labels["periodic_test_background_f1"]: scores.background_f1,
+            self.labels["periodic_test_background_iou"]: scores.background_iou,
             self.labels["periodic_test_false_positives"]: scores.false_positives,
             self.labels["periodic_test_false_negatives"]: scores.false_negatives,
         })
@@ -293,6 +298,7 @@ class Tracker:
             "Test F1 — Next-Day Fire Growth": scores.f1,
             "Test IoU — Next-Day Fire Growth": scores.iou,
             "Test F1 — Background": scores.background_f1,
+            "Test IoU — Background": scores.background_iou,
             "test_fires": scores.fires,
             # [ours] mean over fires of each fire's per-window error counts.
             "test_false_positives": scores.false_positives,

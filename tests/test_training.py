@@ -71,6 +71,38 @@ def test_dicece_reports_its_two_parts():
     assert loss("dice")(logits, labels)[1] == {}
 
 
+def test_dicece_puts_the_class_weight_on_cross_entropy_only():
+    """Dice+CE is lambda_dice x unweighted Dice + lambda_ce x class-weighted CE (the paper's 1:1 mixture)."""
+    torch.manual_seed(3)
+    logits = torch.randn(2, 2, 8, 8) * 3
+    labels = masks(torch.rand(8, 8) > 0.9).expand(2, -1, -1, -1)
+    total, parts = loss("dicece", ce_weight=(1.0, 400.0), lambda_dice=0.5, lambda_ce=2.0)(logits, labels)
+    dice = loss("dice")(logits, labels)[0]
+    ce = nn.CrossEntropyLoss(weight=torch.tensor([1.0, 400.0]))(logits, labels)
+    assert torch.isclose(parts["dice_loss"], 0.5 * dice)
+    assert torch.isclose(parts["ce_loss"], 2.0 * ce)
+    assert torch.isclose(total, 0.5 * dice + 2.0 * ce)
+    # With the weight off the Dice term, Dice stays between 0 and lambda_dice.
+    assert 0.0 <= parts["dice_loss"].item() <= 0.5
+
+
+def test_dicefocal_parts_are_lambda_weighted():
+    """Dice+focal charts lambda x each term, so its parts add up to the total."""
+    logits = torch.randn(2, 2, 8, 8)
+    labels = masks(torch.rand(8, 8) > 0.9).expand(2, -1, -1, -1)
+    total, parts = loss("dicefocal", lambda_dice=0.5, lambda_focal=2.5)(logits, labels)
+    assert torch.isclose(parts["dice_loss"], 0.5 * loss("dice")(logits, labels)[0])
+    assert torch.isclose(total, parts["dice_loss"] + parts["focal_loss"])
+
+
+def test_background_iou_scores_the_background_channel():
+    """background_iou is TP / (TP + FP + FN) on the background channel."""
+    target = masks([[1, 0], [0, 0]])
+    prediction = masks([[1, 1], [0, 0]])
+    # Background: predicted {(1,0), (1,1)}, true {(0,1), (1,0), (1,1)} -> 2 / 3.
+    assert abs(scorer.background_iou(prediction, target)[0].item() - 2 / 3) < 1e-7
+
+
 def test_plateau_schedule_halves_after_patience():
     """plateau multiplies the rate by its factor after `patience` epochs without improvement."""
     optimizer = optim.Adam([nn.Parameter(torch.zeros(1))], lr=1e-3)
@@ -113,10 +145,13 @@ def test_run_config_fills_and_checks_settings():
 
 
 def test_wandb_chart_names_are_stable():
-    """Dashboards are built on the chart names, so they never change."""
+    """Dashboards are built on the chart names, so they change only when what they chart changes."""
     labels = Tracker.chart_labels("dicece")
     assert labels["val_fire_f1"] == "Validation F1 — Next-Day Fire Growth"
-    assert labels["train_ce_loss"] == "Training Weighted Cross-Entropy Loss — Next-Day Fire Growth"
+    assert labels["train_ce_loss"] == "Training Weighted Cross-Entropy Loss (x lambda_ce) — Next-Day Fire Growth"
+    assert labels["val_background_iou"] == "Validation IoU — Background"
+    assert labels["periodic_test_background_iou"] == "Test IoU — Background (periodic, current weights)"
+    assert "miou" not in labels and "mdice" not in labels
     assert "train_ce_loss" not in Tracker.chart_labels("dice")
     assert labels["val_fire_false_positives"] == "Validation False Positives — Next-Day Fire Growth (pixels per window)"
     assert labels["train_fire_false_negatives"] == "Training False Negatives — Next-Day Fire Growth (pixels per window)"
@@ -170,15 +205,15 @@ def test_dicefocal_is_weighted_dice_plus_weighted_focal():
 
 
 def test_dicefocal_names_and_charts():
-    """dicefocal has its own tag, loss record and charts (its Dice chart is a dice run's)."""
+    """dicefocal has its own tag, loss record and charts (its Dice chart is lambda x Dice)."""
     assert RunConfig("swinunetr3d", loss=LossConfig("dicefocal")).run_tag == "_dicefocal"
     record = LossConfig("dicefocal", (1.0, 446.7836), 0.5, 1.0, 2.5, 2.0, None).record()
     assert record == {"loss": "dicefocal", "lambda_dice": 0.5, "lambda_focal": 2.5, "focal_gamma": 2.0, "focal_alpha": None}
     assert "lambda_focal" not in LossConfig("dicece").record()
     labels = Tracker.chart_labels("dicefocal")
     assert labels["train_loss"] == "Training Dice + Focal Loss — Next-Day Fire Growth"
-    assert labels["val_dice_loss"] == "Validation Dice Loss — Next-Day Fire Growth"  # same chart as a dice run
-    assert labels["val_focal_loss"] == "Validation Focal Loss — Next-Day Fire Growth"
+    assert labels["val_dice_loss"] == "Validation Dice Loss (x lambda_dice) — Next-Day Fire Growth"
+    assert labels["val_focal_loss"] == "Validation Focal Loss (x lambda_focal) — Next-Day Fire Growth"
     assert "train_ce_loss" not in labels
 
 
