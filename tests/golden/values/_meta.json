@@ -100,6 +100,33 @@
         "training"
       ],
       "reason": "dicece: class weight on cross entropy only (unweighted Dice, the paper's 1:1 mix; KNOWN_ISSUES #2); loss parts are lambda-weighted; validation mIoU/mDice replaced by per-window background IoU (KNOWN_ISSUES #4)"
+    },
+    {
+      "groups": [
+        "names",
+        "cli",
+        "config"
+      ],
+      "reason": "-test without --checkpoint finds the newest matching checkpoint in ./wandb/*/files or saved_models/ (--load-epoch optional, DEFAULT_LOAD_EPOCH removed; KNOWN_ISSUES #6); -r and -it optional (#11)"
+    },
+    {
+      "groups": [
+        "hub",
+        "cli"
+      ],
+      "reason": "window_config.json travels with the data root (download, data.zip); dataset gains count-pixels and compute-normalization; train/check gain --normalization"
+    },
+    {
+      "groups": [
+        "config"
+      ],
+      "reason": "archives use Zstandard level 6 members instead of zlib level 1 (NPZ_COMPRESSLEVEL 1 -> 6); arrays unchanged"
+    },
+    {
+      "groups": [
+        "cli"
+      ],
+      "reason": "rebuild-zip measures pixel counts and normalization into window_config.json before zipping (--skip-statistics, --workers)"
     }
   ]
 }

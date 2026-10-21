@@ -478,6 +478,7 @@ dependencies:
   - zstd=1.5.6=ha6fb4c9_0
   - pip:
       - aiohttp==3.10.11
+      - backports.zstd>=1.8; python_version<"3.14"
       - colorlog==4.8.0
       - flask-jwt-extended==4.7.1
       - geotessera>=0.11

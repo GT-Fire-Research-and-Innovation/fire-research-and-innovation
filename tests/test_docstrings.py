@@ -34,6 +34,8 @@ def test_everything_has_a_docstring():
 
 API_FOLDERS = ("firepred", "tools")
 SECTIONS = ("Args:", "Returns:", "Yields:", "Raises:", "Attributes:", "Example:")
+# A function with at most this many code lines may have a one-line docstring: its code shows the rest.
+SHORT_FUNCTION_LINES = 6
 
 
 def parameters(node):
@@ -70,18 +72,28 @@ def yields(node):
     return False
 
 
+def code_lines(node, source):
+    """Count the non-blank lines of a function's body after its docstring."""
+    if len(node.body) < 2:
+        return 0
+    return sum(1 for line in source[node.body[1].lineno - 1:node.end_lineno] if line.strip())
+
+
 def is_dataclass(node):
     """True for a class decorated with @dataclass(...)."""
     return any(getattr(getattr(d, "func", d), "id", None) == "dataclass" for d in node.decorator_list)
 
 
-def format_problems(node, doc):
+def format_problems(node, doc, source=()):
     """What a definition's docstring is missing from the format (an empty list when it complies)."""
     problems = []
     lines = doc.splitlines()
     summary = lines[0].strip() if lines else ""
     if not summary.endswith(".") or summary.count(". ") > 0:
         problems.append("first line must be one sentence ending in '.'")
+    short = isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and code_lines(node, source) <= SHORT_FUNCTION_LINES
+    if len(lines) == 1 and short:
+        return problems
     if len(lines) < 3 or lines[1].strip():
         problems.append("needs a blank line, then a plain-language explanation")
         return problems
@@ -117,16 +129,20 @@ def api_docstring_problems():
     found = []
     for folder in API_FOLDERS:
         for path in sorted((ROOT / folder).rglob("*.py")):
-            for node in ast.walk(ast.parse(path.read_text())):
+            source = path.read_text()
+            for node in ast.walk(ast.parse(source)):
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                     doc = ast.get_docstring(node) or ""
-                    for problem in format_problems(node, doc):
+                    for problem in format_problems(node, doc, source.splitlines()):
                         found.append(f"{path.relative_to(ROOT)}:{node.lineno} {node.name}: {problem}")
     return found
 
 
 def test_api_docstrings_follow_the_format():
-    """Every package and tool docstring: one-sentence summary, a plain explanation, typed Args and Returns."""
+    """Every package and tool docstring: one-sentence summary, a plain explanation, typed Args and Returns.
+
+    A function of at most SHORT_FUNCTION_LINES code lines may have the summary line alone.
+    """
     problems = api_docstring_problems()
     assert not problems, f"{len(problems)} problems:\n" + "\n".join(problems[:60])
 

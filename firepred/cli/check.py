@@ -6,13 +6,15 @@ Level 4 (cli).
         Build the model, run random input through it, check the output shape
         contract, take one Adam step; print parameters, time and GPU memory.
     python -m firepred.cli.check data --data-root <root> [--tessera] [--train-step -m swinunetr3d ...]
-        Read one training batch and one validation window and check their
-        shapes; with --train-step also take one real training step.
+        Read <root>/window_config.json as training does, then one training
+        batch and one validation window, and check their shapes; with
+        --train-step also take one real training step.
     python -m firepred.cli.check timing --data-root <root> [--windows 10]
         Average time to load one training window.
     python -m firepred.cli.check labels --data-root <root> [--split train]
-        Exact background and fire pixel counts of a split, and the --ce-weight
-        that --ce-weight auto would train the Dice + CE loss with.
+        Exact background and fire pixel counts of a split, counted from the
+        labels now, and the matching --ce-weight (`dataset count-pixels` records
+        the same counts in window_config.json for --ce-weight auto).
 
 Every check is disposable: nothing is saved, nothing is logged to W&B.
 """
@@ -25,13 +27,13 @@ import torch
 
 from firepred.config.dataset import BASE_MODEL_CHANNELS, CROP_SIZE, N_STORED_CHANNELS, TESSERA_CHANNELS, TS_LENGTH
 from firepred.config.training import NUM_CLASSES
-from firepred.data.class_balance import count_labels
 from firepred.data.fire_dataset import FireDataset, batch_inputs, make_dataloader
+from firepred.data.stats import WindowConfig, count_labels
 from firepred.models.registry import available_models
 from firepred.training.accelerator import Device
 from firepred.training.config import LossConfig, RunConfig
 from firepred.training.flags import add_flags, ce_weight_value
-from firepred.training.experiment import Experiment, FireData
+from firepred.training.experiment import Experiment, FireData, with_window_label_counts, with_window_normalization
 from firepred.training.trainer import Trainer
 
 
@@ -40,8 +42,8 @@ def check_config(args):
 
     The checks use the same settings objects as a real run, so a check that
     passes means training will start. Settings the check flags lack keep their
-    defaults. --ce-weight auto is counted from the data root's training labels,
-    as training does.
+    defaults. --ce-weight auto takes the pixel counts in the data root's
+    window_config.json, as training does.
 
     Args:
         args (argparse.Namespace): the parsed check flags.
@@ -60,15 +62,15 @@ def check_config(args):
         data_root=getattr(args, "data_root", RunConfig.data_root),
         tessera=args.tessera,
         tessera_cells_per_pixel=args.tessera_cells_per_pixel,
+        normalization=args.normalization,
         loss=LossConfig(args.loss, ce_weight_value(args.ce_weight), args.lambda_dice, args.lambda_ce,
                         args.lambda_focal, args.focal_gamma, args.focal_alpha),
         extra_model_options=tuple(dict(args.model_option or ()).items()),
         batch_size=args.batch,
     )
     if config.needs_label_counts:
-        counts = count_labels(Path(config.data_root) / "train")
-        print(f"Training labels: {counts.summary()}")
-        config = config.with_label_counts(counts)
+        config = with_window_label_counts(config, WindowConfig.read(config.data_root),
+                                          Path(config.data_root) / "train")
     return config
 
 
@@ -208,7 +210,9 @@ def datasets(config):
 def check_data(args):
     """Check one training batch and one validation window from a data root.
 
-    Their channel counts must match the model's input width, and their shapes
+    The data root's window_config.json comes first, as in training: it must
+    exist, match -ts, and (for --normalization window-config) hold the training
+    statistics. Channel counts must match the model's input width, and shapes
     the window size. With --train-step one real training step runs on the batch.
 
     Args:
@@ -222,6 +226,8 @@ def check_data(args):
         RuntimeError: if there are too few windows for one full batch.
     """
     config = check_config(args)
+    window_config = WindowConfig.read(config.data_root).check_windows(config.ts_length)
+    config = with_window_normalization(config, window_config, Path(config.data_root) / "train")
     channels = config.input_channels
     train, val = datasets(config)
     batch = next(iter(make_dataloader(train, args.batch, shuffle=False, num_workers=0, pin_memory=False)))
@@ -284,7 +290,7 @@ def check_labels(args):
     """Count a split's background and fire pixels and print the matching --ce-weight.
 
     The counts are exact and always the same for the same data
-    (data/class_balance.py). The printed weight is what --ce-weight auto trains
+    (data/stats.py). The printed weight is what --ce-weight auto trains
     with when the split is train.
 
     Args:
@@ -306,7 +312,7 @@ def check_labels(args):
 # (training/flags.py), with defaults where training requires a value.
 CHECK_FLAGS = ("model", "num_heads", "feature_size", "learning_rate", "loss.name", "loss.ce_weight",
                "loss.lambda_dice", "loss.lambda_ce", "loss.lambda_focal", "loss.focal_gamma", "loss.focal_alpha",
-               "extra_model_options", "device", "seed", "tessera_cells_per_pixel")
+               "extra_model_options", "device", "seed", "tessera_cells_per_pixel", "normalization")
 
 
 def add_model_arguments(parser):

@@ -4,7 +4,7 @@ import numpy as np
 import torch
 
 from firepred.config.dataset import BASE_MODEL_CHANNELS, LANDCOVER_CHANNEL, NORMALIZATION_MEAN, NORMALIZATION_STD
-from firepred.data.transforms import augment, landcover_one_hot_matrix, normalize, preprocess
+from firepred.data.fire_dataset import augment, landcover_one_hot_matrix, normalize, preprocess
 
 
 def window(landcover):

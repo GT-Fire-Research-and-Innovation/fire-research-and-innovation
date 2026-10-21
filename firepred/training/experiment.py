@@ -6,10 +6,14 @@ The run is a straight line. Each step builds one object from the RunConfig
 and what the steps before it produced, and hands it on; nothing later calls
 back into an earlier step:
 
+    0. the data root's window_config.json: without it nothing runs, and -ts/-it
+       must match the window settings it records
     1. the Device, then seed numpy, torch, Python's random (and XLA on a TPU)
     2. FireData: where the data is (unzipped once if asked)
-    3. training with --ce-weight auto only: count the training labels and fix
-       the class weights in the RunConfig, before anything records them
+    3. training only: fix the input normalization (the training split's
+       statistics from window_config.json, or the paper's) and, with
+       --ce-weight auto, the class weights from its pixel counts, in the
+       RunConfig, before anything records them
     4. the Tracker (the W&B run)
     5. the model (registry), wrapped in DataParallel
     6. training only: datasets and loaders -> Trainer.fit -> best checkpoint
@@ -26,16 +30,124 @@ import torch
 from torch import nn
 
 from firepred.config.dataset import N_STORED_CHANNELS
-from firepred.data.archive import find_fire_sources, unzip_data_root
-from firepred.data.class_balance import count_labels
+from firepred.data.archive import (
+    compute_tessera_stats,
+    find_fire_sources,
+    iter_tessera_maps,
+    load_tessera_maps,
+    unzip_data_root,
+)
 from firepred.data.fire_dataset import FireDataset, make_dataloader, validate_dataset_output
-from firepred.data.tessera_archive import compute_tessera_stats, iter_tessera_maps, load_tessera_maps
+from firepred.data.stats import WindowConfig
 from firepred.models.registry import build_model
 from firepred.training.accelerator import Device
-from firepred.training.checkpoints import CheckpointLoader, CheckpointStore
+from firepred.training.checkpoints import CheckpointLoader, CheckpointStore, find_test_checkpoint
+from firepred.training.config import NORMALIZE_LIKE_PAPER
 from firepred.training.evaluator import Evaluator
 from firepred.training.tracker import Tracker
 from firepred.training.trainer import Trainer
+
+
+def note_unused_fires(what, fires):
+    """Print which recorded fires a run does not train on, when there are any.
+
+    A TESSERA view leaves some training fires out, so the recorded statistics
+    cover a few more fires than the run sees. That is harmless, but worth saying.
+
+    Args:
+        what (str): what the statistics are.
+        fires (tuple[str, ...]): recorded fires the training split lacks.
+
+    Returns:
+        tuple[str, ...]: fires.
+    """
+    if fires:
+        print(f"Note: the {what} also cover {len(fires)} fires this run does not train on (e.g. {list(fires[:3])})")
+    return fires
+
+
+def with_window_label_counts(config, window_config, train_dir):
+    """Fill in --ce-weight auto from the training split's pixel counts in window_config.json.
+
+    Settings that need no counts come back unchanged, without reading the file.
+    The counts were written by `dataset count-pixels`.
+
+    Args:
+        config (RunConfig): the settings.
+        window_config (WindowConfig): the data root's window_config.json.
+        train_dir (Path): the training split the run reads.
+
+    Returns:
+        RunConfig: the settings with numeric class weights.
+    """
+    if not config.needs_label_counts:
+        return config
+    counts, unused = window_config.label_counts(train_dir)
+    print(f"Training labels ({window_config.path}): {counts.summary()}")
+    note_unused_fires("pixel counts", unused)
+    config = config.with_label_counts(counts)
+    print(f"Class weights from the training labels: --ce-weight {' '.join(map(repr, config.loss.ce_weight))}")
+    return config
+
+
+def with_window_normalization(config, window_config, train_dir):
+    """Fix the input statistics: the training split's from window_config.json, or the paper's.
+
+    Settings that already have them (or a -test run, which takes the
+    checkpoint's) come back unchanged. The statistics were written by
+    `dataset compute-normalization`.
+
+    Args:
+        config (RunConfig): the settings.
+        window_config (WindowConfig): the data root's window_config.json.
+        train_dir (Path): the training split the run reads.
+
+    Returns:
+        RunConfig: the settings with normalization_stats filled in.
+    """
+    if not config.needs_normalization_stats:
+        return config
+    if config.normalization == NORMALIZE_LIKE_PAPER:
+        print("Input normalization: the paper's fixed statistics (--normalization paper)")
+        return config.with_paper_normalization()
+    stats, unused = window_config.normalization(train_dir)
+    print(f"Input normalization ({window_config.path}): {stats.summary()}")
+    note_unused_fires("normalization statistics", unused)
+    return config.with_normalization_stats(stats.mean, stats.std)
+
+
+def with_data_statistics(config, window_config, train_dir):
+    """Fill in everything a training run takes from window_config.json: normalization and class weights.
+
+    Both are fixed once, before the data or W&B read them. A -test run needs
+    neither.
+
+    Args:
+        config (RunConfig): the settings.
+        window_config (WindowConfig): the data root's window_config.json.
+        train_dir (Path): the training split the run reads.
+
+    Returns:
+        RunConfig: the completed settings.
+    """
+    config = with_window_normalization(config, window_config, train_dir)
+    return with_window_label_counts(config, window_config, train_dir)
+
+
+def checkpoint_normalization(checkpoint):
+    """Give the (mean, std) a checkpoint was trained with.
+
+    Checkpoints from before window_config.json statistics hold none; they were
+    trained with the paper's numbers, which FireDataset uses for None.
+
+    Args:
+        checkpoint (dict): a loaded checkpoint.
+
+    Returns:
+        tuple[list[float], list[float]] | None: (mean, std), or None for the paper's.
+    """
+    record = checkpoint.get("normalization")
+    return (record["mean"], record["std"]) if record else None
 
 
 @dataclass(frozen=True)
@@ -110,20 +222,7 @@ class FireData:
         """
         return bool(find_fire_sources(self.root / "test"))
 
-    def label_counts(self):
-        """Count the training split's background and fire pixels.
-
-        --ce-weight auto turns them into the class weights. Only the training
-        fires count, so held-out fires never shape the loss.
-
-        Returns:
-            LabelCounts: the training split's counts.
-        """
-        counts = count_labels(self.root / "train")
-        print(f"Training labels: {counts.summary()}")
-        return counts
-
-    def dataset(self, split, augment, tessera_stats=None, tessera_maps=None):
+    def dataset(self, split, augment, tessera_stats=None, tessera_maps=None, normalization=None):
         """Build the FireDataset of one split with the run's settings.
 
         Every split is built with the same settings. TESSERA statistics and
@@ -134,6 +233,8 @@ class FireData:
             augment (bool): random flips and rotation.
             tessera_stats (dict | None): the training TESSERA statistics.
             tessera_maps (dict | None): the split's TESSERA maps, when already read.
+            normalization (tuple | None): the (mean, std) to standardize with
+                (default: the run's normalization_stats; None there too: the paper's).
 
         Returns:
             FireDataset: the dataset.
@@ -148,6 +249,7 @@ class FireData:
             tessera_stats=tessera_stats,
             tessera_maps=tessera_maps,
             cells_per_pixel=self.config.tessera_cells,
+            normalization=normalization if normalization is not None else self.config.normalization_stats,
         )
 
     def loader(self, dataset, shuffle, seed_offset):
@@ -218,19 +320,20 @@ class FireData:
         return TrainingData(self.loader(train, shuffle=True, seed_offset=0),
                             self.loader(val, shuffle=False, seed_offset=1), stats)
 
-    def test_dataset(self, tessera_stats=None):
+    def test_dataset(self, tessera_stats=None, normalization=None):
         """Build the test dataset and check it fits the model.
 
-        Test windows are never augmented. In TESSERA mode the given statistics
-        (normally the checkpoint's) normalize them.
+        Test windows are never augmented. The given statistics (normally the
+        checkpoint's) normalize them, exactly as in training.
 
         Args:
             tessera_stats (dict | None): the TESSERA statistics to use.
+            normalization (tuple | None): the input (mean, std) to use (default: the run's).
 
         Returns:
             FireDataset: the test windows.
         """
-        dataset = self.dataset("test", augment=False, tessera_stats=tessera_stats)
+        dataset = self.dataset("test", augment=False, tessera_stats=tessera_stats, normalization=normalization)
         validate_dataset_output(dataset, self.config.input_channels, "test")
         return dataset
 
@@ -343,8 +446,8 @@ class Experiment:
     def test(self, data, model, device, tracker, checkpoint_path):
         """Load a checkpoint into the model, score the test fires and log the scores.
 
-        The checkpoint must match this run's inputs. Its TESSERA statistics
-        normalize the test data exactly as in training.
+        The checkpoint must match this run's inputs. Its input and TESSERA
+        statistics normalize the test data exactly as in training.
 
         Args:
             data (FireData): where the data is.
@@ -364,37 +467,45 @@ class Experiment:
         )
         model.load_state_dict(checkpoint["model_state_dict"])
         print(f"Loaded checkpoint epoch={checkpoint['epoch']} loss={checkpoint['loss']}")
-        scores = Evaluator(config, device, data.test_dataset(checkpoint.get("tessera_stats"))).score(
-            model, config.plot_dir
-        )
+        test_data = data.test_dataset(checkpoint.get("tessera_stats"), checkpoint_normalization(checkpoint))
+        scores = Evaluator(config, device, test_data).score(model, config.plot_dir)
         print(scores.summary())
         tracker.log_final(scores)
         return scores
 
     def run(self):
-        """Run the experiment: seed, find the data, start W&B, build the model, train, test.
+        """Run the experiment: read window_config.json, seed, find the data, start W&B, build the model, train, test.
 
-        With -test only the testing runs, and no loss or optimizer is built. The
-        W&B run is finished when this returns, even after an error. With
-        --ce-weight auto the settings get their counted class weights first, so
-        W&B, the loss and the checkpoints all see the same numbers.
+        Nothing runs without the data root's window_config.json, and -ts/-it must
+        match the windows it describes. With -test only the testing runs, and no
+        loss or optimizer is built. The W&B run is finished when this returns,
+        even after an error. A training run first fixes its input normalization
+        (and, with --ce-weight auto, its class weights) from window_config.json,
+        so W&B, the data, the loss and the checkpoints all see the same numbers.
 
         Returns:
             RunResult: the tested checkpoint and the final scores.
+
+        Raises:
+            FileNotFoundError: if the data root has no window_config.json.
+            ValueError: if -ts/-it differ from the recorded window settings.
         """
         config = self.config
+        window_config = WindowConfig.read(config.data_root).check_windows(config.ts_length, config.ts_interval)
+        print(f"Window config: {window_config.path}")
         device = Device.resolve(config.device)
         self.seed(device)
         data = FireData.locate(config)
-        if config.needs_label_counts:
-            config = self.config = config.with_label_counts(data.label_counts())
+        if config.needs_normalization_stats or config.needs_label_counts:
+            config = self.config = with_data_statistics(config, window_config, data.root / "train")
             data = FireData(config, data.root, data.tessera_dir)
-            print(f"Class weights from the training labels: --ce-weight {' '.join(map(repr, config.loss.ce_weight))}")
+        if config.test_only:
+            # Found before W&B starts, so a missing checkpoint leaves no empty run behind.
+            checkpoint = config.checkpoint or find_test_checkpoint(config.test_checkpoint_pattern)
+            print(f"Testing checkpoint {checkpoint}")
         with Tracker(config, device) as tracker:
             model = self.prepare_model(device)
-            if config.test_only:
-                checkpoint = config.checkpoint or config.test_checkpoint
-            else:
+            if not config.test_only:
                 checkpoint = self.train(data, model, device, tracker)
                 if not config.test_after_train:
                     return RunResult(checkpoint)

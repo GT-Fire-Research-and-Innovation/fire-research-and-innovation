@@ -21,7 +21,7 @@ from firepred.config.dataset import DEFAULT_TEST_CSV
 from firepred.config.training import LOSSES, LR_SCHEDULES, PAPER_CE_WEIGHT
 from firepred.models.registry import parse_model_option
 from firepred.training.accelerator import DEVICES
-from firepred.training.config import AUTO_CE_WEIGHT, LossConfig, RunConfig, ScheduleConfig
+from firepred.training.config import AUTO_CE_WEIGHT, NORMALIZATIONS, LossConfig, RunConfig, ScheduleConfig
 
 FROM_FIELD = object()   # default: the RunConfig field's own default
 OMIT = object()         # a converted value that leaves the field at its default
@@ -140,15 +140,15 @@ FLAGS = (
     Flag(("-m",), "model", {"required": True, "help": "Model name"}),
     Flag(("-mode",), "mode", {"required": True, "help": "Task name, e.g. pred"}),
     Flag(("-b",), "batch_size", {"type": int, "required": True, "help": "Batch size"}),
-    Flag(("-r",), "run_number", {"type": int, "required": True, "help": "Run number"}),
+    Flag(("-r",), "run_number", {"type": int, "help": "Run number (optional; recorded only, default 1)"}),
     Flag(("-lr",), "learning_rate", {"type": float, "required": True, "help": "Learning rate"}),
     Flag(("-nh",), "num_heads", {"type": int, "required": True, "help": "Number of heads"}),
     Flag(("-ed",), "feature_size", {"type": int, "required": True, "help": "Embedding size"}),
     Flag(("-nc",), "expected_channels", {"type": int, "help": "Model input channels after preprocessing: 43, or 172 "
                                                              "with --tessera. Derived when omitted; checked when given."}),
     Flag(("-ts",), "ts_length", {"type": int, "required": True, "help": "Time-series length"}),
-    Flag(("-it",), "ts_interval", {"type": int, "required": True,
-                                   "help": "Generation interval; retained for experiment/checkpoint naming"}),
+    Flag(("-it",), "ts_interval", {"type": int, "help": "Days between window starts the windows were built with "
+                                   "(optional; recorded only, not part of any name)"}),
     Flag(("-test",), "test_only", {"dest": "run_test", "action": "store_true",
                                    "help": "Run test evaluation instead of training"}),
     Flag(("-seed",), "seed", {"type": int}),
@@ -163,13 +163,21 @@ FLAGS = (
                                          "without decompressing (same arrays). 'off' (default): read the archives; "
                                          "'auto': <data-root>-npy beside the data root; or a path. Skipped when the "
                                          "data root is already unzipped or the disk lacks space."}),
+    Flag(("--normalization",), "normalization", {
+        "choices": NORMALIZATIONS, "help": "Input statistics every window is standardized with. window-config "
+        "(default, NEW): the training split's per-channel mean/std in <data-root>/window_config.json "
+        "(python -m firepred.cli.dataset compute-normalization). paper: the released code's fixed numbers. "
+        "Either way <data-root>/window_config.json must exist; -test uses the checkpoint's numbers"}),
     Flag(("--unetr-version",), "unetr_version", {"choices": ("v0", "v1")}),
-    Flag(("--checkpoint",), "checkpoint", {"help": "Checkpoint path for -test; overrides the generated path"}),
+    Flag(("--checkpoint",), "checkpoint", {"help": "Checkpoint path for -test (default: the newest checkpoint of "
+                                           "this configuration in ./wandb/*/files or saved_models/)"}),
     Flag(("--trust-checkpoint",), "trust_checkpoint", {
         "action": "store_true", "help": "Allow full unpickling of the -test checkpoint (it can run code stored in the "
         "file). Needed only for checkpoints with TESSERA statistics on torch < 2.4; use only for checkpoints you or "
         "your runs created"}),
-    Flag(("--load-epoch",), "load_epoch", {"type": int}),
+    Flag(("--load-epoch",), "load_epoch", {"type": int, "help": "-test without --checkpoint: the epoch of the "
+                                           "checkpoint to look for in the W&B run folders (default: any epoch; "
+                                           "the newest matching file is used)"}),
     Flag(("--test-csv",), "test_csv", {}, default=str(DEFAULT_TEST_CSV), to_config=Path),
     Flag(("--plot-dir",), "plot_dir", {}, default="evaluation_plot", to_config=Path),
     Flag(("--test-every",), "test_every", {"type": int, "help": "NEW, not in the paper: also score the test fires with "
@@ -192,8 +200,8 @@ FLAGS = (
     Flag(("--ce-weight",), "loss.ce_weight", {
         "action": CeWeightAction, "nargs": "+", "metavar": "WEIGHT",
         "help": "dicece class weights BACKGROUND FIRE (default: the paper's 1.0 446.7836), or 'auto' (NEW): 1.0 "
-                "and the training split's background-to-fire pixel ratio, counted from the labels when training "
-                "starts (python -m firepred.cli.check labels shows it)"},
+                "and the training split's background-to-fire pixel ratio, read from the pixel counts in "
+                "<data-root>/window_config.json (python -m firepred.cli.dataset count-pixels)"},
          default=list(PAPER_CE_WEIGHT), to_config=ce_weight_value),
     Flag(("--lambda-dice",), "loss.lambda_dice", {"type": float}),
     Flag(("--lambda-ce",), "loss.lambda_ce", {"type": float}),

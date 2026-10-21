@@ -48,14 +48,7 @@ class FireWindows:
 
     @property
     def count(self):
-        """Count the windows.
-
-        This is N, the first dimension of inputs. It is 0 for a fire that produced
-        no windows.
-
-        Returns:
-            int: the number of windows.
-        """
+        """Count the windows."""
         return len(self.inputs)
 
 
@@ -83,18 +76,7 @@ class DayFrame:
 
 
 def read_tiff(file_path):
-    """Read one GeoTIFF into an array.
-
-    rasterio is imported here, not at module load, so the dataset masters can
-    be imported on a machine without geospatial packages. The profile carries
-    the georeference.
-
-    Args:
-        file_path (str | Path): the GeoTIFF.
-
-    Returns:
-        tuple[np.ndarray, dict]: (array (bands, rows, cols), rasterio profile).
-    """
+    """Read one GeoTIFF as (array, rasterio profile); rasterio is imported here so the masters load without it."""
     import rasterio  # imported here so the dataset masters load without rasterio
 
     with rasterio.open(file_path, "r") as reader:
@@ -104,18 +86,7 @@ def read_tiff(file_path):
 
 
 def empty_windows(length, notes):
-    """Make a FireWindows that holds no windows.
-
-    The arrays still have the right number of dimensions, with zero windows, so
-    callers can treat every result the same. The notes say why there are none.
-
-    Args:
-        length (int): input days per window (the T dimension).
-        notes (list[str]): messages explaining the empty result.
-
-    Returns:
-        FireWindows: inputs (0, 27, length, 256, 256) and targets (0, 256, 256).
-    """
+    """Make a FireWindows with zero windows (arrays keep their dimensions) and notes saying why."""
     return FireWindows(
         np.zeros((0, N_STORED_CHANNELS, length, CROP_SIZE, CROP_SIZE), dtype=np.float32),
         np.zeros((0, CROP_SIZE, CROP_SIZE), dtype=np.float32),
@@ -124,18 +95,7 @@ def empty_windows(length, notes):
 
 
 def binary_mask(array):
-    """Turn a raw label band into a true/false fire mask.
-
-    Only finite values above 0 count as fire. NaN, infinity, 0 and negative
-    no-data values are background. This must happen before masks are combined,
-    because NaN would otherwise count as True.
-
-    Args:
-        array (np.ndarray): a raw label band.
-
-    Returns:
-        np.ndarray: bool mask of the same shape.
-    """
+    """Turn a raw label band into a fire mask: finite values above 0 only, so NaN never counts as True."""
     return np.isfinite(array) & (array > 0)
 
 
@@ -163,12 +123,8 @@ def read_day_frame(file_name, offset=CROP_OFFSET, size=CROP_SIZE, debug=False):
     notes = []
     array_day, day_profile = read_tiff(file_name)
     if array_day.shape[0] < 7:
-        raise ValueError(
-            f"{file_name}: expected at least 7 day bands, "
-            f"found {array_day.shape[0]}"
-        )
-    original_shape_x = array_day.shape[1]
-    original_shape_y = array_day.shape[2]
+        raise ValueError(f"{file_name}: expected at least 7 day bands, found {array_day.shape[0]}")
+    original_shape_x, original_shape_y = array_day.shape[1], array_day.shape[2]
 
     # Night bands (I4, I5 at night) come from the matching VIIRS_Night file.
     # Missing or broken night files become zeros instead of stopping the build.
@@ -189,15 +145,10 @@ def read_day_frame(file_name, offset=CROP_OFFSET, size=CROP_SIZE, debug=False):
             # The crop is by pixel index, so it only matches the
             # day crop when both rasters share one grid.
             if night_profile["transform"] != day_profile["transform"]:
-                raise ValueError(
-                    f"Day/night grid mismatch for {file_name}: "
-                    f"{array_day.shape[1:]} versus "
-                    f"{array_night.shape[1:]}"
-                )
-            notes.append(
-                f"{night_file}: size {array_night.shape[1:]} differs "
-                f"from day {array_day.shape[1:]} on the same grid"
-            )
+                raise ValueError(f"Day/night grid mismatch for {file_name}: "
+                                 f"{array_day.shape[1:]} versus {array_night.shape[1:]}")
+            notes.append(f"{night_file}: size {array_night.shape[1:]} differs from day {array_day.shape[1:]} "
+                         "on the same grid")
 
     # No usable night capture: two all-zero bands keep the channel layout fixed.
     if array_night is None:
@@ -210,14 +161,8 @@ def read_day_frame(file_name, offset=CROP_OFFSET, size=CROP_SIZE, debug=False):
     # 6 day bands + 2 night bands + 19 FirePred bands.
     row_slice = slice(offset, offset + size)
     col_slice = slice(offset, offset + size)
-    img = np.concatenate(
-        (
-            array_day[:6, row_slice, col_slice],
-            array_night[:, row_slice, col_slice],
-            array_pred[:, row_slice, col_slice],
-        ),
-        axis=0,
-    )
+    img = np.concatenate((array_day[:6, row_slice, col_slice], array_night[:, row_slice, col_slice],
+                          array_pred[:, row_slice, col_slice]), axis=0)
     img = img[:, :size, :size]
     expected_shape = (N_STORED_CHANNELS, size, size)
     if img.shape != expected_shape:
@@ -286,11 +231,7 @@ def build_fire_windows(
     notes = []
     # Step 1: the fire's daily frames, in date order. Each day has one VIIRS_Day
     # GeoTIFF; its night and FirePred (weather/terrain/fuel) files sit next to it.
-    day_files = sorted(
-        path
-        for remote_name, path in local_map.items()
-        if "VIIRS_Day" in remote_name
-    )
+    day_files = sorted(path for remote_name, path in local_map.items() if "VIIRS_Day" in remote_name)
 
     if not day_files:
         notes.append(f"{loc_name}: no VIIRS_Day files")
@@ -305,19 +246,9 @@ def build_fire_windows(
     # Windows go straight into one (windows, C, T, H, W) array. Stacking
     # per-window arrays, transposing and copying again tripled the RAM a
     # long fire needs (about 10 GiB for an 87-day fire).
-    n_windows = sum(
-        1
-        for i in range(0, len(day_files), interval)
-        if i + length < len(day_files)
-    )
-    loc_x = np.zeros(
-        (n_windows, n_channels, length, output_shape_x, output_shape_y),
-        dtype=np.float32,
-    )
-    loc_y = np.zeros(
-        (n_windows, output_shape_x, output_shape_y),
-        dtype=np.float32,
-    )
+    n_windows = sum(1 for i in range(0, len(day_files), interval) if i + length < len(day_files))
+    loc_x = np.zeros((n_windows, n_channels, length, output_shape_x, output_shape_y), dtype=np.float32)
+    loc_y = np.zeros((n_windows, output_shape_x, output_shape_y), dtype=np.float32)
 
     # Label accumulators must be Boolean. Raw NaNs must never be passed
     # directly to np.logical_or because bool(np.nan) is True.
@@ -325,18 +256,12 @@ def build_fire_windows(
     #   ba_label / af_acc_label: every pixel ever burned so far (NIFC perimeter / active fire).
     #   max_img: per-pixel maximum of each channel so far (used for the heat bands).
     #   new_base_*: a saved copy of that state, restored before the next window starts.
-    ba_label = np.zeros(
-        (output_shape_x, output_shape_y),
-        dtype=bool,
-    )
+    ba_label = np.zeros((output_shape_x, output_shape_y), dtype=bool)
     af_acc_label = np.zeros_like(ba_label)
     new_base_acc_label = af_acc_label.copy()
     new_base_ba_label = ba_label.copy()
 
-    max_img = np.zeros(
-        (n_channels, output_shape_x, output_shape_y),
-        dtype=np.float32,
-    )
+    max_img = np.zeros((n_channels, output_shape_x, output_shape_y), dtype=np.float32)
     new_base_max_img = max_img.copy()
 
     # Step 4: slide a window over the days. Window k starts on day k * interval and
@@ -359,29 +284,15 @@ def build_fire_windows(
             # channels 6-7) are replaced by their running maximum, so a pixel that was hot
             # earlier in the window still looks hot today. All other channels keep today's value.
             max_img = np.maximum(frame.image, max_img)
-            img = np.concatenate(
-                (
-                    frame.image[:3, ...],
-                    max_img[3:5, ...],
-                    frame.image[[5], ...],
-                    max_img[6:8, ...],
-                    frame.image[8:, ...],
-                ),
-                axis=0,
-            )
+            img = np.concatenate((frame.image[:3, ...], max_img[3:5, ...], frame.image[[5], ...],
+                                  max_img[6:8, ...], frame.image[8:, ...]), axis=0)
 
             # Accumulate: once a pixel has burned it stays burned. label_sel picks the
             # burned-area definition: 1 = active fire only, otherwise active fire + NIFC perimeters.
             ba_label = np.logical_or(ba_label, ba)
             af_acc_label = np.logical_or(af_acc_label, af)
 
-            if label_sel == 1:
-                final_label = af_acc_label
-            else:
-                final_label = np.logical_or(
-                    af_acc_label,
-                    ba_label,
-                )
+            final_label = af_acc_label if label_sel == 1 else np.logical_or(af_acc_label, ba_label)
 
             # Save state at the next stride boundary. Restoring this
             # state after the window prevents overlapping windows from
@@ -398,10 +309,7 @@ def build_fire_windows(
                 prev_final_label = final_label.copy()
                 loc_x[window_idx, :, j] = img
             else:
-                new_mask = np.logical_and(
-                    np.logical_not(prev_final_label),
-                    final_label,
-                )
+                new_mask = np.logical_and(np.logical_not(prev_final_label), final_label)
                 loc_y[window_idx] = new_mask
 
                 if debug:
@@ -429,10 +337,7 @@ def build_fire_windows(
     if not np.isfinite(loc_y).all():
         raise ValueError(f"{loc_name}: processed labels contain NaN/Inf")
 
-    positive_per_window = np.count_nonzero(
-        loc_y > 0,
-        axis=(1, 2),
-    )
+    positive_per_window = np.count_nonzero(loc_y > 0, axis=(1, 2))
     notes.append(
         f"{loc_name}: {np.count_nonzero(positive_per_window)}/"
         f"{len(positive_per_window)} windows contain positives; "

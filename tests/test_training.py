@@ -1,5 +1,6 @@
 """Losses, metrics, schedules, RunConfig names and checkpoints behave as documented."""
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -123,7 +124,8 @@ def test_names_never_change():
         "model_swinunetr3d_mode_pred_num_heads_3_hidden_size_36_batchsize_8_"
         "checkpoint_epoch_12_nc_172_ts_6_tessera_dicece_lr-plateau.pth"
     )
-    assert config.test_checkpoint == Path("saved_models") / config.checkpoint_template.format(epoch=199)
+    assert config.test_checkpoint_pattern == config.checkpoint_template.format(epoch="*")
+    assert replace(config, load_epoch=12).test_checkpoint_pattern == config.checkpoint_template.format(epoch=12)
     assert config.artifact_name("abc") == "swinunetr3d-tessera-dicece-lr-plateau-checkpoints-abc"
 
 

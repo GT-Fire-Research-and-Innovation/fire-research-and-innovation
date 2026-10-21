@@ -40,7 +40,8 @@ def test_new_repo_records_every_setting(hub):
     config = stored(hub)
     assert config["train_val_label_sel"] == 1 and config["test_label_sel"] == 1
     assert config["ts_length"] == 6 and config["crop_size"] == 256 and config["stored_channels"] == 27
-    assert "NIFC" in config["notes"]["label_sel"]["0"] and config["notes"]["npz_compresslevel"] == 1
+    assert "NIFC" in config["notes"]["label_sel"]["0"] and config["notes"]["npz_compresslevel"] == 6
+    assert config["notes"]["npz_compression"] == "zstd"
     assert data_hub.window_settings(6, 1)["test_label_sel"] == "roi"
 
 

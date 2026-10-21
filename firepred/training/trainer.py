@@ -171,7 +171,7 @@ class Trainer:
         windows = len(loader.dataset)
         totals = {"loss": 0.0, "fire_f1": 0.0, "background_f1": 0.0, "fire_iou": 0.0, "background_iou": 0.0,
                   "fire_false_positives": 0.0, "fire_false_negatives": 0.0}
-        components = {}
+        components, seen = {}, 0
         bar = tqdm(loader, total=len(loader), desc=f"Train epoch {epoch + 1}/{self.config.epochs}")
         for batch_idx, batch in enumerate(bar):
             inputs = batch_inputs(batch, self.device.torch_device)
@@ -190,7 +190,8 @@ class Trainer:
             totals["loss"] += loss.detach().item() * labels.size(0)
             for name, value in parts.items():
                 components[name] = components.get(name, 0.0) + value.item() * labels.size(0)
-            bar.set_postfix(loss=f"{totals['loss'] / ((batch_idx + 1) * labels.size(0)):.4f}")
+            seen += labels.size(0)
+            bar.set_postfix(loss=f"{totals['loss'] / seen:.4f}")
             # Stop immediately if the loss blows up instead of training on garbage.
             if not np.isfinite(totals["loss"]):
                 raise RuntimeError(f"Training loss became non-finite at step {batch_idx}")
@@ -223,7 +224,7 @@ class Trainer:
         windows = len(loader.dataset)
         totals = {"loss": 0.0, "fire_f1": 0.0, "background_f1": 0.0, "fire_iou": 0.0, "background_iou": 0.0,
                   "fire_false_positives": 0.0, "fire_false_negatives": 0.0}
-        components = {}
+        components, seen = {}, 0
         bar = tqdm(loader, total=len(loader), desc=f"Validation epoch {epoch + 1}/{self.config.epochs}")
         with torch.no_grad():
             for batch_idx, batch in enumerate(bar):
@@ -242,7 +243,8 @@ class Trainer:
                 totals["background_iou"] += self.scorer.background_iou(predictions, labels).sum().item()
                 totals["fire_false_positives"] += self.scorer.fire_false_positives(predictions, labels).sum().item()
                 totals["fire_false_negatives"] += self.scorer.fire_false_negatives(predictions, labels).sum().item()
-                bar.set_postfix(loss=f"{totals['loss'] / ((batch_idx + 1) * labels.size(0)):.4f}")
+                seen += labels.size(0)
+                bar.set_postfix(loss=f"{totals['loss'] / seen:.4f}")
         return EpochScores(
             split="val",
             loss=totals["loss"] / windows,

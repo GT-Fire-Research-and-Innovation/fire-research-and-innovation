@@ -1,9 +1,8 @@
 """FireDataset: one item per window, model-ready shapes, TESSERA as a static map."""
 
 from firepred.config.dataset import BASE_MODEL_CHANNELS, TESSERA_CHANNELS
-from firepred.data.archive import find_fire_sources
+from firepred.data.archive import compute_tessera_stats, find_fire_sources, load_tessera_maps
 from firepred.data.fire_dataset import FireDataset, batch_inputs, make_dataloader, validate_dataset_output
-from firepred.data.tessera_archive import compute_tessera_stats, load_tessera_maps
 
 
 def test_items_have_model_shapes(data_root):

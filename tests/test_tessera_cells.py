@@ -5,16 +5,17 @@ import pytest
 import torch
 
 from firepred.config.dataset import BASE_MODEL_CHANNELS, TESSERA_CHANNELS
-from firepred.data.archive import find_fire_sources
-from firepred.data.fire_dataset import FireDataset, batch_inputs, make_dataloader, validate_dataset_output
-from firepred.data.tessera_archive import (
+from firepred.data.archive import (
     cells_per_pixel_of,
     compute_tessera_stats,
+    find_fire_sources,
     iter_tessera_maps,
     load_tessera_maps,
+    open_npz,
     read_tessera,
     save_tessera_npz,
 )
+from firepred.data.fire_dataset import FireDataset, batch_inputs, make_dataloader, validate_dataset_output
 from firepred.models.registry import ModelSpec, build_model, forward_model
 from firepred.training.config import RunConfig
 
@@ -64,9 +65,9 @@ def test_build_fire_tessera_writes_a_finer_map(tmp_path, monkeypatch):
     fine = build_fire_tessera(synth.FakeGeoTessera(), "1", days, 2020, tmp_path / "fine.npz", cells_per_pixel=K)
     plain = build_fire_tessera(synth.FakeGeoTessera(), "1", days, 2020, tmp_path / "plain.npz")
     assert fine.coverage.shape == (256 * K, 256 * K) and plain.coverage.shape == (256, 256)
-    with np.load(fine.path) as archive:
+    with open_npz(fine.path) as archive:
         assert archive["embedding"].shape == (128, 256 * K, 256 * K) and int(archive["cells_per_pixel"]) == K
-    with np.load(plain.path) as archive:
+    with open_npz(plain.path) as archive:
         assert "cells_per_pixel" not in archive.files
 
 

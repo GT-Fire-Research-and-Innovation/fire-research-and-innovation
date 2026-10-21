@@ -4,7 +4,7 @@
 "dataset.SRC_REPO": "SamuelWu318/ts-satfire",
 "dataset.TESSERA_REPO": "SamuelWu318/ts-tesserafire",
 "dataset.WINDOW_CONFIG_FILE": "window_config.json",
-"dataset.NPZ_COMPRESSLEVEL": 1,
+"dataset.NPZ_COMPRESSLEVEL": 6,
 "dataset.TRAIN_VAL_LABEL_SEL": 0,
 "dataset.TRAIN_VAL_YEARS": [
 "tuple",
@@ -133,7 +133,6 @@
 ]
 ],
 "training.DEFAULT_EPOCHS": 100,
-"training.DEFAULT_LOAD_EPOCH": 199,
 "training.DEFAULT_NUM_WORKERS": 0,
 "training.DEFAULT_UNZIP_DIR": "off",
 "training.FOCAL_ALPHA": null,

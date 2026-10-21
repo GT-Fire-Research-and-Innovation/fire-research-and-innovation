@@ -8,17 +8,22 @@ Each function runs one pipeline step end to end and returns a frozen value
     pin_caches          keep Hugging Face / temp caches under the workspace
     read_secret         a token from Kaggle secrets, Colab userdata or the environment
     process_windows     raw GeoTIFFs -> one window archive per fire in the window repo
-    download_windows    window archives (+ TESSERA files) into a local data root
+    download_windows    window archives (+ TESSERA files) and window_config.json into a local data root
+    count_pixels        every split's background/fire target pixels -> the data root's window_config.json
+    compute_normalization  per-channel input mean/std of train/, one window in memory per thread
+                        -> the data root's window_config.json (training reads both before it starts)
     upload_data_zip     zip a data root and upload it as data.zip
-    rebuild_data_zip    download a window repo and upload it as data.zip
+    rebuild_data_zip    download a whole window repo, add count_pixels + compute_normalization to its
+                        window_config.json (repo copy too), then upload it as data.zip
     pull_data_zip       download data.zip and unpack it into a data root
     stage_training_data training notebooks: find/download/extract data (+ TESSERA view)
 
-    SRC_REPO raw GeoTIFFs --one fire at a time--> prep/windows.build_fire_windows
+    SRC_REPO raw GeoTIFFs --one fire at a time--> data/windows.build_fire_windows
         --> data/archive.write_fire_archive p<id>.npz --uploaded in batches--> window repo
 """
 
 import gc
+import json
 import os
 import shutil
 import tempfile
@@ -35,14 +40,26 @@ from firepred.config.dataset import (
     TRAIN_VAL_LABEL_SEL,
     TS_INTERVAL,
     TS_LENGTH,
+    WINDOW_CONFIG_FILE,
     WINDOW_UPLOAD_BATCH,
     WORK_DIR,
     ZIP_FOLDERS,
     window_repo_for,
 )
-from firepred.data.archive import write_fire_archive
 from firepred.data import files, hub, tessera_master
-from firepred.data.fires import fire_id_of, label_rules, read_roi
+from firepred.data.archive import find_fire_sources, write_fire_archive
+from firepred.data.stats import (
+    NORMALIZATION,
+    PIXEL_COUNTS,
+    count_labels,
+    keep_statistics,
+    read_window_config_file,
+    split_normalization,
+    window_config_path,
+    window_settings_of,
+    write_window_config_file,
+)
+from firepred.data.files import fire_id_of, label_rules, read_roi
 from firepred.data.tessera import tessera_excluded_npz
 from firepred.data.windows import build_fire_windows
 
@@ -201,14 +218,7 @@ class WindowBuildReport:
     config: str = ""
 
     def summary(self):
-        """Summarize the build: counts per split and the skipped fires.
-
-        The master prints this at the end. Each skipped fire is listed with its
-        reason.
-
-        Returns:
-            str: the summary, one item per line.
-        """
+        """Summarize the build: counts per split and the skipped fires."""
         counts = ", ".join(f"{split} {len(ids)}" for split, ids in self.built.items())
         lines = [f"Windows in {self.repo}: built {counts}; skipped {len(self.skipped)}", self.config]
         lines += [f"  {fire_id}: {reason}" for fire_id, reason in self.skipped.items()]
@@ -241,14 +251,7 @@ class DownloadReport:
     window_config: dict = None
 
     def summary(self):
-        """Summarize the download, with a warning for archives without TESSERA.
-
-        The first line gives the counts. A second line warns when TESSERA files
-        are missing.
-
-        Returns:
-            str: the summary.
-        """
+        """Summarize the download, with a warning for archives without TESSERA."""
         text = (f"{self.data_root}: downloaded {len(self.downloaded)}, already present {len(self.present)}, "
                 f"skipped {len(self.skipped)}, excluded {len(self.excluded)}")
         if self.missing_tessera:
@@ -276,14 +279,7 @@ class ZipUpload:
     path_in_repo: str
 
     def summary(self):
-        """Summarize the upload in one line.
-
-        The line names the zip, how many files it holds and where it went. The
-        master prints it.
-
-        Returns:
-            str: the summary.
-        """
+        """Summarize the upload in one line."""
         return f"Uploaded {self.zip_path} ({len(self.members)} files) to {self.repo}/{self.path_in_repo}"
 
 
@@ -308,16 +304,60 @@ class StagedData:
     counts: dict = field(default_factory=dict)
 
     def summary(self):
-        """Summarize the staged data in one line.
-
-        The line gives both roots and the archive count of each split. The master
-        prints it.
-
-        Returns:
-            str: the summary.
-        """
+        """Summarize the staged data in one line."""
         counts = ", ".join(f"{split} {n}" for split, n in self.counts.items())
         return f"Data root: {self.data_root} | training root: {self.train_root} | archives: {counts}"
+
+
+@dataclass(frozen=True)
+class PixelCountReport:
+    """Report what count_pixels counted and where it wrote the counts.
+
+    The master returns this instead of only printing. A notebook can read the
+    counts from it.
+
+    Attributes:
+        config_path (Path): the data root's window_config.json.
+        counts (dict[str, LabelCounts]): {split: its counts}.
+        uploaded_to (str | None): the window repo the file was also written to.
+    """
+
+    config_path: Path
+    counts: dict
+    uploaded_to: str = None
+
+    def summary(self):
+        """Summarize the counts, one split per line, and where they went."""
+        lines = [counts.summary() for counts in self.counts.values()]
+        lines.append(f"Pixel counts written to {self.config_path}"
+                     + (f" and {self.uploaded_to}/{WINDOW_CONFIG_FILE}" if self.uploaded_to else ""))
+        return "\n".join(lines)
+
+
+@dataclass(frozen=True)
+class NormalizationReport:
+    """Report what compute_normalization measured and where it wrote the statistics.
+
+    The master returns this instead of only printing. A notebook can read the
+    numbers from it.
+
+    Attributes:
+        config_path (Path): the data root's window_config.json.
+        stats (NormalizationStats): the statistics.
+        uploaded_to (str | None): the window repo the file was also written to.
+    """
+
+    config_path: Path
+    stats: object
+    uploaded_to: str = None
+
+    def summary(self):
+        """Summarize the statistics and where they went."""
+        return "\n".join((
+            self.stats.summary(),
+            f"Normalization written to {self.config_path}"
+            + (f" and {self.uploaded_to}/{WINDOW_CONFIG_FILE}" if self.uploaded_to else ""),
+        ))
 
 
 # ----- Planning (pure) ----- #
@@ -361,28 +401,11 @@ class WindowPlan:
     without_geotiffs: tuple = ()
 
     def jobs_by_split(self, splits):
-        """Group the planned jobs by split.
-
-        process_windows builds and uploads one split at a time. Every requested
-        split appears, possibly with no jobs.
-
-        Args:
-            splits (tuple[str, ...]): the splits, in build order.
-
-        Returns:
-            dict[str, tuple[WindowJob, ...]]: {split: its jobs, in plan order}.
-        """
+        """Group the planned jobs by split."""
         return {split: tuple(job for job in self.jobs if job.split == split) for split in splits}
 
     def summary(self):
-        """Summarize the plan in one line.
-
-        The line counts the fires to build and those left alone. The master prints
-        it before starting.
-
-        Returns:
-            str: the summary.
-        """
+        """Summarize the plan in one line."""
         return (f"Plan: build {len(self.jobs)} fires; {len(self.already_built)} already in the repo, "
                 f"{len(self.without_geotiffs)} without GeoTIFFs in the source repo")
 
@@ -397,7 +420,7 @@ def plan_windows(roi, rules, locations, existing, splits, overwrite=False, only_
 
     Args:
         roi (RoiTable): the fires of every split.
-        rules (dict[str, int]): {fire id: label rule} (fires.label_rules).
+        rules (dict[str, int]): {fire id: label rule} (files.label_rules).
         locations (dict): the source repo's GeoTIFFs by fire (hub.list_fire_files).
         existing (set[str]): file paths already in the window repo.
         splits (tuple[str, ...]): the splits to build.
@@ -483,20 +506,7 @@ def build_and_stage(fire_id, fire_files, label_sel, split_dir, src_repo, token, 
 
 
 def upload_split_batch(split_dir, split, window_repo, token):
-    """Upload one split's staged archives, then empty the staging folder.
-
-    All archives go to window_repo/<split> in one commit. The folder is emptied
-    so the next batch starts clean.
-
-    Args:
-        split_dir (str | Path): the staging folder of the split.
-        split (str): the split name (the repo folder).
-        window_repo (str): the window repo.
-        token (str | None): a token with write access.
-
-    Returns:
-        list[str]: the uploaded "split/p<id>.npz" names.
-    """
+    """Upload one split's staged archives, then empty the staging folder."""
     print(f"Uploading staged {split} archives to {window_repo}")
     names = hub.upload_folder(split_dir, window_repo, split, token)
     shutil.rmtree(split_dir, ignore_errors=True)
@@ -629,6 +639,143 @@ def process_windows(
     return report
 
 
+# ----- Data statistics: written into the data root's window_config.json ----- #
+
+
+def data_root_window_config(data_root, window_repo, token=None):
+    """Read the data root's window_config.json, fetching the repo's copy when there is none.
+
+    Data unpacked from an older data.zip has no copy yet. The repo's file records
+    the same window settings.
+
+    Args:
+        data_root (Path): the data root.
+        window_repo (str): the window repo the data came from.
+        token (str | None): a Hugging Face token.
+
+    Returns:
+        dict: the window config.
+
+    Raises:
+        RuntimeError: if neither the data root nor the repo has one.
+    """
+    config = read_window_config_file(data_root)
+    if config is not None:
+        return config
+    config = hub.read_window_config(window_repo, token)
+    if config is None:
+        raise RuntimeError(f"Neither {data_root} nor {window_repo} has a {WINDOW_CONFIG_FILE}; "
+                           "build the repo with `process` (it records the window settings)")
+    print(f"{data_root} had no {WINDOW_CONFIG_FILE}; using {window_repo}'s")
+    return config
+
+
+def save_window_config(data_root, config, upload, window_repo, token):
+    """Write the data root's window_config.json and, when asked, the window repo's.
+
+    The repo's file is replaced only if it records the same window settings.
+    Statistics therefore never land beside windows of another shape.
+
+    Args:
+        data_root (Path): the data root.
+        config (dict): the whole file.
+        upload (bool): also write it to the window repo.
+        window_repo (str): the window repo.
+        token (str | None): a token with write access (upload only).
+
+    Returns:
+        tuple[Path, str | None]: (the local file, the repo uploaded to or None).
+
+    Raises:
+        ValueError: if the repo's file records other window settings.
+    """
+    path = write_window_config_file(data_root, config)
+    if not upload:
+        return path, None
+    remote = hub.read_window_config(window_repo, token)
+    if remote is not None and window_settings_of(remote) != window_settings_of(config):
+        raise ValueError(f"{window_repo}/{WINDOW_CONFIG_FILE} records other window settings than {path}; "
+                         "not uploading statistics to it")
+    hub.upload_file(json.dumps(config, indent=2).encode(), WINDOW_CONFIG_FILE, window_repo, token)
+    return path, window_repo
+
+
+def count_pixels(data_root=DATA_DIR, splits=SPLITS, token=None, window_repo=None, length=TS_LENGTH,
+                 interval=TS_INTERVAL, upload=False, workers=None):
+    """Count every split's background, fire and other target pixels into window_config.json.
+
+    Only the small label_### members are read, so this takes seconds. The
+    counts go into the pixel_counts block of <data_root>/window_config.json
+    (splits not counted now keep their earlier entries); --ce-weight auto trains
+    with the train entry's background-to-fire ratio. Each entry lists its fires,
+    so training refuses counts that miss a fire it would train on.
+
+    Args:
+        data_root (str | Path): the data root with train/, val/ and test/.
+        splits (tuple[str, ...]): the splits to count; empty ones are skipped.
+        token (str | None): a Hugging Face token (to fetch or upload window_config.json).
+        window_repo (str | None): the window repo (default: the one for length/interval).
+        length (int): input days per window (picks the default repo).
+        interval (int): days between window starts (picks the default repo).
+        upload (bool): also write the updated window_config.json to the window repo.
+        workers (int | None): reading threads.
+
+    Returns:
+        PixelCountReport: the counts and where they were written.
+    """
+    data_root = Path(data_root)
+    window_repo = window_repo or window_repo_for(length, interval)
+    config = data_root_window_config(data_root, window_repo, token)
+    counts = {}
+    for split in splits:
+        if not find_fire_sources(data_root / split):
+            print(f"No fires in {data_root / split}; not counted")
+            continue
+        counts[split] = count_labels(data_root / split, workers=workers)
+    config[PIXEL_COUNTS] = {**config.get(PIXEL_COUNTS, {}),
+                            **{split: split_counts.record() for split, split_counts in counts.items()}}
+    path, uploaded_to = save_window_config(data_root, config, upload, window_repo, token)
+    report = PixelCountReport(path, counts, uploaded_to)
+    print(report.summary())
+    return report
+
+
+def compute_normalization(data_root=DATA_DIR, split="train", token=None, window_repo=None, length=TS_LENGTH,
+                          interval=TS_INTERVAL, upload=False, workers=None):
+    """Measure the per-channel input mean and std of a split into window_config.json.
+
+    Windows are read lazily: each thread decompresses one window, folds it
+    into running per-channel moments and drops it, so memory stays near one
+    window per thread (about 42 MB for 6 days) however large the split. The
+    statistics go into the normalization block of <data_root>/window_config.json;
+    training standardizes every window with them. Only the training split
+    should be measured, so nothing is learned from held-out fires.
+
+    Args:
+        data_root (str | Path): the data root with train/, val/ and test/.
+        split (str): the split to measure.
+        token (str | None): a Hugging Face token (to fetch or upload window_config.json).
+        window_repo (str | None): the window repo (default: the one for length/interval).
+        length (int): input days per window (picks the default repo).
+        interval (int): days between window starts (picks the default repo).
+        upload (bool): also write the updated window_config.json to the window repo.
+        workers (int | None): reading threads (each holds one window).
+
+    Returns:
+        NormalizationReport: the statistics and where they were written.
+    """
+    data_root = Path(data_root)
+    window_repo = window_repo or window_repo_for(length, interval)
+    config = data_root_window_config(data_root, window_repo, token)
+    print(f"Measuring {data_root / split} one window at a time")
+    stats = split_normalization(data_root / split, workers=workers)
+    config[NORMALIZATION] = stats.record()
+    path, uploaded_to = save_window_config(data_root, config, upload, window_repo, token)
+    report = NormalizationReport(path, stats, uploaded_to)
+    print(report.summary())
+    return report
+
+
 # ----- Moving window data ----- #
 
 
@@ -646,7 +793,9 @@ def download_windows(
     """Download every window archive of the window repo into a local data root.
 
     Each archive goes to the train/val/test folder its fire belongs to (from the
-    ROI CSVs); archives already on disk are kept. In TESSERA mode, fires without
+    ROI CSVs); archives already on disk are kept. The repo's window_config.json
+    is copied to <data_root>/window_config.json, keeping statistics computed
+    there earlier that the repo's copy lacks. In TESSERA mode, fires without
     prior-year TESSERA are left out and the TESSERA files are downloaded too.
     Use a separate data root per mode, so the two never mix.
 
@@ -673,6 +822,12 @@ def download_windows(
     split_of = roi.split_of()
     for split in SPLITS:
         (data_root / split).mkdir(parents=True, exist_ok=True)
+
+    # Training reads the data root's copy of window_config.json before anything else.
+    if window_config is None:
+        print(f"WARNING: {window_repo} has no {WINDOW_CONFIG_FILE}; training needs one in {data_root}")
+    else:
+        write_window_config_file(data_root, keep_statistics(window_config, read_window_config_file(data_root)))
 
     downloaded, present, skipped = [], [], []
     for name in hub.list_repo_files(window_repo, token):
@@ -706,7 +861,8 @@ def upload_data_zip(token, data_root=DATA_DIR, zip_path=None, repo_id=None, zip_
     """Zip a data root's folders and upload the zip to a repo.
 
     Training downloads this one zip instead of one file per fire. Missing
-    folders are skipped. TESSERA mode uses the TESSERA repo and another zip
+    folders are skipped. The data root's window_config.json (with any
+    statistics) goes in at the zip's root. TESSERA mode uses the TESSERA repo and another zip
     name, so the full data.zip is never replaced by the reduced set.
 
     Args:
@@ -722,7 +878,12 @@ def upload_data_zip(token, data_root=DATA_DIR, zip_path=None, repo_id=None, zip_
     """
     repo_id = repo_id or window_repo_for()
     zip_path = Path(zip_path) if zip_path else Path(data_root).parent / zip_name
-    members = files.zip_folders([Path(data_root) / folder for folder in folders], zip_path)
+    # window_config.json rides along at the zip's root, so training finds it after unpacking.
+    config_file = window_config_path(data_root)
+    if not config_file.is_file():
+        print(f"WARNING: {config_file} is missing; training refuses data without it")
+    members = files.zip_folders([Path(data_root) / folder for folder in folders], zip_path,
+                                extra_files=[config_file] if config_file.is_file() else ())
     hub.upload_file(zip_path, zip_name, repo_id, token)
     report = ZipUpload(zip_path, tuple(members), repo_id, zip_name)
     print(report.summary())
@@ -730,11 +891,15 @@ def upload_data_zip(token, data_root=DATA_DIR, zip_path=None, repo_id=None, zip_
 
 
 def rebuild_data_zip(token, window_repo=None, length=TS_LENGTH, interval=TS_INTERVAL, src_repo=SRC_REPO,
-                     work_dir=WORK_DIR, roi_dir=ROI_CACHE_DIR):
-    """Rebuild data.zip from the window repo's archives and upload it.
+                     work_dir=WORK_DIR, roi_dir=ROI_CACHE_DIR, statistics=True, workers=None):
+    """Rebuild data.zip from the window repo's archives, with their statistics, and upload it.
 
     After new windows are built, data.zip must be remade. This downloads every
-    archive into a fresh folder and uploads it as one zip.
+    archive into a fresh folder. Once all of them are there, the pixel counts
+    and the training split's normalization are measured (count_pixels,
+    compute_normalization) into window_config.json, which is uploaded to the
+    repo and zipped with the archives, so training gets data and statistics
+    that always match. Then everything is uploaded as one zip.
 
     Args:
         token (str | None): a token with write access to the window repo.
@@ -744,6 +909,9 @@ def rebuild_data_zip(token, window_repo=None, length=TS_LENGTH, interval=TS_INTE
         src_repo (str): the raw GeoTIFF repo (for the ROI CSVs).
         work_dir (str | Path): where the download folder and zip go.
         roi_dir (str | Path): the local folder for the ROI CSVs.
+        statistics (bool): measure the statistics before zipping (False: zip the repo's
+            window_config.json as it is).
+        workers (int | None): reading threads for the statistics.
 
     Returns:
         ZipUpload: the zip, its members and where it went.
@@ -751,24 +919,15 @@ def rebuild_data_zip(token, window_repo=None, length=TS_LENGTH, interval=TS_INTE
     window_repo = window_repo or window_repo_for(length, interval)
     zip_root = Path(work_dir) / f"zip_ts{length}_it{interval}"
     download_windows(token, window_repo=window_repo, src_repo=src_repo, data_root=zip_root, roi_dir=roi_dir)
+    if statistics:
+        # Every archive is on disk now, so the statistics describe the whole dataset.
+        count_pixels(zip_root, token=token, window_repo=window_repo, upload=True, workers=workers)
+        compute_normalization(zip_root, token=token, window_repo=window_repo, upload=True, workers=workers)
     return upload_data_zip(token, data_root=zip_root, zip_path=f"{zip_root}.zip", repo_id=window_repo)
 
 
 def pull_data_zip(data_root, token=None, repo_id=None, zip_name=DATA_ZIP):
-    """Download a data zip and unpack it into a data root.
-
-    The zip's folders (train/, val/, test/, ...) are recreated under
-    data_root. Member paths are checked before unpacking.
-
-    Args:
-        data_root (str | Path): where to download and unpack.
-        token (str | None): a Hugging Face token.
-        repo_id (str | None): the repo holding the zip (default: the window repo of the default settings).
-        zip_name (str): the zip's name in the repo.
-
-    Returns:
-        Path: data_root.
-    """
+    """Download a data zip and unpack it into a data root."""
     data_root = hub.pull_zip(repo_id or window_repo_for(), zip_name, data_root, token)
     print(f"Extracted {zip_name} into {data_root}")
     return Path(data_root)

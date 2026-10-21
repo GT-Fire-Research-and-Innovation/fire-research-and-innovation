@@ -4,15 +4,15 @@ Two sides share this package. Training imports only the first group (no
 geospatial packages, no Hugging Face); the notebooks and `cli.dataset` call the
 two masters. Modules in import order (each imports only earlier ones):
 
-    fires.py            pure: ROI CSVs -> splits, label rules, fire ids
-    archive.py          the window archive format (write, index, open, unzip)
-    class_balance.py    exact background and fire pixel counts of a split (--ce-weight auto)
-    tessera_archive.py  the TESSERA file format (write, read, statistics, model input)
-    transforms.py       normalize, augment, preprocess one window
-    fire_dataset.py     FireDataset, DataLoaders and batch assembly (training)
-    files.py            local files: zip, unzip, data roots
+    archive.py          every file format: Zstandard .npz, window archives (write, index,
+                        open, unzip), TESSERA files (write, read, statistics, model input)
+    stats.py            pixel counts and input normalization of a split, and the data
+                        root's window_config.json that carries them to training
+    fire_dataset.py     transforms (normalize, augment, preprocess), FireDataset,
+                        DataLoaders and batch assembly (training)
+    files.py            local files: ROI CSVs -> splits and label rules, zips, data roots
     tessera.py          building TESSERA: per-fire grids, which fires, training views
-    hub.py              Hugging Face I/O and window_config.json
+    hub.py              Hugging Face I/O and the window repo's window_config.json
     windows.py          one fire's GeoTIFFs -> input windows and next-day targets
     tessera_master.py   MASTER: every TESSERA step
     windows_master.py   MASTER: every window-data step
