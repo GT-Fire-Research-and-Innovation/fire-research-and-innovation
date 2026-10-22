@@ -23,10 +23,12 @@ order whatever the thread count. Memory stays at one decompressed window per thr
 (27 x T x 256 x 256 float32, about 42 MB for T = 6). Every stored value counts, including
 the zeros window building writes for missing data.
 
-Training refuses to start without the file, or with -ts/-it that differ from it. Each
-block lists the fires it was computed from: a block missing a fire now in the split is
-refused (the data changed since), while fires the block has and the split lacks are only
-noted (a TESSERA view leaves some out).
+Training refuses -ts/-it that differ from the file. Each block lists the fires it was
+computed from: a block missing a fire now in the split is not used (the data changed
+since), while fires the block has and the split lacks are only noted (a TESSERA view
+leaves some out). A statistic the file cannot supply (no file, no block, or a block
+missing fires) raises MissingStatistics; training then falls back to the official
+TS-SatFire values and records that in W&B.
 """
 
 import json
@@ -447,6 +449,15 @@ def keep_statistics(config, previous):
     return merged
 
 
+class MissingStatistics(RuntimeError):
+    """Say that window_config.json cannot supply a statistic the run asked for.
+
+    The file may be missing, lack the block or the split's entry, or hold a block
+    computed without some fires now on disk. Training then falls back to the
+    official TS-SatFire values and records why (training/experiment.py).
+    """
+
+
 def fire_coverage(record, split_dir, what, path):
     """Check that a statistics block covers every fire of a split.
 
@@ -463,13 +474,13 @@ def fire_coverage(record, split_dir, what, path):
         tuple[str, ...]: fires the block has but the split lacks (only worth a note).
 
     Raises:
-        RuntimeError: if the split has fires the block was not computed from.
+        MissingStatistics: if the split has fires the block was not computed from.
     """
     present = {fire_name(source) for source in find_fire_sources(split_dir)}
     recorded = set(record["fires"])
     missing = sorted(present - recorded)
     if missing:
-        raise RuntimeError(
+        raise MissingStatistics(
             f"{path}: {what} were computed without {len(missing)} fires now in {split_dir} "
             f"(e.g. {missing[:5]}); run `python -m firepred.cli.dataset {COMMANDS[what]} "
             f"--data-root {path.parent}` again"
@@ -486,38 +497,30 @@ class WindowConfig:
 
     Attributes:
         path (Path): the file.
-        values (dict): its contents.
+        values (dict): its contents ({} when there is no file).
+        found (bool): whether the file exists.
     """
 
     path: Path
     values: dict
+    found: bool = True
 
     @classmethod
     def read(cls, data_root):
-        """Read a data root's window_config.json, which training cannot run without.
+        """Read a data root's window_config.json, or stand in for a missing one.
 
-        A missing file stops the run with the commands that make one. Nothing
-        is checked yet.
+        A missing file gives an empty config: nothing is checked against it and
+        every statistic it is asked for raises MissingStatistics. Nothing is
+        checked yet.
 
         Args:
             data_root (str | Path): the data root.
 
         Returns:
-            WindowConfig: the file.
-
-        Raises:
-            FileNotFoundError: if the data root has no window_config.json.
+            WindowConfig: the file, or an empty one with found=False.
         """
-        path = window_config_path(data_root)
         values = read_window_config_file(data_root)
-        if values is None:
-            raise FileNotFoundError(
-                f"No {WINDOW_CONFIG_FILE} in {Path(data_root)}. Training reads the data's window settings and "
-                "statistics from it before anything else. `python -m firepred.cli.dataset download` (or a "
-                "data.zip uploaded after it) puts it in the data root; then run `count-pixels` and "
-                "`compute-normalization` on that data root."
-            )
-        return cls(path, values)
+        return cls(window_config_path(data_root), values or {}, values is not None)
 
     def check_windows(self, ts_length, ts_interval=None):
         """Refuse a run whose -ts/-it differ from the recorded window settings (unrecorded ones are not checked)."""
@@ -528,9 +531,24 @@ class WindowConfig:
         return self
 
     def block(self, key):
-        """Give one statistics block, or fail naming the command that writes it."""
+        """Give one statistics block, or raise MissingStatistics naming the command that writes it.
+
+        The blocks are added by data-grab commands after download. Without the
+        file, or without the block, training falls back to the official values.
+
+        Args:
+            key (str): PIXEL_COUNTS or NORMALIZATION.
+
+        Returns:
+            dict: the block.
+
+        Raises:
+            MissingStatistics: if there is no file, or it has no such block.
+        """
+        if not self.found:
+            raise MissingStatistics(f"No {WINDOW_CONFIG_FILE} in {self.path.parent}")
         if key not in self.values:
-            raise RuntimeError(
+            raise MissingStatistics(
                 f"{self.path} has no {key}. Run `python -m firepred.cli.dataset {COMMANDS[key]} "
                 f"--data-root {self.path.parent}` first."
             )
@@ -549,12 +567,12 @@ class WindowConfig:
             tuple[LabelCounts, tuple[str, ...]]: (the counts, recorded fires the split lacks).
 
         Raises:
-            RuntimeError: if there are no counts for the split, or they miss one of its fires.
+            MissingStatistics: if there are no counts for the split, or they miss one of its fires.
         """
         split_dir = Path(split_dir)
         counts = self.block(PIXEL_COUNTS)
         if split_dir.name not in counts:
-            raise RuntimeError(
+            raise MissingStatistics(
                 f"{self.path} has no {PIXEL_COUNTS} for {split_dir.name}. Run `python -m firepred.cli.dataset "
                 f"{COMMANDS[PIXEL_COUNTS]} --data-root {self.path.parent}` first."
             )

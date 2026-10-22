@@ -280,18 +280,26 @@ def test_test_mode_without_a_checkpoint_stops_before_wandb(e2e_root, tmp_path, m
     assert not finished.named("init")
 
 
-def test_run_without_window_config_stops_before_wandb(e2e_root, tmp_path):
-    """A data root without window_config.json fails at once, naming the file, and starts no W&B run."""
+def test_run_without_window_config_uses_official_values(e2e_root, tmp_path):
+    """A data root without window_config.json trains with the official TS-SatFire values and says so in W&B."""
+    from firepred.config.dataset import NORMALIZATION_MEAN
+    from firepred.config.training import PAPER_CE_WEIGHT
+
     root, csv_path = e2e_root
     bare = tmp_path / "bare"
     bare.mkdir()
     for split in ("train", "val", "test"):
         (bare / split).symlink_to(root / split, target_is_directory=True)
-    finished = run(tmp_path / "case", base_flags() + ["--data-root", str(bare), "--test-csv", str(csv_path)],
-                   check=False)
-    assert finished.returncode != 0
-    assert "No window_config.json" in finished.stderr
-    assert not finished.named("init")
+    flags = base_flags() + ["--data-root", str(bare), "--test-csv", str(csv_path), "--loss", "dicece",
+                            "--ce-weight", "auto", "--epochs", "1", "--no-test-after-train"]
+    finished = run(tmp_path / "case", flags)
+    assert "WARNING: no window_config.json" in finished.stdout
+    recorded = finished.named("config.update")[0][1][0]
+    assert sorted(recorded["defaults_used"]) == ["ce_weight", "normalization", "window_config"]
+    assert recorded["normalization"] == "paper" and recorded["ce_weight"] == list(PAPER_CE_WEIGHT)
+    checkpoint = finished.checkpoint()
+    assert checkpoint["normalization"]["mean"] == [float(value) for value in NORMALIZATION_MEAN]
+    assert checkpoint["loss_config"]["ce_weight"] == list(PAPER_CE_WEIGHT)
 
 
 def test_test_mode_refuses_a_tessera_mismatch(dicece_run, e2e_root, tmp_path):

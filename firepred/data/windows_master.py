@@ -881,7 +881,7 @@ def upload_data_zip(token, data_root=DATA_DIR, zip_path=None, repo_id=None, zip_
     # window_config.json rides along at the zip's root, so training finds it after unpacking.
     config_file = window_config_path(data_root)
     if not config_file.is_file():
-        print(f"WARNING: {config_file} is missing; training refuses data without it")
+        print(f"WARNING: {config_file} is missing; training will fall back to the official TS-SatFire statistics")
     members = files.zip_folders([Path(data_root) / folder for folder in folders], zip_path,
                                 extra_files=[config_file] if config_file.is_file() else ())
     hub.upload_file(zip_path, zip_name, repo_id, token)

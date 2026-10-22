@@ -19,6 +19,9 @@ from pathlib import Path
 from firepred.config.training import WANDB_PROJECT
 from firepred.training.accelerator import Device
 
+# W&B tag of runs that used official TS-SatFire values because window_config.json lacked some.
+DEFAULTS_TAG = "official-defaults"
+
 
 class Tracker:
     """One W&B run: set up when the `with` block starts, finished when it ends.
@@ -121,7 +124,9 @@ class Tracker:
 
         self.wandb = wandb
         wandb.login()
-        wandb.init(project=WANDB_PROJECT, entity=self.config.wandb_entity)
+        # Runs that used official values in place of window_config.json are tagged, besides config.defaults_used.
+        wandb.init(project=WANDB_PROJECT, entity=self.config.wandb_entity,
+                   tags=[DEFAULTS_TAG] if self.config.defaults_used else None)
         if not self.config.test_only:
             epoch = self.labels["epoch"]
             wandb.define_metric(epoch)

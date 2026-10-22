@@ -11,11 +11,13 @@ import pytest
 
 import synth
 from firepred.config.dataset import NORMALIZATION_MEAN, NORMALIZATION_STD
+from firepred.config.training import PAPER_CE_WEIGHT
 from firepred.data.files import zip_folders
 from firepred.data.stats import (
     NORMALIZATION,
     PIXEL_COUNTS,
     ChannelMoments,
+    MissingStatistics,
     WindowConfig,
     count_labels,
     fire_moments,
@@ -191,24 +193,39 @@ def test_missing_local_file_comes_from_the_repo_and_uploads_check_settings(data_
 # ----- training reads the file first ----- #
 
 
-def test_training_refuses_to_start_without_window_config(data_root, tmp_path):
-    """No window_config.json in the data root: the run stops before the device, data or W&B."""
-    root, csv_path = data_root
-    target = view(root, tmp_path / "data")
-    config = RunConfig("tiny3d", batch_size=1, data_root=target, test_csv=csv_path)
-    with pytest.raises(FileNotFoundError, match="No window_config.json"):
-        Experiment(config).run()
-
-
-def test_training_refuses_other_window_settings_and_missing_blocks(data_root, tmp_path):
-    """-ts must match the file; a missing block names the command that writes it."""
-    root, csv_path = data_root
-    expected = reference(root)
+def test_training_refuses_other_window_settings(data_root):
+    """-ts must match the window settings the file records."""
+    root, _ = data_root
     with pytest.raises(ValueError, match="-ts 10"):
         Experiment(RunConfig("tiny3d", ts_length=10, data_root=root)).run()
-    target = view(root, tmp_path / "data", without(expected, NORMALIZATION))
-    with pytest.raises(RuntimeError, match="compute-normalization"):
-        Experiment(RunConfig("tiny3d", data_root=target, test_csv=csv_path)).run()
+
+
+def test_missing_statistics_fall_back_to_official_values(data_root, tmp_path):
+    """No file, no blocks, or a stale block: the official TS-SatFire values, each recorded with its reason."""
+    from firepred.training.config import LossConfig
+
+    root, _ = data_root
+    stale = reference(root)
+    stale[NORMALIZATION] = dict(stale[NORMALIZATION], fires=stale[NORMALIZATION]["fires"][:1])
+    stale[PIXEL_COUNTS] = {}
+    cases = {"none": (None, "No window_config.json"),
+             "bare": (without(reference(root), NORMALIZATION, PIXEL_COUNTS), "compute-normalization"),
+             "stale": (stale, "without 1 fires")}
+    for name, (contents, reason) in cases.items():
+        target = view(root, tmp_path / name, contents)
+        window_config = WindowConfig.read(target)
+        assert window_config.found == (contents is not None)
+        config = with_data_statistics(RunConfig("tiny3d", data_root=target, loss=LossConfig("dicece", "auto")),
+                                      window_config, target / "train")
+        assert config.normalization == "paper"
+        assert config.normalization_stats == (tuple(NORMALIZATION_MEAN), tuple(NORMALIZATION_STD))
+        assert config.loss.ce_weight == PAPER_CE_WEIGHT and config.loss.ce_weight_counts is None
+        assert [what for what, _ in config.defaults_used] == ["normalization", "ce_weight"]
+        logged = config.wandb_config()
+        assert reason in logged["defaults_used"]["normalization"]
+        assert logged["normalization"] == "paper" and logged["ce_weight"] == list(PAPER_CE_WEIGHT)
+        assert config.checkpoint_settings(None)["normalization"]["source"] == "paper"
+    assert "defaults_used" not in RunConfig("tiny3d").wandb_config()
 
 
 def test_statistics_that_miss_a_training_fire_are_refused(data_root, tmp_path):
@@ -217,7 +234,7 @@ def test_statistics_that_miss_a_training_fire_are_refused(data_root, tmp_path):
     stale = reference(root)
     stale[NORMALIZATION] = dict(stale[NORMALIZATION], fires=stale[NORMALIZATION]["fires"][:1])
     target = view(root, tmp_path / "stale", stale)
-    with pytest.raises(RuntimeError, match="without 1 fires"):
+    with pytest.raises(MissingStatistics, match="without 1 fires"):
         WindowConfig.read(target).normalization(target / "train")
     extra = reference(root)
     extra[NORMALIZATION] = dict(extra[NORMALIZATION], fires=extra[NORMALIZATION]["fires"] + ["p99999999"])

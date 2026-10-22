@@ -6,14 +6,15 @@ The run is a straight line. Each step builds one object from the RunConfig
 and what the steps before it produced, and hands it on; nothing later calls
 back into an earlier step:
 
-    0. the data root's window_config.json: without it nothing runs, and -ts/-it
-       must match the window settings it records
+    0. the data root's window_config.json: -ts/-it must match the window settings
+       it records (a missing file is noted and logged to W&B)
     1. the Device, then seed numpy, torch, Python's random (and XLA on a TPU)
     2. FireData: where the data is (unzipped once if asked)
     3. training only: fix the input normalization (the training split's
        statistics from window_config.json, or the paper's) and, with
        --ce-weight auto, the class weights from its pixel counts, in the
-       RunConfig, before anything records them
+       RunConfig, before anything records them. When the file lacks them, the
+       official TS-SatFire values stand in and RunConfig.defaults_used says why
     4. the Tracker (the W&B run)
     5. the model (registry), wrapped in DataParallel
     6. training only: datasets and loaders -> Trainer.fit -> best checkpoint
@@ -22,7 +23,7 @@ back into an earlier step:
 """
 
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -30,6 +31,7 @@ import torch
 from torch import nn
 
 from firepred.config.dataset import N_STORED_CHANNELS
+from firepred.config.training import PAPER_CE_WEIGHT
 from firepred.data.archive import (
     compute_tessera_stats,
     find_fire_sources,
@@ -38,7 +40,7 @@ from firepred.data.archive import (
     unzip_data_root,
 )
 from firepred.data.fire_dataset import FireDataset, make_dataloader, validate_dataset_output
-from firepred.data.stats import WindowConfig
+from firepred.data.stats import MissingStatistics, WindowConfig
 from firepred.models.registry import build_model
 from firepred.training.accelerator import Device
 from firepred.training.checkpoints import CheckpointLoader, CheckpointStore, find_test_checkpoint
@@ -70,7 +72,8 @@ def with_window_label_counts(config, window_config, train_dir):
     """Fill in --ce-weight auto from the training split's pixel counts in window_config.json.
 
     Settings that need no counts come back unchanged, without reading the file.
-    The counts were written by `dataset count-pixels`.
+    The counts were written by `dataset count-pixels`. Without usable counts the
+    paper's (1.0, 446.7836) stands in, recorded in defaults_used (and so in W&B).
 
     Args:
         config (RunConfig): the settings.
@@ -82,7 +85,13 @@ def with_window_label_counts(config, window_config, train_dir):
     """
     if not config.needs_label_counts:
         return config
-    counts, unused = window_config.label_counts(train_dir)
+    try:
+        counts, unused = window_config.label_counts(train_dir)
+    except MissingStatistics as missing:
+        print(f"WARNING: {missing}\nClass weights: the official TS-SatFire {PAPER_CE_WEIGHT} instead of "
+              "--ce-weight auto (logged to W&B as defaults_used)")
+        config = replace(config, loss=replace(config.loss, ce_weight=PAPER_CE_WEIGHT))
+        return config.with_default("ce_weight", f"official TS-SatFire {list(PAPER_CE_WEIGHT)}: {missing}")
     print(f"Training labels ({window_config.path}): {counts.summary()}")
     note_unused_fires("pixel counts", unused)
     config = config.with_label_counts(counts)
@@ -95,7 +104,9 @@ def with_window_normalization(config, window_config, train_dir):
 
     Settings that already have them (or a -test run, which takes the
     checkpoint's) come back unchanged. The statistics were written by
-    `dataset compute-normalization`.
+    `dataset compute-normalization`. Without usable statistics the official
+    TS-SatFire code's fixed numbers stand in (normalization becomes "paper"),
+    recorded in defaults_used (and so in W&B).
 
     Args:
         config (RunConfig): the settings.
@@ -110,7 +121,13 @@ def with_window_normalization(config, window_config, train_dir):
     if config.normalization == NORMALIZE_LIKE_PAPER:
         print("Input normalization: the paper's fixed statistics (--normalization paper)")
         return config.with_paper_normalization()
-    stats, unused = window_config.normalization(train_dir)
+    try:
+        stats, unused = window_config.normalization(train_dir)
+    except MissingStatistics as missing:
+        print(f"WARNING: {missing}\nInput normalization: the official TS-SatFire code's fixed statistics "
+              "instead (logged to W&B as defaults_used)")
+        config = replace(config, normalization=NORMALIZE_LIKE_PAPER).with_paper_normalization()
+        return config.with_default("normalization", f"official TS-SatFire statistics: {missing}")
     print(f"Input normalization ({window_config.path}): {stats.summary()}")
     note_unused_fires("normalization statistics", unused)
     return config.with_normalization_stats(stats.mean, stats.std)
@@ -476,23 +493,31 @@ class Experiment:
     def run(self):
         """Run the experiment: read window_config.json, seed, find the data, start W&B, build the model, train, test.
 
-        Nothing runs without the data root's window_config.json, and -ts/-it must
-        match the windows it describes. With -test only the testing runs, and no
-        loss or optimizer is built. The W&B run is finished when this returns,
-        even after an error. A training run first fixes its input normalization
-        (and, with --ce-weight auto, its class weights) from window_config.json,
-        so W&B, the data, the loss and the checkpoints all see the same numbers.
+        -ts/-it must match the windows the data root's window_config.json
+        describes. With -test only the testing runs, and no loss or optimizer is
+        built. The W&B run is finished when this returns, even after an error. A
+        training run first fixes its input normalization (and, with --ce-weight
+        auto, its class weights) from window_config.json, so W&B, the data, the
+        loss and the checkpoints all see the same numbers. Whatever the file
+        cannot supply (the file itself, a block) falls back to the official
+        TS-SatFire values, recorded in W&B as defaults_used.
 
         Returns:
             RunResult: the tested checkpoint and the final scores.
 
         Raises:
-            FileNotFoundError: if the data root has no window_config.json.
             ValueError: if -ts/-it differ from the recorded window settings.
         """
         config = self.config
         window_config = WindowConfig.read(config.data_root).check_windows(config.ts_length, config.ts_interval)
-        print(f"Window config: {window_config.path}")
+        if window_config.found:
+            print(f"Window config: {window_config.path}")
+        else:
+            print(f"WARNING: no {window_config.path.name} in {window_config.path.parent}; -ts/-it are not checked "
+                  "against the data (logged to W&B as defaults_used)")
+            config = self.config = config.with_default(
+                "window_config", f"missing from the data root: -ts {config.ts_length} / -it {config.ts_interval} "
+                                 "unchecked")
         device = Device.resolve(config.device)
         self.seed(device)
         data = FireData.locate(config)

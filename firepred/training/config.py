@@ -260,6 +260,8 @@ class RunConfig:
         normalization_stats (tuple[tuple[float, ...], tuple[float, ...]] | None): the
             (mean, std) the run standardizes with; filled in (with_normalization_stats)
             before anything reads it.
+        defaults_used (tuple[tuple[str, str], ...]): (what, why) for every setting that fell
+            back to the official TS-SatFire value because window_config.json lacked it; logged to W&B.
         loss (LossConfig): the training loss.
         schedule (ScheduleConfig): the learning-rate schedule.
         swin_temporal_downsample (bool): SwinUNETR-3D also merges days.
@@ -301,6 +303,7 @@ class RunConfig:
     tessera_cells_per_pixel: int = TESSERA_CELLS_PER_PIXEL
     normalization: str = NORMALIZE_FROM_WINDOW_CONFIG
     normalization_stats: tuple = None  # (mean, std), filled in before the data is built
+    defaults_used: tuple = ()          # (what, why) per official value used in place of window_config.json
     loss: LossConfig = None            # None -> the paper's loss for `model` (LossConfig.paper_loss)
     schedule: ScheduleConfig = field(default_factory=ScheduleConfig)
     swin_temporal_downsample: bool = False
@@ -413,6 +416,24 @@ class RunConfig:
             RunConfig: the settings with NORMALIZATION_MEAN/STD filled in.
         """
         return self.with_normalization_stats(NORMALIZATION_MEAN, NORMALIZATION_STD)
+
+    # ----- official values used in place of window_config.json ----- #
+
+    def with_default(self, what, why):
+        """Give a copy that records one official TS-SatFire value used because window_config.json lacked it.
+
+        The record goes into the W&B config (defaults_used) and tags the run, so a
+        run that did not train with its data's own statistics is easy to spot.
+        The value itself is set by the caller.
+
+        Args:
+            what (str): the setting, e.g. "normalization" or "ce_weight".
+            why (str): what was missing.
+
+        Returns:
+            RunConfig: the settings with the record added.
+        """
+        return replace(self, defaults_used=(*self.defaults_used, (what, why)))
 
     # ----- data ----- #
 
@@ -669,4 +690,6 @@ class RunConfig:
             config["model_options"] = dict(self.extra_model_options)
         config.update(self.schedule.record())
         config["test_every"] = self.test_every  # [ours] periodic test scoring (logging only)
+        if self.defaults_used:  # official values used because window_config.json lacked them
+            config["defaults_used"] = dict(self.defaults_used)
         return config

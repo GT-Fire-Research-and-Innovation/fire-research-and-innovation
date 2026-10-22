@@ -211,9 +211,9 @@ def check_data(args):
     """Check one training batch and one validation window from a data root.
 
     The data root's window_config.json comes first, as in training: it must
-    exist, match -ts, and (for --normalization window-config) hold the training
-    statistics. Channel counts must match the model's input width, and shapes
-    the window size. With --train-step one real training step runs on the batch.
+    match -ts, and statistics it lacks fall back to the official TS-SatFire
+    values (with a warning). Channel counts must match the model's input width,
+    and shapes the window size. With --train-step one real training step runs on the batch.
 
     Args:
         args (argparse.Namespace): the parsed `data` flags.
