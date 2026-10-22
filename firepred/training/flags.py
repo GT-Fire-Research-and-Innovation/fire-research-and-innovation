@@ -121,6 +121,11 @@ class CeWeightAction(argparse.Action):
         setattr(namespace, self.dest, weights)
 
 
+def focal_alpha_value(value):
+    """Read --focal-alpha: a number, or "none" (or "off") to turn the class weight off."""
+    return None if value.lower() in ("none", "off") else float(value)
+
+
 def ce_weight_value(value):
     """Turn the parsed --ce-weight into the LossConfig value.
 
@@ -199,18 +204,22 @@ FLAGS = (
         "does. Default follows the paper: no temporal downsampling"}),
     Flag(("--ce-weight",), "loss.ce_weight", {
         "action": CeWeightAction, "nargs": "+", "metavar": "WEIGHT",
-        "help": "dicece class weights BACKGROUND FIRE (default: the paper's 1.0 446.7836), or 'auto' (NEW): 1.0 "
-                "and the training split's background-to-fire pixel ratio, read from the pixel counts in "
-                "<data-root>/window_config.json (python -m firepred.cli.dataset count-pixels)"},
-         default=list(PAPER_CE_WEIGHT), to_config=ce_weight_value),
+        "help": "dicece class weights: 'auto' (default, NEW) = 1.0 and the training split's background-to-fire "
+                "pixel ratio, read from the pixel counts in <data-root>/window_config.json (python -m "
+                "firepred.cli.dataset count-pixels), falling back to the paper's 1.0 %s when the file has no "
+                "usable counts (logged to W&B as defaults_used); or two numbers BACKGROUND FIRE"
+                % PAPER_CE_WEIGHT[1]},
+         to_config=ce_weight_value),
     Flag(("--lambda-dice",), "loss.lambda_dice", {"type": float}),
     Flag(("--lambda-ce",), "loss.lambda_ce", {"type": float}),
     Flag(("--lambda-focal",), "loss.lambda_focal", {
         "type": float, "help": "dicefocal only: weight of the focal term (--lambda-dice weighs the Dice term)"}),
     Flag(("--focal-gamma",), "loss.focal_gamma", {
-        "type": float, "help": "dicefocal only: focusing exponent; 0 makes the focal term plain binary cross entropy"}),
+        "type": float, "help": "dicefocal only: focusing exponent (default 2, Lin et al.'s); 0 with "
+        "--focal-alpha none makes the focal term plain binary cross entropy"}),
     Flag(("--focal-alpha",), "loss.focal_alpha", {
-        "type": float, "help": "dicefocal only: weight of fire pixels in the focal term (e.g. 0.25); default off"}),
+        "type": focal_alpha_value, "help": "dicefocal only: weight of fire pixels in the focal term, background "
+        "gets 1 - alpha (default 0.25, Lin et al.'s); 'none' turns it off"}),
     Flag(("--lr-schedule",), "schedule.name", {
         "choices": LR_SCHEDULES, "help": "NEW, not in the paper: learning-rate decay. none = constant rate (paper and "
         "official code); plateau = multiply by --lr-decay-factor after --lr-patience epochs without a lower "
@@ -384,6 +393,9 @@ def argv_for(config):
                 argv += [name, f"{key}={item!r}"]
         elif flag.action is CeWeightAction:
             argv += [name, value] if value == AUTO_CE_WEIGHT else [name, *(repr(float(item)) for item in value)]
+        elif flag.options.get("type") is focal_alpha_value:
+            # None is a setting here ("off"), not "not given": the default is 0.25.
+            argv += [name, "none" if value is None else text(value)]
         elif value is not None:
             argv += [name, text(value)]
     return argv

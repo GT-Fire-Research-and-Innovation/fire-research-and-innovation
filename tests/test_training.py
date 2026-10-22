@@ -8,6 +8,7 @@ import torch
 from torch import nn, optim
 
 from firepred.cli.train import argv_for, config_from_args, parse_args
+from firepred.config.training import PAPER_CE_WEIGHT
 from firepred.training.checkpoints import CheckpointLoader, CheckpointStore
 from firepred.training.config import LossConfig, RunConfig, ScheduleConfig
 from firepred.training.objectives import Scorer, TrainingLoss
@@ -66,7 +67,7 @@ def test_dicece_reports_its_two_parts():
     """Dice+CE returns its total and both parts; plain Dice has no parts."""
     logits = torch.randn(2, 2, 8, 8)
     labels = masks(torch.rand(8, 8) > 0.9).expand(2, -1, -1, -1)
-    total, parts = loss("dicece")(logits, labels)
+    total, parts = loss("dicece", ce_weight=PAPER_CE_WEIGHT)(logits, labels)
     assert set(parts) == {"dice_loss", "ce_loss"}
     assert torch.isclose(total, parts["dice_loss"] + parts["ce_loss"])
     assert loss("dice")(logits, labels)[1] == {}
@@ -131,10 +132,17 @@ def test_names_never_change():
 
 def test_command_line_round_trips_through_run_config():
     """argv_for(config) parses back to the same RunConfig, so notebooks can launch exactly a config."""
-    for extra in ([], ["--tessera", "--loss", "dicefocal", "--focal-alpha", "0.25", "--lr-schedule", "cosine"],
+    for extra in ([], ["--tessera", "--loss", "dicefocal", "--focal-alpha", "0.4", "--lr-schedule", "cosine"],
+                  ["--loss", "dicefocal", "--focal-alpha", "none", "--focal-gamma", "0"],
                   ["-test", "--checkpoint", "x.pth", "--model-option", "depth=2", "-nc", "43", "--no-test-after-train"]):
         config = config_from_args(parse_args(BASE + extra))
         assert config_from_args(parse_args(argv_for(config))) == config
+    # "none" turns the class weight off; without the flag it is 0.25.
+    assert config_from_args(parse_args(BASE + ["--focal-alpha", "none"])).loss.focal_alpha is None
+    assert config_from_args(parse_args(BASE + ["--loss", "dicefocal"])).loss.focal_alpha == 0.25
+    # Without --ce-weight the class weights are "auto" (window_config.json), and stay so through argv_for.
+    default = config_from_args(parse_args(BASE))
+    assert default.loss.ce_weight == "auto" and argv_for(default)[argv_for(default).index("--ce-weight") + 1] == "auto"
 
 
 def test_run_config_fills_and_checks_settings():
@@ -189,8 +197,8 @@ def test_checkpoints_load_without_running_pickled_code(tmp_path):
 
 
 def test_dicefocal_is_weighted_dice_plus_weighted_focal():
-    """dicefocal = lambda_dice x Dice + lambda_focal x focal on the fire channel, no cross entropy."""
-    from monai.losses import FocalLoss
+    """dicefocal = lambda_dice x Dice + lambda_focal x mean focal on the fire channel, no cross entropy."""
+    from torchvision.ops import sigmoid_focal_loss
 
     torch.manual_seed(3)
     logits = torch.randn(2, 2, 8, 8, requires_grad=True)
@@ -199,11 +207,23 @@ def test_dicefocal_is_weighted_dice_plus_weighted_focal():
     total, parts = criterion(logits, labels)
     assert set(parts) == {"dice_loss", "focal_loss"}  # no cross entropy
     dice, _ = loss("dice")(logits, labels)
-    focal = FocalLoss(include_background=False, gamma=2.0, alpha=0.25)(logits, labels)  # fire channel only
+    # An independent implementation (torchvision's), averaged over the fire channel's pixels.
+    focal = sigmoid_focal_loss(logits[:, 1], labels[:, 1], alpha=0.25, gamma=2.0, reduction="mean")
     assert torch.isclose(total, 0.5 * dice + 2.5 * focal)
     total.backward()
     assert torch.isfinite(logits.grad).all()
-    assert [loss(n).name for n in ("dice", "dicece", "dicefocal")] == ["dice", "dicece", "dicefocal"]
+    names = ("dice", "dicece", "dicefocal")
+    assert [loss(n, ce_weight=PAPER_CE_WEIGHT).name for n in names] == list(names)
+
+
+def test_dicefocal_defaults_are_retinanet_settings():
+    """Focal defaults are Lin et al.'s gamma 2 and alpha 0.25; settings out of range are refused."""
+    config = LossConfig("dicefocal")
+    assert (config.lambda_dice, config.lambda_focal, config.focal_gamma, config.focal_alpha) == (1.0, 1.0, 2.0, 0.25)
+    assert LossConfig("dicefocal", focal_alpha=None).focal_alpha is None  # off is allowed
+    for bad in ({"focal_alpha": 1.5}, {"focal_alpha": -0.1}, {"focal_gamma": -1.0}):
+        with pytest.raises(ValueError, match="focal_"):
+            LossConfig("dicefocal", **bad)
 
 
 def test_dicefocal_names_and_charts():

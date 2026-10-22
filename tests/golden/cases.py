@@ -422,6 +422,7 @@ def model_values(ctx):
 
     from firepred.models.registry import build_model, forward_model
     from firepred.training.config import LossConfig
+    from firepred.config.training import PAPER_CE_WEIGHT
     from firepred.training.objectives import TrainingLoss
 
     out = {}
@@ -450,7 +451,7 @@ def model_values(ctx):
         optimizer = optim.Adam(model.parameters(), lr=1e-3)
         model.train()
         outputs = forward_model(model, x)
-        loss, parts = TrainingLoss(LossConfig("dicece"))(outputs, y)
+        loss, parts = TrainingLoss(LossConfig("dicece", PAPER_CE_WEIGHT))(outputs, y)
         loss.backward()
         optimizer.step()
         out[key + ".train_out"] = outputs
@@ -469,9 +470,12 @@ def model_values(ctx):
 @group("objectives")
 def objective_values(ctx):
     """Losses (with parts), per-window metrics, LR schedules, chart labels."""
+    from dataclasses import replace
+
     import torch
     from torch import nn, optim
 
+    from firepred.config.training import PAPER_CE_WEIGHT
     from firepred.training.config import LossConfig, ScheduleConfig
     from firepred.training.objectives import Scorer, TrainingLoss
     from firepred.training.tracker import Tracker
@@ -487,7 +491,10 @@ def objective_values(ctx):
         ("dice",), ("dicece",), ("dicece", (1.0, 457.1), 0.7, 1.3),
         ("dicefocal",), ("dicefocal", (1.0, 446.7836), 1.0, 1.0, 2.0, 1.5, 0.25),
     ):
-        criterion = TrainingLoss(LossConfig(*loss_args))
+        config = LossConfig(*loss_args)
+        if config.is_auto:  # default "auto" is counted from data at run start; score the paper's weights here
+            config = replace(config, ce_weight=PAPER_CE_WEIGHT)
+        criterion = TrainingLoss(config)
         out[f"loss.{loss_args}"] = criterion(logits, labels)
         out[f"loss_name.{loss_args}"] = criterion.name
     scorer = Scorer()
@@ -597,8 +604,9 @@ def training_values(ctx):
     from torch import nn
 
     from firepred.data.fire_dataset import FireDataset, make_dataloader
+    from firepred.config.training import PAPER_CE_WEIGHT
     from firepred.models.registry import build_model
-    from firepred.training.config import RunConfig
+    from firepred.training.config import LossConfig, RunConfig
     from firepred.training.evaluator import Evaluator
     from firepred.training.trainer import Trainer
 
@@ -608,7 +616,9 @@ def training_values(ctx):
     val_ds = FireDataset(split_dir=root / "val", **kwargs)
     test_ds = FireDataset(split_dir=root / "test", **kwargs)
     device = torch.device("cpu")
-    config = RunConfig("swinunetr3d", batch_size=2, feature_size=12, epochs=1, num_workers=0, test_csv=csv_path)
+    # The Trainer gets numeric class weights; with the default "auto" the experiment would count them first.
+    config = RunConfig("swinunetr3d", batch_size=2, feature_size=12, epochs=1, num_workers=0, test_csv=csv_path,
+                       loss=LossConfig("dicece", PAPER_CE_WEIGHT))
     torch.manual_seed(42)
     model = nn.DataParallel(build_model("swinunetr3d", tiny_spec(43, 12)))
     trainer = Trainer(config, model, device)

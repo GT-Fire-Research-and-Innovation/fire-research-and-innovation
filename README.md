@@ -71,9 +71,10 @@ python -m firepred.cli.train ... -test --checkpoint <file.pth>
 Training scores the test fires with its best checkpoint at the end. Inputs are standardized
 with the training split's mean/std from `window_config.json` (`--normalization paper` uses the
 released fixed numbers instead); checkpoints record the numbers, and `-test` reuses them. The
-Dice + CE class weights default to the paper's `--ce-weight 1.0 446.7836`; `--ce-weight auto`
-instead uses 1.0 and the training split's background-to-fire pixel ratio from
-`window_config.json` (`check labels` recounts the same number from the labels). Add a model with
+Dice + CE class weights default to `--ce-weight auto`: 1.0 and the training split's
+background-to-fire pixel ratio from `window_config.json` (`check labels` recounts the same number
+from the labels). Without usable counts the run falls back to the paper's `1.0 446.7836` and
+records that in W&B (`defaults_used`); two numbers set the weights by hand. Add a model with
 `python -m firepred.cli.new_model NAME` (see docs/ARCHITECTURE.md). This repository
 covers the paper's prediction task only.
 

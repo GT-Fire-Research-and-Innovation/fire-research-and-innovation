@@ -66,6 +66,8 @@ class TrainingLoss(nn.Module):
             self.lambda_ce = config.lambda_ce
         elif config.name == "dicefocal":
             self.dice = DiceLoss(include_background=True, reduction="mean", sigmoid=True)
+            # Both terms are means, combined lambda_dice : lambda_focal like MONAI's
+            # DiceFocalLoss, which is what "1:1" means in most papers.
             self.focal = FocalLoss(
                 include_background=False, gamma=config.focal_gamma, alpha=config.focal_alpha, reduction="mean"
             )
