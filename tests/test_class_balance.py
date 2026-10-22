@@ -106,7 +106,9 @@ def test_ce_weight_flag_takes_two_numbers_or_auto(capsys):
     assert given.loss.ce_weight == (1.0, 352.5)
     assert train_cli.config_from_args(train_cli.parse_args(argv_for(given))) == given
     default = train_cli.config_from_args(train_cli.parse_args(REQUIRED))
-    assert default.loss.ce_weight == (1.0, 446.7836)
+    assert default.loss.ce_weight == AUTO_CE_WEIGHT  # counted from window_config.json; the paper's is the fallback
+    paper = train_cli.config_from_args(train_cli.parse_args(REQUIRED + ["--ce-weight", "1.0", "446.7836"]))
+    assert paper.loss.ce_weight == (1.0, 446.7836)
     for bad in (["auto", "2"], ["1"], ["1", "x"], ["1", "2", "3"]):
         with pytest.raises(SystemExit):
             train_cli.parse_args(REQUIRED + ["--ce-weight", *bad])

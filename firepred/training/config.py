@@ -46,7 +46,6 @@ from firepred.config.training import (
     LR_PATIENCE,
     LR_SCHEDULES,
     NUM_CLASSES,
-    PAPER_CE_WEIGHT,
     SEED,
     TESSERA_MIN_COVERAGE,
     TOP_N_CHECKPOINTS,
@@ -69,8 +68,10 @@ class LossConfig:
 
     The loss is built from this by objectives.TrainingLoss. The weights that
     do not apply to the chosen loss are kept but ignored. A ce_weight of
-    "auto" stands for weights counted from the training labels; the run fills
-    them in (with_label_counts) before anything reads them.
+    "auto" (the default) stands for weights counted from the training labels;
+    the run fills them in from window_config.json (with_label_counts) before
+    anything reads them, or uses the paper's (1.0, 446.7836) when the file has
+    no usable counts (training/experiment.with_window_label_counts).
 
     Attributes:
         name (str): "dice", "dicece" or "dicefocal".
@@ -78,14 +79,15 @@ class LossConfig:
         lambda_dice (float): weight of the Dice term.
         lambda_ce (float): weight of the cross-entropy term (dicece).
         lambda_focal (float): weight of the focal term (dicefocal).
-        focal_gamma (float): focal exponent (dicefocal).
-        focal_alpha (float | None): weight of fire pixels in the focal term (dicefocal).
+        focal_gamma (float): focal exponent, >= 0 (dicefocal).
+        focal_alpha (float | None): weight of fire pixels in the focal term, in [0, 1];
+            background pixels get 1 - alpha. None turns it off (dicefocal).
         ce_weight_counts (tuple[int, int] | None): the (background, fire) training pixels an
             automatic ce_weight was computed from; None for weights given by hand.
     """
 
     name: str = "dicece"
-    ce_weight: tuple = PAPER_CE_WEIGHT
+    ce_weight: tuple = AUTO_CE_WEIGHT
     lambda_dice: float = LAMBDA_DICE
     lambda_ce: float = LAMBDA_CE
     lambda_focal: float = LAMBDA_FOCAL
@@ -94,14 +96,19 @@ class LossConfig:
     ce_weight_counts: tuple = None
 
     def __post_init__(self):
-        """Check that ce_weight is two numbers or "auto".
+        """Check that ce_weight is two numbers or "auto", and the focal settings are in range.
 
-        A misspelt "auto" or a single number would otherwise reach the loss and
-        fail there, mid-run. The check runs whenever a LossConfig is built.
+        A misspelt "auto", a single number or an alpha above 1 would otherwise
+        reach the loss and fail there, or quietly train something else, mid-run.
+        The check runs whenever a LossConfig is built.
 
         Raises:
-            ValueError: on any other ce_weight.
+            ValueError: on any other ce_weight, an alpha outside [0, 1] or a negative gamma.
         """
+        if self.focal_alpha is not None and not 0.0 <= self.focal_alpha <= 1.0:
+            raise ValueError(f"focal_alpha must be in [0, 1] or None, got {self.focal_alpha!r}")
+        if self.focal_gamma < 0:
+            raise ValueError(f"focal_gamma must be >= 0, got {self.focal_gamma!r}")
         if self.ce_weight == AUTO_CE_WEIGHT:
             return
         if isinstance(self.ce_weight, str) or len(self.ce_weight) != 2:

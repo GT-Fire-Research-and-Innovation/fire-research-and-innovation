@@ -267,6 +267,24 @@ def test_runs_take_their_numbers_from_window_config(data_root):
     assert with_data_statistics(tested, window_config, root / "train") == tested  # -test uses the checkpoint's
 
 
+def test_default_class_weights_come_from_window_config(data_root, tmp_path):
+    """With no --ce-weight, Dice + CE counts its weights from the file; counts without fire fall back to the paper's."""
+    root, _ = data_root
+    default = RunConfig("tiny3d", data_root=root)
+    assert default.loss.name == "dicece" and default.needs_label_counts  # "auto" is the default
+    counts = count_labels(root / "train")
+    filled = with_data_statistics(default, WindowConfig.read(root), root / "train")
+    assert filled.loss.ce_weight == (1.0, counts.background / counts.fire)
+    assert "ce_weight" not in dict(filled.defaults_used)
+
+    no_fire = reference(root)
+    no_fire[PIXEL_COUNTS] = {"train": dict(no_fire[PIXEL_COUNTS]["train"], fire=0, background_per_fire=None)}
+    target = view(root, tmp_path / "no_fire", no_fire)
+    fallback = with_data_statistics(RunConfig("tiny3d", data_root=target), WindowConfig.read(target), target / "train")
+    assert fallback.loss.ce_weight == PAPER_CE_WEIGHT
+    assert "no fire pixels" in dict(fallback.defaults_used)["ce_weight"]
+
+
 def test_test_runs_use_the_checkpoint_normalization():
     """A checkpoint's recorded numbers normalize its test data; older checkpoints fall back to the paper's."""
     assert checkpoint_normalization({"normalization": {"mean": [1.0], "std": [2.0]}}) == ([1.0], [2.0])

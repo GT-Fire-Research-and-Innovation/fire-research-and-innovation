@@ -127,6 +127,22 @@
         "cli"
       ],
       "reason": "rebuild-zip measures pixel counts and normalization into window_config.json before zipping (--skip-statistics, --workers)"
+    },
+    {
+      "groups": [
+        "cli",
+        "config",
+        "names",
+        "objectives"
+      ],
+      "reason": "dicefocal: --focal-alpha defaults to 0.25 (Lin et al.; was off) and accepts 'none'; gamma stays 2. The focal term stays a pixel mean, lambda_dice = lambda_focal = 1, as in MONAI's DiceFocalLoss."
+    },
+    {
+      "groups": [
+        "cli",
+        "names"
+      ],
+      "reason": "--ce-weight defaults to auto: 1.0 and the training split's background-to-fire ratio from window_config.json, falling back to the paper's (1.0, 446.7836) when the file has no usable counts (now also when it counts no fire pixels)."
     }
   ]
 }

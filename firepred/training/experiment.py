@@ -72,8 +72,10 @@ def with_window_label_counts(config, window_config, train_dir):
     """Fill in --ce-weight auto from the training split's pixel counts in window_config.json.
 
     Settings that need no counts come back unchanged, without reading the file.
-    The counts were written by `dataset count-pixels`. Without usable counts the
-    paper's (1.0, 446.7836) stands in, recorded in defaults_used (and so in W&B).
+    The counts were written by `dataset count-pixels`. Without usable counts (no
+    file, no counts for the split, counts missing a fire on disk, or no fire pixel
+    at all) the paper's (1.0, 446.7836) stands in, recorded in defaults_used (and
+    so in W&B).
 
     Args:
         config (RunConfig): the settings.
@@ -87,6 +89,9 @@ def with_window_label_counts(config, window_config, train_dir):
         return config
     try:
         counts, unused = window_config.label_counts(train_dir)
+        if not counts.fire:
+            raise MissingStatistics(f"{window_config.path} counts no fire pixels in {Path(train_dir).name}, so the "
+                                    "background-to-fire ratio is undefined")
     except MissingStatistics as missing:
         print(f"WARNING: {missing}\nClass weights: the official TS-SatFire {PAPER_CE_WEIGHT} instead of "
               "--ce-weight auto (logged to W&B as defaults_used)")

@@ -22,14 +22,19 @@ PREDICTION_THRESHOLD = 0.5
 # dicefocal: sigmoid Dice plus a focal term on the fire channel [ours].
 LOSSES = ("dice", "dicece", "dicefocal")
 # "a 1:1 mixture of Dice and CE loss", CE weight [1.0, 446.7836]. [paper]
+# The default CE weight is counted from the training labels in window_config.json
+# (--ce-weight auto) [ours]; this is the fallback when the file has no usable counts.
 PAPER_CE_WEIGHT = (1.0, 446.7836)
 LAMBDA_DICE = 1.0
 LAMBDA_CE = 1.0
-# Focal term of dicefocal: sigmoid focal loss (Lin et al. 2017) on the fire
-# channel; gamma down-weights easy pixels, alpha (None = off) balances classes. [ours]
+# Focal term of dicefocal: sigmoid focal loss (Lin et al. 2017) on the fire channel,
+# averaged over pixels. gamma down-weights easy pixels; alpha weighs fire pixels and
+# 1 - alpha background (None = off). Defaults are Lin et al.'s gamma 2, alpha 0.25.
+# "1:1" means lambda_dice = lambda_focal = 1 on the two means, as in MONAI's
+# DiceFocalLoss; it is not equal influence (docs/swinunetr3d/07-learning-signal.md). [ours]
 LAMBDA_FOCAL = 1.0
 FOCAL_GAMMA = 2.0
-FOCAL_ALPHA = None
+FOCAL_ALPHA = 0.25
 
 # ----- Optimizer and learning-rate schedule ----- #
 

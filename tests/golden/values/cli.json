@@ -124,13 +124,7 @@ false
 ],
 [
 "ce_weight",
-[
-"list",
-[
-1.0,
-446.7836
-]
-]
+"auto"
 ],
 [
 "lambda_dice",
@@ -150,7 +144,7 @@ false
 ],
 [
 "focal_alpha",
-null
+0.25
 ],
 [
 "lr_schedule",
@@ -821,14 +815,8 @@ false
 ]
 ],
 "ce_weight",
-[
-"list",
-[
-1.0,
-446.7836
-]
-],
-"dicece class weights BACKGROUND FIRE (default: the paper's 1.0 446.7836), or 'auto' (NEW): 1.0 and the training split's background-to-fire pixel ratio, read from the pixel counts in <data-root>/window_config.json (python -m firepred.cli.dataset count-pixels)",
+"auto",
+"dicece class weights: 'auto' (default, NEW) = 1.0 and the training split's background-to-fire pixel ratio, read from the pixel counts in <data-root>/window_config.json (python -m firepred.cli.dataset count-pixels), falling back to the paper's 1.0 446.7836 when the file has no usable counts (logged to W&B as defaults_used); or two numbers BACKGROUND FIRE",
 null,
 "+",
 "None",
@@ -904,7 +892,7 @@ false
 ],
 "focal_gamma",
 2.0,
-"dicefocal only: focusing exponent; 0 makes the focal term plain binary cross entropy",
+"dicefocal only: focusing exponent (default 2, Lin et al.'s); 0 with --focal-alpha none makes the focal term plain binary cross entropy",
 null,
 null,
 "float",
@@ -922,11 +910,11 @@ false
 ]
 ],
 "focal_alpha",
+0.25,
+"dicefocal only: weight of fire pixels in the focal term, background gets 1 - alpha (default 0.25, Lin et al.'s); 'none' turns it off",
 null,
-"dicefocal only: weight of fire pixels in the focal term (e.g. 0.25); default off",
 null,
-null,
-"float",
+"focal_alpha_value",
 null,
 false
 ]
@@ -3497,14 +3485,8 @@ false
 ]
 ],
 "ce_weight",
-[
-"list",
-[
-1.0,
-446.7836
-]
-],
-"dicece class weights BACKGROUND FIRE (default: the paper's 1.0 446.7836), or 'auto' (NEW): 1.0 and the training split's background-to-fire pixel ratio, read from the pixel counts in <data-root>/window_config.json (python -m firepred.cli.dataset count-pixels)",
+"auto",
+"dicece class weights: 'auto' (default, NEW) = 1.0 and the training split's background-to-fire pixel ratio, read from the pixel counts in <data-root>/window_config.json (python -m firepred.cli.dataset count-pixels), falling back to the paper's 1.0 446.7836 when the file has no usable counts (logged to W&B as defaults_used); or two numbers BACKGROUND FIRE",
 null,
 "+",
 "None",
@@ -3580,7 +3562,7 @@ false
 ],
 "focal_gamma",
 2.0,
-"dicefocal only: focusing exponent; 0 makes the focal term plain binary cross entropy",
+"dicefocal only: focusing exponent (default 2, Lin et al.'s); 0 with --focal-alpha none makes the focal term plain binary cross entropy",
 null,
 null,
 "float",
@@ -3598,11 +3580,11 @@ false
 ]
 ],
 "focal_alpha",
+0.25,
+"dicefocal only: weight of fire pixels in the focal term, background gets 1 - alpha (default 0.25, Lin et al.'s); 'none' turns it off",
 null,
-"dicefocal only: weight of fire pixels in the focal term (e.g. 0.25); default off",
 null,
-null,
-"float",
+"focal_alpha_value",
 null,
 false
 ]
@@ -3937,14 +3919,8 @@ false
 ]
 ],
 "ce_weight",
-[
-"list",
-[
-1.0,
-446.7836
-]
-],
-"dicece class weights BACKGROUND FIRE (default: the paper's 1.0 446.7836), or 'auto' (NEW): 1.0 and the training split's background-to-fire pixel ratio, read from the pixel counts in <data-root>/window_config.json (python -m firepred.cli.dataset count-pixels)",
+"auto",
+"dicece class weights: 'auto' (default, NEW) = 1.0 and the training split's background-to-fire pixel ratio, read from the pixel counts in <data-root>/window_config.json (python -m firepred.cli.dataset count-pixels), falling back to the paper's 1.0 446.7836 when the file has no usable counts (logged to W&B as defaults_used); or two numbers BACKGROUND FIRE",
 null,
 "+",
 "None",
@@ -4020,7 +3996,7 @@ false
 ],
 "focal_gamma",
 2.0,
-"dicefocal only: focusing exponent; 0 makes the focal term plain binary cross entropy",
+"dicefocal only: focusing exponent (default 2, Lin et al.'s); 0 with --focal-alpha none makes the focal term plain binary cross entropy",
 null,
 null,
 "float",
@@ -4038,11 +4014,11 @@ false
 ]
 ],
 "focal_alpha",
+0.25,
+"dicefocal only: weight of fire pixels in the focal term, background gets 1 - alpha (default 0.25, Lin et al.'s); 'none' turns it off",
 null,
-"dicefocal only: weight of fire pixels in the focal term (e.g. 0.25); default off",
 null,
-null,
-"float",
+"focal_alpha_value",
 null,
 false
 ]
