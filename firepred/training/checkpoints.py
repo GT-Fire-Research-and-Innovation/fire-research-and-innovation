@@ -1,7 +1,8 @@
 """Checkpoints: save, keep the best N, load for testing.
 
 Level 3 (training). CheckpointStore saves during training (training/trainer.py);
-CheckpointLoader reads one back for testing (training/experiment.py). Uploading a checkpoint to W&B is
+find_test_checkpoint finds one for -test and CheckpointLoader reads it back
+(training/experiment.py). Uploading a checkpoint to W&B is
 the Tracker's job (training/tracker.py), so this module never touches W&B.
 
 A checkpoint is a plain dict (no repo classes are pickled, so moving code never
@@ -16,7 +17,9 @@ breaks loading):
                           (RunConfig.checkpoint_settings)
 """
 
+import glob
 import heapq
+import os
 from pathlib import Path
 
 import torch
@@ -124,6 +127,34 @@ class CheckpointStore:
             Path: the best checkpoint file.
         """
         return self.ranking()[0][1]
+
+
+def find_test_checkpoint(pattern, root="."):
+    """Find the checkpoint -test uses when no --checkpoint is given: the newest match.
+
+    Training writes its checkpoints into its W&B run folder,
+    <WANDB_DIR or root>/wandb/<run>/files/, so every run folder there is searched,
+    plus saved_models/ where the released code looked [released]. Of the files
+    whose name matches the pattern, the most recently written one is used.
+
+    Args:
+        pattern (str): the file name to match (RunConfig.test_checkpoint_pattern).
+        root (str | Path): the folder the runs were started from.
+
+    Returns:
+        Path: the newest matching checkpoint.
+
+    Raises:
+        FileNotFoundError: if no file matches; the message names the places searched.
+    """
+    root = Path(root)
+    places = [Path(os.environ.get("WANDB_DIR", root)) / "wandb" / "*" / "files", root / "saved_models"]
+    # wandb/latest-run links to a run folder; resolving counts each file once.
+    found = {Path(path).resolve() for place in places for path in glob.glob(str(place / pattern))}
+    if not found:
+        searched = ", ".join(str(place / pattern) for place in places)
+        raise FileNotFoundError(f"No checkpoint for -test in {searched}; pass --checkpoint")
+    return max(found, key=lambda path: path.stat().st_mtime)
 
 
 class CheckpointLoader:

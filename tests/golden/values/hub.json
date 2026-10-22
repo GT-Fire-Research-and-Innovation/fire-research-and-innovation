@@ -510,7 +510,8 @@
 "test/pUS_2021_TEST0001.npz",
 "train/p20000017.npz",
 "train/p20000019.npz",
-"val/p20568194.npz"
+"val/p20568194.npz",
+"window_config.json"
 ]
 ],
 "download.excluded": [
@@ -1942,7 +1943,8 @@
 "tessera/pUS_2021_TEST0001.npz",
 "test/pUS_2021_TEST0001.npz",
 "train/p20000019.npz",
-"val/p20568194.npz"
+"val/p20568194.npz",
+"window_config.json"
 ]
 ],
 "download_tessera.excluded": [
@@ -1968,7 +1970,8 @@
 "tessera/pUS_2021_TEST0001.npz",
 "test/pUS_2021_TEST0001.npz",
 "train/p20000019.npz",
-"val/p20568194.npz"
+"val/p20568194.npz",
+"window_config.json"
 ]
 ]
 }

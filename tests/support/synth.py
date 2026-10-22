@@ -4,6 +4,7 @@ Everything here is written with numpy/zipfile/rasterio directly, never with
 the code under test, so both trees read byte-identical files.
 """
 
+import json
 import zipfile
 from pathlib import Path
 
@@ -82,8 +83,50 @@ E2E_FIRES = {
 TEST_CSV_IDS = ["20210002", "US_2021_MISSING", "US_2021_AA0001"]
 
 
+def window_config(root, fires, ts_length):
+    """Write <root>/window_config.json: window settings plus pixel counts and train normalization.
+
+    The statistics are computed here with plain numpy over the written archives
+    (every value at once, float64), never with the code under test, so tests can
+    compare the lazy, threaded implementation against them.
+    """
+    root = Path(root)
+    pixel_counts = {}
+    for split, entries in fires.items():
+        names = sorted(name for name, _ in entries)
+        background = fire = other = windows = 0
+        for name in names:
+            with np.load(root / split / f"{name}.npz") as archive:
+                n_windows = int(archive["num_windows"])
+                for index in range(n_windows):
+                    label = archive[f"label_{index:03d}"]
+                    background += int(np.count_nonzero(label == 0))
+                    fire += int(np.count_nonzero(label > 0))
+                    other += int(label.size) - int(np.count_nonzero(label == 0)) - int(np.count_nonzero(label > 0))
+                windows += n_windows
+        pixel_counts[split] = {"fires": names, "windows": windows, "background": background, "fire": fire,
+                               "other": other, "background_per_fire": background / fire if fire else None}
+    train = sorted(name for name, _ in fires["train"])
+    data = []
+    for name in train:
+        with np.load(root / "train" / f"{name}.npz") as archive:
+            data += [archive[f"data_{index:03d}"] for index in range(int(archive["num_windows"]))]
+    by_channel = [np.concatenate([window[channel].astype(np.float64).ravel() for window in data])
+                  for channel in range(STORED_CHANNELS)]
+    normalization = {
+        "split": "train", "fires": train, "windows": len(data), "values_per_channel": int(by_channel[0].size),
+        "mean": [float(values.mean()) for values in by_channel],
+        "std": [float(values.std()) for values in by_channel],
+    }
+    config = {"ts_length": ts_length, "ts_interval": 1, "stored_channels": STORED_CHANNELS, "crop_size": SIZE,
+              "pixel_counts": pixel_counts, "normalization": normalization}
+    path = root / "window_config.json"
+    path.write_text(json.dumps(config, indent=2))
+    return path
+
+
 def data_root(root, fires, ts_length=6, seed=0, cells_per_pixel=1):
-    """Write <root>/{train,val,test}/p<id>.npz, <root>/tessera/p<id>.npz and a test CSV."""
+    """Write <root>/{train,val,test}/p<id>.npz, <root>/tessera/p<id>.npz, <root>/window_config.json and a test CSV."""
     root = Path(root)
     rng = np.random.default_rng(seed)
     (root / "tessera").mkdir(parents=True, exist_ok=True)
@@ -99,6 +142,7 @@ def data_root(root, fires, ts_length=6, seed=0, cells_per_pixel=1):
                 empty_window=0 if split == "val" else None,
             )
             tessera_file(root / "tessera" / f"{name}.npz", rng, cells_per_pixel)
+    window_config(root, fires, ts_length)
     csv_path = root.parent / f"{root.name}_test.csv"
     csv_path.write_text("Id,area\n" + "".join(f"{fire_id},1\n" for fire_id in TEST_CSV_IDS))
     return root, csv_path

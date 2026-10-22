@@ -24,7 +24,7 @@ VAL_LOSS_DICECE = "Validation Dice + Weighted Cross-Entropy Loss — Next-Day Fi
 PERIODIC_F1 = "Test F1 — Next-Day Fire Growth (periodic, current weights)"
 CHECKPOINT_FIELDS = {
     "epoch", "model_state_dict", "optimizer_state_dict", "loss", "use_tessera", "model_input_channels",
-    "swin_temporal_downsample", "tessera_stats", "loss_config", "lr_config",
+    "swin_temporal_downsample", "tessera_stats", "loss_config", "lr_config", "normalization",
 }
 
 
@@ -41,6 +41,7 @@ class Run:
         """Read the call log and list the files of a finished run."""
         self.dir = case_dir
         self.returncode = result.returncode
+        self.stdout = result.stdout
         self.stderr = result.stderr
         calls_path = case_dir / "calls.json"
         self.calls = json.loads(calls_path.read_text()) if calls_path.exists() else []
@@ -108,7 +109,9 @@ def dicece_run(e2e_root, tmp_path_factory):
     """Dice+CE run with checkpoint upload, periodic test every epoch and plots."""
     flags = base_flags() + data_flags(e2e_root) + [
         "--loss", "dicece", "--upload-checkpoints", "--test-every", "1", "--plot-dir", "plots"]
-    return run(tmp_path_factory.mktemp("dicece"), flags)
+    finished = run(tmp_path_factory.mktemp("dicece"), flags)
+    finished.data_root = e2e_root[0]
+    return finished
 
 
 def assert_finite_scores(log, low=0.0, high=1.0, score_words=("F1", "IoU", "Dice")):
@@ -173,6 +176,10 @@ def test_training_run_keeps_the_best_checkpoint(dicece_run):
     assert checkpoint["loss"] == pytest.approx(min(val_losses))
     assert CHECKPOINT_FIELDS <= set(checkpoint)
     assert checkpoint["loss_config"]["loss"] == "dicece"
+    # Inputs were standardized with the data root's own training statistics, not the paper's.
+    window_config = json.loads((Path(dicece_run.data_root) / "window_config.json").read_text())
+    assert checkpoint["normalization"] == {"source": "window-config", **{
+        key: window_config["normalization"][key] for key in ("mean", "std")}}
     assert dicece_run.checkpoints[0].name.startswith("model_tiny3d_mode_pred_")
     assert f"epoch_{checkpoint['epoch'] + 1}" in dicece_run.checkpoints[0].name
 
@@ -204,7 +211,7 @@ def test_tessera_plateau_run(e2e_root, tmp_path):
 
 def test_auto_ce_weight_run(e2e_root, tmp_path):
     """--ce-weight auto trains with (1, background / fire) of the training labels and records it everywhere."""
-    from firepred.data.class_balance import count_labels
+    from firepred.data.stats import count_labels
 
     root, _ = e2e_root
     counts = count_labels(root / "train")
@@ -243,6 +250,56 @@ def test_test_mode_reproduces_final_scores(dicece_run, e2e_root, tmp_path):
     assert tested["test_f1"] == trained["test_f1"]
     assert tested["test_iou"] == trained["test_iou"]
     assert not finished.checkpoints
+
+
+def test_test_mode_finds_the_newest_checkpoint_in_the_wandb_run_folders(dicece_run, e2e_root, tmp_path,
+                                                                        monkeypatch):
+    """-test without --checkpoint uses the newest matching file in ./wandb/*/files, where training saves."""
+    import shutil
+
+    monkeypatch.delenv("WANDB_DIR", raising=False)
+    trained = dicece_run.checkpoints[0]
+    older = tmp_path / "wandb" / "run-20260101_000000-old" / "files" / trained.name
+    newer = tmp_path / "wandb" / "run-20260102_000000-new" / "files" / trained.name
+    for path in (older, newer):
+        path.parent.mkdir(parents=True)
+    older.write_bytes(b"not a checkpoint")  # would fail to load if it were picked
+    os.utime(older, (1, 1))
+    shutil.copy(trained, newer)
+    finished = run(tmp_path, base_flags() + data_flags(e2e_root) + ["--loss", "dicece", "-test"])
+    assert f"Testing checkpoint {newer.resolve()}" in finished.stdout
+    assert finished.final_log()["test_f1"] == dicece_run.final_log()["test_f1"]
+
+
+def test_test_mode_without_a_checkpoint_stops_before_wandb(e2e_root, tmp_path, monkeypatch):
+    """-test with nothing to find fails with a clear message and starts no W&B run."""
+    monkeypatch.delenv("WANDB_DIR", raising=False)
+    finished = run(tmp_path, base_flags() + data_flags(e2e_root) + ["--loss", "dicece", "-test"], check=False)
+    assert finished.returncode != 0
+    assert "pass --checkpoint" in finished.stderr
+    assert not finished.named("init")
+
+
+def test_run_without_window_config_uses_official_values(e2e_root, tmp_path):
+    """A data root without window_config.json trains with the official TS-SatFire values and says so in W&B."""
+    from firepred.config.dataset import NORMALIZATION_MEAN
+    from firepred.config.training import PAPER_CE_WEIGHT
+
+    root, csv_path = e2e_root
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    for split in ("train", "val", "test"):
+        (bare / split).symlink_to(root / split, target_is_directory=True)
+    flags = base_flags() + ["--data-root", str(bare), "--test-csv", str(csv_path), "--loss", "dicece",
+                            "--ce-weight", "auto", "--epochs", "1", "--no-test-after-train"]
+    finished = run(tmp_path / "case", flags)
+    assert "WARNING: no window_config.json" in finished.stdout
+    recorded = finished.named("config.update")[0][1][0]
+    assert sorted(recorded["defaults_used"]) == ["ce_weight", "normalization", "window_config"]
+    assert recorded["normalization"] == "paper" and recorded["ce_weight"] == list(PAPER_CE_WEIGHT)
+    checkpoint = finished.checkpoint()
+    assert checkpoint["normalization"]["mean"] == [float(value) for value in NORMALIZATION_MEAN]
+    assert checkpoint["loss_config"]["ce_weight"] == list(PAPER_CE_WEIGHT)
 
 
 def test_test_mode_refuses_a_tessera_mismatch(dicece_run, e2e_root, tmp_path):

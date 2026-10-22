@@ -5,8 +5,8 @@ import pytest
 
 from firepred.cli import train as train_cli
 from firepred.data.archive import unzip_data_root, write_fire_archive
-from firepred.data.class_balance import count_labels
 from firepred.data.fire_dataset import FireDataset
+from firepred.data.stats import count_labels
 from firepred.training.config import AUTO_CE_WEIGHT, LossConfig, RunConfig
 from firepred.training.flags import argv_for
 from firepred.training.objectives import TrainingLoss

@@ -12,6 +12,8 @@ repo for the chosen -ts/-it (window_repo_for).
     python -m firepred.cli.dataset tessera-zip
     python -m firepred.cli.dataset pull-zip --data-root ./data && python -m firepred.cli.dataset pull-tessera --data-root ./data
     python -m firepred.cli.dataset download -ts 6 -it 1 --data-root ./data [--tessera]
+    python -m firepred.cli.dataset count-pixels --data-root ./data [--upload]
+    python -m firepred.cli.dataset compute-normalization --data-root ./data [--upload]
     python -m firepred.cli.dataset upload-zip --data-root ./data [--zip-repo tessera --zip-name data_tessera.zip]
     python -m firepred.cli.dataset pull-zip --data-root ./data [--zip-repo window|tessera]
     python -m firepred.cli.dataset rebuild-zip -ts 6 -it 1
@@ -153,6 +155,27 @@ COMMANDS = (
                     "help": "TESSERA mode: drop fires without prior-year TESSERA and download "
                             "--tessera-repo embeddings into --data-root/tessera"}),
             ), windows=True),
+    # The data statistics training reads before it starts, written into
+    # --data-root/window_config.json (and, with --upload, the window repo's copy).
+    Command("count-pixels", windows_master.count_pixels,
+            "Count background/fire target pixels per split into --data-root/window_config.json", (
+                Option(("--data-root",), "data_root"),
+                splits_option("Splits to count"),
+                Option(("--workers",), "workers", {"type": int, "help": "Reading threads"}),
+                Option(("--upload",), "upload", {"action": "store_true",
+                                                 "help": "Also write window_config.json to --window-repo"}),
+            ), windows=True),
+    Command("compute-normalization", windows_master.compute_normalization,
+            "Per-channel input mean/std of --split into --data-root/window_config.json, one window in memory "
+            "per thread", (
+                Option(("--data-root",), "data_root"),
+                Option(("--split",), "split", {"choices": SPLITS,
+                                               "help": "The split to measure (train: never learn from held-out fires)"}),
+                Option(("--workers",), "workers", {"type": int,
+                                                   "help": "Reading threads; each holds one decompressed window"}),
+                Option(("--upload",), "upload", {"action": "store_true",
+                                                 "help": "Also write window_config.json to --window-repo"}),
+            ), windows=True),
     Command("upload-zip", windows_master.upload_data_zip, "Zip --data-root and upload it to --zip-repo", (
                 Option(("--data-root",), "data_root"),
                 Option(("--zip-path",), "zip_path", {"help": "Local zip file (default: <data-root>/../<zip-name>)"}),
@@ -165,9 +188,16 @@ COMMANDS = (
                 Option(("--zip-repo",), "zip_repo", {"choices": ZIP_REPOS, "default": "window"}),
                 Option(("--zip-name",), "zip_name"),
             ), windows=True),
-    # rebuild-zip: download every archive of the window repo and upload it back as data.zip.
+    # rebuild-zip: download every archive of the window repo, measure its statistics into
+    # window_config.json, and upload it back as data.zip.
     Command("rebuild-zip", windows_master.rebuild_data_zip,
-            "Download --window-repo into --work-dir and upload it there as data.zip", windows=True),
+            "Download --window-repo into --work-dir, add pixel counts and normalization to its "
+            "window_config.json, and upload it there as data.zip", (
+                Option(("--skip-statistics",), "statistics", {
+                    "action": "store_false",
+                    "help": "Zip the repo's window_config.json as it is, without measuring the data"}),
+                Option(("--workers",), "workers", {"type": int, "help": "Reading threads for the statistics"}),
+            ), windows=True),
     # stage: what the training notebooks run before training (a training root under --work-dir).
     Command("stage", windows_master.stage_training_data,
             "Download/extract data.zip (and tessera.zip) under --work-dir and print the training root", (

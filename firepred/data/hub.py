@@ -34,7 +34,7 @@ from firepred.config.dataset import (
 )
 from firepred.data.files import code_version, unzip_into
 
-# What each label_sel value means (prep/windows.build_fire_windows).
+# What each label_sel value means (data/windows.build_fire_windows).
 LABEL_SEL_MEANING = {
     "0": "burned area = accumulated active fire + NIFC perimeters (TS-SatFire paper)",
     "1": "burned area = accumulated active fire only, no NIFC perimeters (released TS-SatFire code)",
@@ -42,32 +42,14 @@ LABEL_SEL_MEANING = {
 
 
 def _hub():
-    """Import huggingface_hub the first time it is needed.
-
-    Importing it lazily lets a notebook import the masters, point the Hugging
-    Face cache somewhere else, and only then load the library. Every Hugging
-    Face call in this module goes through here.
-
-    Returns:
-        module: the huggingface_hub module.
-    """
+    """Import huggingface_hub on first use, so a notebook can pin its cache folders before it loads."""
     import huggingface_hub
 
     return huggingface_hub
 
 
 def _api(token):
-    """Create a Hugging Face API client for a token.
-
-    There is no global login: each call builds a client with the token it was
-    given. A None token works for public repos.
-
-    Args:
-        token (str | None): a Hugging Face token.
-
-    Returns:
-        huggingface_hub.HfApi: the client.
-    """
+    """Create a Hugging Face API client for a token (no global login; None works for public repos)."""
     return _hub().HfApi(token=token)
 
 
@@ -75,18 +57,7 @@ def _api(token):
 
 
 def list_repo_files(repo_id, token=None):
-    """List every file path in a Hugging Face dataset repo.
-
-    Paths are relative to the repo root, e.g. "train/p123.npz". Listing reads no
-    file contents.
-
-    Args:
-        repo_id (str): the repo, "owner/name".
-        token (str | None): a Hugging Face token.
-
-    Returns:
-        list[str]: the file paths.
-    """
+    """List every file path in a Hugging Face dataset repo."""
     return list(_api(token).list_repo_files(repo_id, repo_type="dataset"))
 
 
@@ -117,60 +88,20 @@ def group_fire_files(file_names):
 
 
 def list_fire_files(src_repo, token=None):
-    """List the source repo's GeoTIFFs grouped by fire and image type.
-
-    This combines list_repo_files and group_fire_files. The masters use it to
-    find each fire's daily images.
-
-    Args:
-        src_repo (str): the raw GeoTIFF repo.
-        token (str | None): a Hugging Face token.
-
-    Returns:
-        dict[str, dict[str, list[str]]]: {fire id: {mode: [sorted paths]}}.
-    """
+    """List the source repo's GeoTIFFs grouped by fire and image type."""
     return group_fire_files(list_repo_files(src_repo, token))
 
 
 def download_file(repo_id, filename, token=None, local_dir=None, cache_dir=None):
-    """Download one file from a dataset repo.
-
-    With local_dir the file lands at local_dir/filename (keeping its folders);
-    otherwise it goes to the Hugging Face cache, or to cache_dir. Temporary
-    downloads use cache_dir so they can be deleted afterwards.
-
-    Args:
-        repo_id (str): the repo, "owner/name".
-        filename (str): the file path inside the repo.
-        token (str | None): a Hugging Face token.
-        local_dir (str | Path | None): a folder to download into.
-        cache_dir (str | Path | None): a cache folder to use instead.
-
-    Returns:
-        str: the local path of the downloaded file.
-    """
+    """Download one dataset-repo file to local_dir/filename, or into the Hugging Face cache (or cache_dir)."""
     options = {"local_dir": str(local_dir)} if local_dir is not None else {}
     if cache_dir is not None:
         options["cache_dir"] = str(cache_dir)
-    return _hub().hf_hub_download(
-        repo_id=repo_id, filename=filename, repo_type="dataset", token=token, **options
-    )
+    return _hub().hf_hub_download(repo_id=repo_id, filename=filename, repo_type="dataset", token=token, **options)
 
 
 def download_roi_csvs(src_repo, token=None, roi_dir=ROI_CACHE_DIR):
-    """Download every ROI CSV of the source repo.
-
-    The ROI CSVs list the fires, their dates and their label rules. They go
-    into roi_dir and are read with fires.read_roi.
-
-    Args:
-        src_repo (str): the raw GeoTIFF repo, which also holds the CSVs.
-        token (str | None): a Hugging Face token.
-        roi_dir (str | Path): the local folder for the CSVs.
-
-    Returns:
-        list[str]: the local CSV paths.
-    """
+    """Download every ROI CSV of the source repo into roi_dir (read them with files.read_roi)."""
     Path(roi_dir).mkdir(parents=True, exist_ok=True)
     return [
         download_file(src_repo, name, token, local_dir=roi_dir)
@@ -180,20 +111,7 @@ def download_roi_csvs(src_repo, token=None, roi_dir=ROI_CACHE_DIR):
 
 
 def pull_zip(repo_id, zip_name, data_root, token=None):
-    """Download a zip from a repo into a folder and unpack it there.
-
-    Used for data.zip and tessera.zip. The zip's member paths are checked
-    before unpacking, so nothing lands outside the folder.
-
-    Args:
-        repo_id (str): the repo holding the zip.
-        zip_name (str): the zip's name in the repo, e.g. "data.zip".
-        data_root (str | Path): the folder to download into and unpack in.
-        token (str | None): a Hugging Face token.
-
-    Returns:
-        Path: data_root.
-    """
+    """Download a zip (data.zip, tessera.zip) into a folder and unpack it there, member paths checked."""
     zip_path = download_file(repo_id, zip_name, token, local_dir=data_root)
     return unzip_into(zip_path, data_root)
 
@@ -202,38 +120,13 @@ def pull_zip(repo_id, zip_name, data_root, token=None):
 
 
 def ensure_repo(repo_id, token=None, private=False):
-    """Create a dataset repo if it does not exist yet.
-
-    An existing repo is left as it is, including its visibility. A new repo is
-    private only when asked.
-
-    Args:
-        repo_id (str): the repo, "owner/name".
-        token (str | None): a token with write access.
-        private (bool): make a newly created repo private.
-
-    Returns:
-        str: repo_id.
-    """
+    """Create a dataset repo if it does not exist yet; an existing one keeps its visibility."""
     _api(token).create_repo(repo_id=repo_id, repo_type="dataset", exist_ok=True, private=private)
     return repo_id
 
 
 def upload_folder(folder, repo_id, path_in_repo, token=None):
-    """Upload every file under a local folder to a repo folder in one commit.
-
-    One commit per batch keeps the repo history short and uploads fast. The
-    folder's layout is kept under path_in_repo.
-
-    Args:
-        folder (str | Path): the local folder.
-        repo_id (str): the repo, "owner/name".
-        path_in_repo (str): the repo folder to upload into, e.g. "train".
-        token (str | None): a token with write access.
-
-    Returns:
-        list[str]: the uploaded file names, relative to folder.
-    """
+    """Upload every file under a local folder to a repo folder in one commit."""
     folder = Path(folder)
     names = sorted(str(p.relative_to(folder)) for p in folder.rglob("*") if p.is_file())
     _api(token).upload_folder(
@@ -243,20 +136,7 @@ def upload_folder(folder, repo_id, path_in_repo, token=None):
 
 
 def upload_file(path_or_bytes, path_in_repo, repo_id, token=None):
-    """Upload one file to a repo.
-
-    The file can be a local path or bytes in memory (window_config.json is
-    uploaded from memory). It replaces any file at the same repo path.
-
-    Args:
-        path_or_bytes (str | Path | bytes): the file or its contents.
-        path_in_repo (str): where it goes in the repo.
-        repo_id (str): the repo, "owner/name".
-        token (str | None): a token with write access.
-
-    Returns:
-        str: path_in_repo.
-    """
+    """Upload a local file or in-memory bytes to a repo path, replacing any file there."""
     source = path_or_bytes if isinstance(path_or_bytes, (bytes, bytearray)) else str(path_or_bytes)
     _api(token).upload_file(
         path_or_fileobj=source, path_in_repo=path_in_repo, repo_id=repo_id, repo_type="dataset", token=token
@@ -322,8 +202,8 @@ def window_settings(length, interval, train_val_label_sel=TRAIN_VAL_LABEL_SEL, u
 def window_config_notes():
     """Collect the human-readable notes stored beside the window settings.
 
-    The notes explain the label rules and record the zlib level and code
-    version. They are never compared, only kept for people reading the file.
+    The notes explain the label rules and record the archive compression and
+    code version. They are never compared, only kept for people reading the file.
 
     Returns:
         dict: the notes.
@@ -332,25 +212,14 @@ def window_config_notes():
         "label_sel": LABEL_SEL_MEANING,
         "test_label_sel": '"roi": each test fire uses the label_sel column of the 2021 ROI CSV; '
                           "a number: every test fire uses that rule",
+        "npz_compression": "zstd",
         "npz_compresslevel": NPZ_COMPRESSLEVEL,
         "code_version": code_version(),
     }
 
 
 def read_window_config(window_repo, token=None):
-    """Read a window repo's window_config.json.
-
-    The file is downloaded into a temporary folder, so an old local copy is
-    never read, and the folder is removed afterwards. A repo without the file
-    gives None.
-
-    Args:
-        window_repo (str): the window repo.
-        token (str | None): a Hugging Face token.
-
-    Returns:
-        dict | None: the parsed settings, or None.
-    """
+    """Read a window repo's window_config.json via a fresh temp folder (never a stale copy); None if absent."""
     if WINDOW_CONFIG_FILE not in set(list_repo_files(window_repo, token)):
         return None
     # Fetch into a fresh temp folder so an old local copy is never read.
@@ -391,9 +260,7 @@ def decide_window_config(existing, settings, overwrite, window_repo):
         )
         return WindowConfigDecision(True, changed, missing, message)
     if changed:
-        details = ", ".join(
-            f"{key}: repo has {existing[key]!r}, asked for {settings[key]!r}" for key in changed
-        )
+        details = ", ".join(f"{key}: repo has {existing[key]!r}, asked for {settings[key]!r}" for key in changed)
         raise ValueError(
             f"{window_repo} holds windows built with other settings ({details}). For other "
             f"window lengths use window_repo_for({settings['ts_length']}, {settings['ts_interval']}) = "
@@ -408,24 +275,7 @@ def decide_window_config(existing, settings, overwrite, window_repo):
 
 
 def ensure_window_config(window_repo, settings, overwrite=False, token=None):
-    """Record a run's window settings in a repo, refusing to mix settings.
-
-    The repo's current file is read, decide_window_config decides, and the
-    file (settings plus notes) is uploaded when needed. This runs before any
-    fire is built, so a conflicting repo fails at once.
-
-    Args:
-        window_repo (str): the window repo.
-        settings (dict): this run's settings (window_settings).
-        overwrite (bool): replace the file with this run's settings.
-        token (str | None): a token with write access.
-
-    Returns:
-        WindowConfigDecision: what was done, and why.
-
-    Raises:
-        ValueError: if a setting differs and overwrite is False.
-    """
+    """Record a run's window settings in a repo before any fire is built, refusing to mix settings."""
     decision = decide_window_config(read_window_config(window_repo, token), settings, overwrite, window_repo)
     if decision.written:
         config = {**settings, "notes": window_config_notes()}

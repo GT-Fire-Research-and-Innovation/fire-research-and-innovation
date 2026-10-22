@@ -11,8 +11,8 @@ import fake_hub
 
 DATA = Path(__file__).resolve().parents[1] / "firepred" / "data"
 # The dataset-building modules (functional style); the training-side modules
-# (fire_dataset, transforms, archive's folder reader) are object-oriented.
-BUILD = ("fires", "tessera_archive", "files", "hub", "windows", "tessera", "tessera_master", "windows_master")
+# (archive's readers, stats, fire_dataset) are partly object-oriented.
+BUILD = ("files", "hub", "windows", "tessera", "tessera_master", "windows_master")
 MASTERS = {"windows_master.py", "tessera_master.py"}
 GOLDEN = Path(__file__).resolve().parent / "golden"
 
@@ -179,7 +179,7 @@ def test_window_config_decision_is_pure():
 
 def test_window_plan_skips_built_and_missing_fires():
     """plan_windows builds every fire with GeoTIFFs not yet in the repo, with its label rule, in split order."""
-    from firepred.data.fires import RoiTable
+    from firepred.data.files import RoiTable
     from firepred.data.windows_master import plan_windows
 
     roi = RoiTable(("a", "b"), ("c",), ("d",))
@@ -193,7 +193,7 @@ def test_window_plan_skips_built_and_missing_fires():
 
 def test_tessera_plan_gives_each_skipped_fire_a_reason():
     """plan_tessera keeps fires with a prior-year embedding and says why every other fire is skipped."""
-    from firepred.data.fires import RoiTable
+    from firepred.data.files import RoiTable
     from firepred.data.tessera_master import plan_tessera
 
     roi = RoiTable(("a", "b", "c"), (), ("d",), start_years={"a": 2019, "b": 2017, "d": 2021})

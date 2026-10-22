@@ -17,12 +17,15 @@ change. A run with the paper's Dice+CE loss and TESSERA inputs, for example:
                 checkpoint_epoch_12_nc_172_ts_6_tessera_dicece.pth
 """
 
+import glob
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from firepred.config.dataset import (
     DEFAULT_DATA_ROOT,
     DEFAULT_TEST_CSV,
+    NORMALIZATION_MEAN,
+    NORMALIZATION_STD,
     TESSERA_CELLS_PER_PIXEL,
     TS_INTERVAL,
     TS_LENGTH,
@@ -30,7 +33,6 @@ from firepred.config.dataset import (
 )
 from firepred.config.training import (
     DEFAULT_EPOCHS,
-    DEFAULT_LOAD_EPOCH,
     DEFAULT_NUM_WORKERS,
     DEFAULT_UNZIP_DIR,
     FOCAL_ALPHA,
@@ -53,6 +55,12 @@ from firepred.config.training import (
 
 # --ce-weight auto: the fire weight is the training split's background-to-fire pixel ratio. [ours]
 AUTO_CE_WEIGHT = "auto"
+
+# --normalization: standardize inputs with the training split's statistics from the data
+# root's window_config.json [ours], or with the paper's fixed numbers [released].
+NORMALIZE_FROM_WINDOW_CONFIG = "window-config"
+NORMALIZE_LIKE_PAPER = "paper"
+NORMALIZATIONS = (NORMALIZE_FROM_WINDOW_CONFIG, NORMALIZE_LIKE_PAPER)
 
 
 @dataclass(frozen=True)
@@ -119,7 +127,7 @@ class LossConfig:
         Weights given by hand are returned unchanged.
 
         Args:
-            counts (LabelCounts): the training split's counts (data/class_balance.py).
+            counts (LabelCounts): the training split's counts (data/stats.py).
 
         Returns:
             LossConfig: this config, with numeric weights when they were "auto".
@@ -248,6 +256,12 @@ class RunConfig:
         tessera_min_coverage (float): TESSERA pixels below this coverage are masked.
         tessera_cells_per_pixel (int): TESSERA cells per VIIRS pixel side in the files;
             above 1 a learned stem compresses them and maps are read per window.
+        normalization (str): where the input statistics come from, "window-config" or "paper".
+        normalization_stats (tuple[tuple[float, ...], tuple[float, ...]] | None): the
+            (mean, std) the run standardizes with; filled in (with_normalization_stats)
+            before anything reads it.
+        defaults_used (tuple[tuple[str, str], ...]): (what, why) for every setting that fell
+            back to the official TS-SatFire value because window_config.json lacked it; logged to W&B.
         loss (LossConfig): the training loss.
         schedule (ScheduleConfig): the learning-rate schedule.
         swin_temporal_downsample (bool): SwinUNETR-3D also merges days.
@@ -256,7 +270,8 @@ class RunConfig:
         test_only (bool): test a checkpoint instead of training.
         checkpoint (Path | None): the checkpoint to test.
         trust_checkpoint (bool): allow full unpickling of that checkpoint.
-        load_epoch (int): the epoch in the default test checkpoint name.
+        load_epoch (int | None): the epoch of the checkpoint -test looks for without
+            --checkpoint; None takes any epoch.
         test_csv (Path): the test fires, in scoring order.
         plot_dir (Path): where test overlays go.
         test_every (int): score the test fires every N epochs (0 = never).
@@ -286,6 +301,9 @@ class RunConfig:
     tessera_dir: Path = None
     tessera_min_coverage: float = TESSERA_MIN_COVERAGE
     tessera_cells_per_pixel: int = TESSERA_CELLS_PER_PIXEL
+    normalization: str = NORMALIZE_FROM_WINDOW_CONFIG
+    normalization_stats: tuple = None  # (mean, std), filled in before the data is built
+    defaults_used: tuple = ()          # (what, why) per official value used in place of window_config.json
     loss: LossConfig = None            # None -> the paper's loss for `model` (LossConfig.paper_loss)
     schedule: ScheduleConfig = field(default_factory=ScheduleConfig)
     swin_temporal_downsample: bool = False
@@ -294,7 +312,7 @@ class RunConfig:
     test_only: bool = False
     checkpoint: Path = None
     trust_checkpoint: bool = False
-    load_epoch: int = DEFAULT_LOAD_EPOCH
+    load_epoch: int = None
     test_csv: Path = DEFAULT_TEST_CSV
     plot_dir: Path = Path("evaluation_plot")
     test_every: int = 0
@@ -311,8 +329,8 @@ class RunConfig:
         names must be known, and -nc must match the data's channel count.
 
         Raises:
-            ValueError: on an unknown loss or schedule, a wrong -nc, or fewer than one
-                TESSERA cell per pixel.
+            ValueError: on an unknown loss, schedule or normalization, a wrong -nc, or
+                fewer than one TESSERA cell per pixel.
         """
         if self.loss is None:
             object.__setattr__(self, "loss", LossConfig(LossConfig.paper_loss(self.model)))
@@ -320,6 +338,8 @@ class RunConfig:
             raise ValueError(f"Unsupported loss: {self.loss.name}")
         if self.schedule.name not in LR_SCHEDULES:
             raise ValueError(f"Unsupported learning-rate schedule: {self.schedule.name}")
+        if self.normalization not in NORMALIZATIONS:
+            raise ValueError(f"--normalization must be one of {NORMALIZATIONS}, got {self.normalization!r}")
         if int(self.tessera_cells_per_pixel) != self.tessera_cells_per_pixel or self.tessera_cells_per_pixel < 1:
             raise ValueError(f"--tessera-cells-per-pixel must be 1 or more, got {self.tessera_cells_per_pixel}")
         if self.expected_channels is not None and self.expected_channels != self.input_channels:
@@ -350,12 +370,70 @@ class RunConfig:
         Settings without "auto" weights come back unchanged.
 
         Args:
-            counts (LabelCounts): the training split's counts (data/class_balance.py).
+            counts (LabelCounts): the training split's counts (data/stats.py).
 
         Returns:
             RunConfig: the settings with numeric class weights.
         """
         return replace(self, loss=self.loss.with_label_counts(counts))
+
+    # ----- input normalization ----- #
+
+    @property
+    def needs_normalization_stats(self):
+        """Say whether the run must look up its input statistics before building the data.
+
+        A training run always standardizes with numbers it records in its
+        checkpoints. A -test run takes them from the checkpoint instead.
+
+        Returns:
+            bool: True when the statistics are not filled in yet and the run trains.
+        """
+        return self.normalization_stats is None and not self.test_only
+
+    def with_normalization_stats(self, mean, std):
+        """Give a copy of these settings that standardizes inputs with the given statistics.
+
+        Like with_label_counts, the copy is made once, before the data, W&B or any
+        checkpoint reads the numbers. Every checkpoint then records them.
+
+        Args:
+            mean (Sequence[float]): per-channel means.
+            std (Sequence[float]): per-channel standard deviations.
+
+        Returns:
+            RunConfig: the settings with normalization_stats filled in.
+        """
+        return replace(self, normalization_stats=(tuple(map(float, mean)), tuple(map(float, std))))
+
+    def with_paper_normalization(self):
+        """Give a copy that standardizes inputs with the paper's fixed statistics.
+
+        This is --normalization paper. The numbers are the released code's
+        NORMALIZATION_MEAN/STD.
+
+        Returns:
+            RunConfig: the settings with NORMALIZATION_MEAN/STD filled in.
+        """
+        return self.with_normalization_stats(NORMALIZATION_MEAN, NORMALIZATION_STD)
+
+    # ----- official values used in place of window_config.json ----- #
+
+    def with_default(self, what, why):
+        """Give a copy that records one official TS-SatFire value used because window_config.json lacked it.
+
+        The record goes into the W&B config (defaults_used) and tags the run, so a
+        run that did not train with its data's own statistics is easy to spot.
+        The value itself is set by the caller.
+
+        Args:
+            what (str): the setting, e.g. "normalization" or "ce_weight".
+            why (str): what was missing.
+
+        Returns:
+            RunConfig: the settings with the record added.
+        """
+        return replace(self, defaults_used=(*self.defaults_used, (what, why)))
 
     # ----- data ----- #
 
@@ -518,16 +596,17 @@ class RunConfig:
         )
 
     @property
-    def test_checkpoint(self):
-        """Give where -test looks for a checkpoint when none is given.
+    def test_checkpoint_pattern(self):
+        """Give the file name -test looks for when no --checkpoint is given.
 
-        This follows the released code [released]. It is saved_models/ with the template at load_epoch. Training saves into the
-        W&B run folder instead (docs/KNOWN_ISSUES.md), so pass --checkpoint.
+        It is the checkpoint template at --load-epoch, or at any epoch when none is
+        given. checkpoints.find_test_checkpoint searches the run folders for it.
 
         Returns:
-            Path: the default test checkpoint path.
+            str: a glob pattern for the checkpoint file name.
         """
-        return Path("saved_models") / self.checkpoint_template.format(epoch=self.load_epoch)
+        epoch = "*" if self.load_epoch is None else self.load_epoch
+        return glob.escape(self.checkpoint_template).format(epoch=epoch)
 
     def artifact_name(self, run_id):
         """Name the W&B model artifact that holds a run's checkpoints.
@@ -548,9 +627,9 @@ class RunConfig:
     def checkpoint_settings(self, tessera_stats):
         """Collect the settings stored in every checkpoint.
 
-        A later test run needs them to rebuild exactly the same inputs: TESSERA
-        mode and statistics, channels and temporal merging. The loss, schedule and
-        model options are stored too, as a record.
+        A later test run needs them to rebuild exactly the same inputs: the input
+        normalization, TESSERA mode and statistics, channels and temporal merging.
+        The loss, schedule and model options are stored too, as a record.
 
         Args:
             tessera_stats (dict | None): the training TESSERA statistics.
@@ -567,6 +646,10 @@ class RunConfig:
             "loss_config": self.loss.record(),
             "lr_config": self.schedule.record(),
         }
+        if self.normalization_stats is not None:
+            # Plain lists of floats, so a restricted (weights-only) load reads them.
+            mean, std = self.normalization_stats
+            settings["normalization"] = {"source": self.normalization, "mean": list(mean), "std": list(std)}
         if self.extra_model_options:
             settings["model_options"] = dict(self.extra_model_options)
         return settings
@@ -591,8 +674,10 @@ class RunConfig:
             "batch_size": self.batch_size,
             "mode": self.mode,
             "model": self.model,
-            "tessera": self.tessera,
-            "input_channels": self.input_channels,
+            # The checkpoint's (and model artifact's) names for the same settings.
+            "use_tessera": self.tessera,
+            "model_input_channels": self.input_channels,
+            "normalization": self.normalization,
             **self.loss.record(),
         }
         if self.tessera:
@@ -605,4 +690,6 @@ class RunConfig:
             config["model_options"] = dict(self.extra_model_options)
         config.update(self.schedule.record())
         config["test_every"] = self.test_every  # [ours] periodic test scoring (logging only)
+        if self.defaults_used:  # official values used because window_config.json lacked them
+            config["defaults_used"] = dict(self.defaults_used)
         return config

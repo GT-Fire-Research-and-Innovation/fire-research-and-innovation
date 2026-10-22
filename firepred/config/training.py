@@ -44,14 +44,12 @@ LR_MIN = 1e-6
 
 # How many lowest-validation-loss checkpoints stay on disk.
 TOP_N_CHECKPOINTS = 1
-# Epoch in the default test-mode checkpoint name (-test without --checkpoint).
-DEFAULT_LOAD_EPOCH = 199
 
 # ----- Data loading ----- #
 
 DEFAULT_NUM_WORKERS = 0
 # Unzipping the window archives once (--unzip-dir auto -> <data-root>-npy) gives
-# byte-identical arrays and skips zlib on every read, but takes about 5.5x the
+# byte-identical arrays and skips decompression on every read, but takes about 5.5x the
 # disk and its speed-up on Kaggle is unmeasured, so it is opt-in. [ours]
 DEFAULT_UNZIP_DIR = "off"
 # TESSERA pixels with less coverage are zeroed and masked. [ours]

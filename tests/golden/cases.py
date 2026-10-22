@@ -56,10 +56,10 @@ def files_under(folder):
 
 
 def npz_members(path, skip=()):
-    """[(member, array)] of an .npz file, minus the `skip` members."""
-    import numpy as np
+    """[(member, array)] of an .npz file (zlib or Zstandard members), minus the `skip` members."""
+    from firepred.data.archive import open_npz
 
-    with np.load(path, allow_pickle=False) as archive:
+    with open_npz(path) as archive:
         return [(key, archive[key]) for key in archive.files if key not in skip]
 
 
@@ -135,10 +135,15 @@ def dataset_values(ctx):
     import numpy as np
     import torch
 
-    from firepred.data.archive import fire_name, find_fire_sources, unzip_data_root
     from firepred.config.dataset import NORMALIZATION_MEAN, NORMALIZATION_STD
+    from firepred.data.archive import (
+        compute_tessera_stats,
+        fire_name,
+        find_fire_sources,
+        load_tessera_maps,
+        unzip_data_root,
+    )
     from firepred.data.fire_dataset import NORMALIZE_SKIP, FireDataset, batch_inputs, make_dataloader
-    from firepred.data.tessera_archive import compute_tessera_stats, load_tessera_maps
 
     work = ctx.work
     root, _ = synth.data_root(work / "data", synth.QUICK_FIRES)
@@ -190,7 +195,7 @@ def transform_values(ctx):
     import torch
 
     from firepred.config.dataset import NORMALIZATION_MEAN, NORMALIZATION_STD
-    from firepred.data.transforms import augment, landcover_one_hot_matrix, normalize, preprocess
+    from firepred.data.fire_dataset import augment, landcover_one_hot_matrix, normalize, preprocess
 
     rng = np.random.default_rng(4)
     x = rng.normal(20.0, 10.0, size=(27, 3, 16, 16)).astype(np.float32)
@@ -237,7 +242,7 @@ def tessera_values(ctx):
     import rasterio
 
     from firepred.data.tessera import crop_grid, grid_tessera, utm_zones
-    from firepred.data.tessera_archive import save_tessera_npz
+    from firepred.data.archive import save_tessera_npz
 
     local_map = synth.fire_geotiffs(ctx.work / "geotiffs", n_days=2)
     with rasterio.open(next(iter(local_map.values()))) as reader:
@@ -256,8 +261,7 @@ def tessera_values(ctx):
 @group("roi")
 def roi_values(ctx):
     """ROI CSV helpers on the real roi/ CSVs and the data-zip listing."""
-    from firepred.data.fires import fire_label_sel, fire_start_years
-    from firepred.data.files import zip_folders
+    from firepred.data.files import fire_label_sel, fire_start_years, zip_folders
 
     roi_paths = sorted(str(path) for path in (TREE / "roi").glob("*.csv"))
     out = {"fire_label_sel": fire_label_sel(roi_paths), "fire_start_years": fire_start_years(roi_paths)}
@@ -324,7 +328,7 @@ def build_source_repo(fake_hub, repo_id):
 
 def repo_contents(fake_hub, repo_id, skip_members=()):
     """Every file of a fake repo: .npz decoded, zips per member, text files as text."""
-    import numpy as np
+    from firepred.data.archive import open_npz
 
     root = fake_hub._repo(repo_id)
     out = {}
@@ -337,7 +341,7 @@ def repo_contents(fake_hub, repo_id, skip_members=()):
             with zipfile.ZipFile(path) as bundle:
                 for info in bundle.infolist():
                     if info.filename.endswith(".npz"):
-                        with np.load(io.BytesIO(bundle.read(info)), allow_pickle=False) as archive:
+                        with open_npz(io.BytesIO(bundle.read(info))) as archive:
                             members.append((info.filename, [(k, archive[k]) for k in archive.files
                                                             if k not in skip_members]))
                     else:
@@ -540,7 +544,7 @@ def name_values(ctx):
             "run_name": config.run_name,
             "run_tag": config.run_tag,
             "checkpoint_template": config.checkpoint_template,
-            "test_checkpoint": config.test_checkpoint,
+            "test_checkpoint": config.test_checkpoint_pattern,
             "artifact_name": config.artifact_name("run123"),
             "model_options": config.model_options,
             "input_channels": config.input_channels,
@@ -672,8 +676,8 @@ def cli_values(ctx):
     args, parser = capture_parser(lambda: train.parse_args(NAME_BASE))
     out["train.defaults"] = vars(args)
     out["train.options"] = describe_parser(parser)
-    for command in ("process", "tessera", "tessera-zip", "pull-tessera", "download", "upload-zip", "pull-zip",
-                    "rebuild-zip", "stage"):
+    for command in ("process", "tessera", "tessera-zip", "pull-tessera", "download", "count-pixels",
+                    "compute-normalization", "upload-zip", "pull-zip", "rebuild-zip", "stage"):
         args, parser = capture_parser(lambda: dataset.parse_args([command]))
         out[f"dataset.{command}"] = vars(args)
     out["dataset.options"] = describe_parser(parser)

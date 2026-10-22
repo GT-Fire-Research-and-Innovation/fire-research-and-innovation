@@ -35,7 +35,7 @@ from firepred.config.dataset import (
     WORK_DIR,
 )
 from firepred.data import files, hub, tessera
-from firepred.data.fires import read_roi
+from firepred.data.files import read_roi
 from firepred.data.tessera import build_fire_tessera, has_prior_year_tessera, missing_tessera, tessera_excluded_npz
 
 
@@ -62,14 +62,7 @@ class TesseraBuildReport:
     uploaded: tuple = ()
 
     def summary(self):
-        """Summarize the build: counts and one line per skipped fire.
-
-        The master prints this at the end. Skipped fires are listed with their
-        reasons.
-
-        Returns:
-            str: the summary, one item per line.
-        """
+        """Summarize the build: counts and one line per skipped fire."""
         lines = [f"TESSERA done in {self.repo}: built {len(self.built)}, skipped {len(self.skipped)}"]
         lines += [f"  {fire_id}: {reason}" for fire_id, reason in self.skipped.items()]
         return "\n".join(lines)
@@ -97,14 +90,7 @@ class TesseraZipReport:
     repo: str
 
     def summary(self):
-        """Summarize the upload, with a warning when kept fires lack a file.
-
-        The first line gives the counts. A second line warns about fires that
-        still need a TESSERA file.
-
-        Returns:
-            str: the summary.
-        """
+        """Summarize the upload, with a warning when kept fires lack a file."""
         text = (f"Uploaded {self.zip_path.name} to {self.repo}: {self.embeddings} embeddings, "
                 f"{len(self.excluded)} excluded window archives")
         if self.missing:
@@ -130,14 +116,7 @@ class TesseraPull:
     removed: tuple
 
     def summary(self):
-        """Summarize the pull in one line.
-
-        The line names the TESSERA folder and how many window archives were
-        removed. The master prints it.
-
-        Returns:
-            str: the summary.
-        """
+        """Summarize the pull in one line."""
         return (f"TESSERA in {self.tessera_dir}; removed {len(self.removed)} window archives "
                 "of fires without prior-year TESSERA")
 
@@ -237,14 +216,7 @@ class TesseraPlan:
     already_built: tuple = ()
 
     def summary(self):
-        """Summarize the plan in one line.
-
-        The line counts the fires to build, the fires skipped and those already
-        uploaded. The master prints it before starting.
-
-        Returns:
-            str: the summary.
-        """
+        """Summarize the plan in one line."""
         return (f"Plan: build {len(self.jobs)} TESSERA files; skip {len(self.skipped)}; "
                 f"{len(self.already_built)} already in the repo")
 
@@ -287,19 +259,7 @@ def plan_tessera(roi, splits, locations, existing, available_years, overwrite=Fa
 
 
 def excluded_fires(token=None, src_repo=SRC_REPO, roi_dir=ROI_CACHE_DIR):
-    """List the window archives TESSERA mode leaves out, from the source repo's ROI CSVs.
-
-    These are the fires without prior-year embeddings. The CSVs are downloaded
-    and read once.
-
-    Args:
-        token (str | None): a Hugging Face token.
-        src_repo (str): the raw GeoTIFF repo.
-        roi_dir (str | Path): the local folder for the CSVs.
-
-    Returns:
-        list[str]: sorted "split/p<id>.npz" names.
-    """
+    """List the window archives TESSERA mode leaves out, from the source repo's ROI CSVs."""
     return tessera_excluded_npz(read_roi(hub.download_roi_csvs(src_repo, token, roi_dir)))
 
 
@@ -422,19 +382,7 @@ def process_tessera(
 
 
 def upload_staged(staging_dir, tessera_repo, token):
-    """Upload the staged TESSERA files, then empty the staging folder.
-
-    All files go to tessera_repo/tessera in one commit. The folder is emptied so
-    the next batch starts clean.
-
-    Args:
-        staging_dir (str | Path): the folder of finished files.
-        tessera_repo (str): the TESSERA repo.
-        token (str | None): a token with write access.
-
-    Returns:
-        list[str]: the uploaded file names.
-    """
+    """Upload the staged TESSERA files, then empty the staging folder."""
     print(f"Uploading staged TESSERA files to {tessera_repo}")
     names = hub.upload_folder(staging_dir, tessera_repo, "tessera", token)
     shutil.rmtree(staging_dir, ignore_errors=True)

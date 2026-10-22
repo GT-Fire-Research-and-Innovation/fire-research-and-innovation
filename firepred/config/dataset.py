@@ -1,18 +1,18 @@
 """Every data constant: input channels, dataset settings, repositories, paths.
 
-Level 0 (config). Used by data/ (normalization, preprocessing, archives),
-models/ (input width), prep/ (building, publishing and staging windows),
-training/ (channel checks) and the CLIs. Every function that uses a setting
-also accepts it as an argument, so a notebook can override it for one call
-without editing this file.
+Level 0 (config). Used by data/ (normalization, preprocessing, archives; building,
+publishing and staging windows), models/ (input width), training/ (channel checks)
+and the CLIs. Every function that uses a setting also accepts it as an argument,
+so a notebook can override it for one call without editing this file.
 
 Sections: input channels, dataset settings, filesystem paths, preprocessing defaults.
 
 Input channels. A stored window holds 27 channels, in the order of the
 TS-SatFire paper's Table 1 (figures/Bands.png), 0-based here. Before the
 model sees it:
-  * every channel except the angles and land cover is standardized with
-    NORMALIZATION_MEAN/STD;
+  * every channel except the angles and land cover is standardized with the
+    training split's mean/std from <data-root>/window_config.json (or, with
+    --normalization paper, NORMALIZATION_MEAN/STD);
   * the three angle channels (degrees) become sin(angle);
   * land cover (integer class 1..17, 0 = missing) becomes 17 one-hot planes.
 So the model receives 27 - 1 + 17 = 43 channels. TESSERA mode appends 128
@@ -66,7 +66,9 @@ DEGREE_CHANNELS = [12, 18, 24]
 LANDCOVER_CHANNEL = 21
 N_LANDCOVER_CLASSES = 17
 
-# Per-channel training statistics of the 27 stored channels. [released]
+# Per-channel training statistics of the 27 stored channels, from the authors'
+# training data. Used with --normalization paper and for checkpoints that predate
+# window_config.json statistics. [released]
 NORMALIZATION_MEAN = [
     18.224253,
     26.95519,
@@ -216,11 +218,13 @@ WINDOW_CONFIG_FILE = "window_config.json"
 ARCHIVE_FORMAT_VERSION = 2
 SPLITS = ("train", "val", "test")
 
-# zlib level for the window archives (1 = fastest, 9 = smallest). Only the
-# compressed bytes change: np.load returns identical arrays at every level.
-# On a real 18-window fire, level 1 saved 3.0x faster than NumPy's default
-# (level 6) for a 14% larger file.
-NPZ_COMPRESSLEVEL = 1
+# Zstandard level of every member of the window and TESSERA archives
+# (data/archive.py; 1 = fastest, 22 = smallest). Only the compressed bytes change:
+# the arrays read back identically at every level. Versus zlib level 1 (used
+# before), level 6 decompressed about 1.8x faster and packed a quantized float32
+# field 16% tighter, for 14% slower writing (synthetic data, not measured on
+# real archives).
+NPZ_COMPRESSLEVEL = 6
 
 # ----- Prediction labels ----- #
 
@@ -262,6 +266,9 @@ TESSERA_EXCLUDED_LIST = "excluded_npz.txt"
 
 # firepred/config/dataset.py -> the repository root.
 REPO_ROOT = Path(__file__).resolve().parents[2]
+# Written at the root of a code copy by tools/pack_code.py (Kaggle / Colab run a
+# packed copy of the local checkout, not a git clone): which code it is. [ours]
+CODE_MANIFEST_FILE = "code_version.json"
 
 # Fire metadata (Id, start_date, lat/lon, label_sel) shipped with the repo.
 ROI_DIR = REPO_ROOT / "roi"
@@ -277,7 +284,7 @@ DEFAULT_DATA_ROOT = Path("data")
 
 # ============================ Preprocessing defaults ============================ #
 
-# Local folders and file names used by the dataset pipeline (prep/), relative
+# Local folders and file names used by the dataset pipeline (data/), relative
 # to the working directory unless a master function is given other paths.
 WORK_DIR = "."                 # temp/ and staging/ go here while building
 DATA_DIR = "./data"            # a local data root: train/, val/, test/ (+ tessera/)

@@ -1,9 +1,17 @@
-"""The window archive format: one file (or folder) per fire, one member per window.
+"""Every file format on disk: .npz with Zstandard members, window archives, TESSERA files.
 
-Level 1 (data). Written by prep/ while building the dataset; read
-by data/fire_dataset.py while training.
+Level 1 (data). numpy and the zipfile below only, so it loads on any training machine.
 
-A fire's windows live in p<id>.npz [ours, format version 2]:
+.npz files [ours]: window and TESSERA archives compress every .npy member with Zstandard
+(zip method 93) at NPZ_COMPRESSLEVEL. On a quantized float32 field, level 6 decompressed
+about 1.8x faster than zlib level 1 and packed 16% tighter, for 14% slower writing; on
+noisy float32 the sizes match. Python 3.14 reads such zips natively (PEP 784); 3.10-3.13
+use the zipfile of the backports.zstd package, a copy of 3.14's. np.load cannot open them
+before 3.14 ("That compression method is not supported"), so every archive is read
+through open_npz, which answers archive["name"] and archive.files like np.load's NpzFile.
+Older zlib archives read the same way, since each member records its own method.
+
+Window archives [ours, format version 2], one per fire:
 
     p<id>.npz
     ├── format_version   scalar, 2
@@ -13,22 +21,122 @@ A fire's windows live in p<id>.npz [ours, format version 2]:
     ├── label_000        (256, 256) next-day target (or (T, 256, 256))
     ├── data_001, label_001, ...
 
-Each window is its own zip member, so reading one window decompresses only
-that window. unzip_data_root() can unpack every archive once into a p<id>/
-folder of the same .npy members (byte-identical arrays, no zlib on every read).
+Each window is its own member, so reading one window decompresses only that window.
+unzip_data_root() can unpack every archive once into a p<id>/ folder of the same .npy
+members (byte-identical arrays, no decompression on every read).
+
+TESSERA files [ours], tessera/p<id>.npz, built by data/tessera.py:
+
+    embedding      (128, 256 k, 256 k) float16, 0 where coverage is 0 (k = 1 by default)
+    coverage       (256 k, 256 k) float16, fraction of 10 m pixels with data
+    format_version, plus provenance metadata (fire_id, fire_year, tessera_year, crs,
+    transform, bounds, bounds_lonlat, source_store, model_version, geotessera_version,
+    code_version, day_files, and cells_per_pixel when k > 1)
 """
 
 import json
 import os
 import shutil
-import zipfile
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from functools import cached_property
 from pathlib import Path
 
 import numpy as np
 
-from firepred.config.dataset import ARCHIVE_FORMAT_VERSION, NPZ_COMPRESSLEVEL
+from firepred.config.dataset import (
+    ARCHIVE_FORMAT_VERSION,
+    CROP_SIZE,
+    NPZ_COMPRESSLEVEL,
+    TESSERA_BANDS,
+    TESSERA_FORMAT_VERSION,
+)
+
+if sys.version_info >= (3, 14):
+    import zipfile
+else:
+    try:
+        from backports.zstd import zipfile
+    except ImportError as error:  # pragma: no cover - depends on the environment
+        raise ImportError(
+            "Window and TESSERA archives are Zstandard-compressed. Python < 3.14 needs the backport: "
+            "pip install 'backports.zstd; python_version<\"3.14\"'"
+        ) from error
+
+ZIP_ZSTANDARD = zipfile.ZIP_ZSTANDARD
+
+
+# ===== .npz files with Zstandard members ===== #
+
+
+class NpzArchive:
+    """Read an .npz file member by member, like np.load's NpzFile, with Zstandard support.
+
+    Only the zip directory is read on opening. Each archive["name"] decompresses
+    that one member, so a window archive never has to be loaded whole.
+
+    Attributes:
+        files (list[str]): the member names without .npy, e.g. ["num_windows", "data_000"].
+    """
+
+    def __init__(self, path):
+        """Open the zip and list its .npy members; no member is decompressed yet."""
+        self._zip = zipfile.ZipFile(path)
+        self.files = [name[:-4] for name in self._zip.namelist() if name.endswith(".npy")]
+
+    def __getitem__(self, key):
+        """Decompress and return one member.
+
+        Like NpzFile, the name may be given with or without .npy. A name that is
+        not in the archive is a KeyError.
+
+        Args:
+            key (str): the member name, e.g. "data_000".
+
+        Returns:
+            np.ndarray: the member's array.
+
+        Raises:
+            KeyError: if the archive has no such member.
+        """
+        name = key if key.endswith(".npy") else f"{key}.npy"
+        try:
+            member = self._zip.open(name)
+        except KeyError:
+            raise KeyError(f"{key} is not a file in the archive") from None
+        with member:
+            return np.lib.format.read_array(member, allow_pickle=False)
+
+    def close(self):
+        """Close the zip file; members already returned stay valid."""
+        self._zip.close()
+
+    def __enter__(self):
+        """Start a `with` block."""
+        return self
+
+    def __exit__(self, *exc_info):
+        """Close the archive at the end of a `with` block."""
+        self.close()
+        return False
+
+
+def open_npz(path):
+    """Open an .npz file for reading, Zstandard or zlib members alike."""
+    return NpzArchive(path)
+
+
+def write_npz(path, arrays, compresslevel=NPZ_COMPRESSLEVEL):
+    """Write arrays as an .npz with one Zstandard-compressed .npy member each, in the given order."""
+    with zipfile.ZipFile(path, "w", compression=ZIP_ZSTANDARD, compresslevel=compresslevel, allowZip64=True) as bundle:
+        for name, value in arrays.items():
+            with bundle.open(f"{name}.npy", "w", force_zip64=True) as member:
+                np.lib.format.write_array(member, np.asanyarray(value), allow_pickle=False)
+    return path
+
+
+# ===== Window archives ===== #
+
 
 # Written into each unzipped folder: the archive (path, size, mtime) it came from.
 _UNZIP_MARKER = ".source.json"
@@ -37,13 +145,7 @@ _UNZIP_MARKER = ".source.json"
 # ----- Writing ----- #
 
 
-def write_fire_archive(
-    save_path,
-    data,
-    labels,
-    label_sel=None,
-    compresslevel=NPZ_COMPRESSLEVEL,
-):
+def write_fire_archive(save_path, data, labels, label_sel=None, compresslevel=NPZ_COMPRESSLEVEL):
     """Write one fire's windows into a single archive, one member per window.
 
     The archive is a zip of .npy members: a format version, the window count,
@@ -57,7 +159,7 @@ def write_fire_archive(
         labels (np.ndarray): next-day targets, shape (windows, 256, 256).
         label_sel (int | None): the label rule that built the targets, recorded
             in the archive; None leaves it out.
-        compresslevel (int): zlib level (1 = fastest).
+        compresslevel (int): Zstandard level (higher packs tighter, writes slower).
 
     Returns:
         Path: save_path.
@@ -67,10 +169,7 @@ def write_fire_archive(
         RuntimeError: if the written file does not read back correctly.
     """
     if len(data) != len(labels):
-        raise ValueError(
-            f"Data/label window mismatch: {len(data)} versus "
-            f"{len(labels)}"
-        )
+        raise ValueError(f"Data/label window mismatch: {len(data)} versus {len(labels)}")
 
     # Archive contents: two small header members (format version, window count),
     # the optional label rule, then one data_### and one label_### member per window.
@@ -88,45 +187,16 @@ def write_fire_archive(
         payload[f"data_{suffix}"] = data[window_idx]
         payload[f"label_{suffix}"] = labels[window_idx]
 
-    # np.savez_compressed's own writer with an explicit zlib level: the
-    # same .npy members and arrays, only the compressed bytes differ.
-    with zipfile.ZipFile(
-        save_path,
-        "w",
-        compression=zipfile.ZIP_DEFLATED,
-        compresslevel=compresslevel,
-        allowZip64=True,
-    ) as zip_file:
-        # Write each member as its own compressed .npy entry; readers can then open one
-        # window without decompressing the others.
-        for key, value in payload.items():
-            with zip_file.open(f"{key}.npy", "w", force_zip64=True) as member:
-                np.lib.format.write_array(
-                    member,
-                    np.asanyarray(value),
-                    allow_pickle=False,
-                )
+    write_npz(save_path, payload, compresslevel=compresslevel)
 
-    # This checks the ZIP member index and tiny metadata member without
-    # decompressing every data window again.
-    with np.load(save_path, allow_pickle=False) as archive:
+    # Check the member index and the tiny count member, without decompressing any window again.
+    with open_npz(save_path) as archive:
         saved_count = int(archive["num_windows"])
-        expected_keys = {
-            key
-            for window_idx in range(number_of_windows)
-            for key in (
-                f"data_{window_idx:03d}",
-                f"label_{window_idx:03d}",
-            )
-        }
+        expected_keys = {f"{kind}_{window_idx:03d}" for window_idx in range(number_of_windows)
+                         for kind in ("data", "label")}
         missing_keys = expected_keys.difference(archive.files)
-
     if saved_count != number_of_windows or missing_keys:
-        raise RuntimeError(
-            f"Failed to verify {save_path}: saved_count={saved_count}, "
-            f"missing={sorted(missing_keys)}"
-        )
-
+        raise RuntimeError(f"Failed to verify {save_path}: saved_count={saved_count}, missing={sorted(missing_keys)}")
     return Path(save_path)
 
 
@@ -134,17 +204,7 @@ def write_fire_archive(
 
 
 def fire_name(source):
-    """Name a fire by its archive or folder: p<id>.
-
-    A fire is stored either as p<id>.npz or, after unzipping, as a p<id>/
-    folder. Both give the same name, which also names its TESSERA file.
-
-    Args:
-        source (str | Path): the archive or folder.
-
-    Returns:
-        str: "p<id>".
-    """
+    """Name a fire by its p<id>.npz archive or p<id>/ folder: p<id> (also its TESSERA file's name)."""
     source = Path(source)
     return source.stem if source.suffix == ".npz" else source.name
 
@@ -165,8 +225,6 @@ def find_fire_sources(split_dir):
     split_dir = Path(split_dir)
     if not split_dir.is_dir():
         return []
-    # One entry per fire. An unzipped folder wins over an archive of the same name
-    # (faster to read); hidden names are half-finished unzips and are skipped.
     sources = {}
     for path in split_dir.iterdir():
         if path.name.startswith("."):
@@ -183,87 +241,38 @@ def find_fire_sources(split_dir):
 class _FireFolder:
     """Read an unzipped fire folder exactly like an open .npz archive.
 
-    np.load returns an object that answers archive["data_000"] and
+    open_npz returns an object that answers archive["data_000"] and
     archive.files. This class gives an unzipped p<id>/ folder (one .npy file per
     member) the same interface, so the reading code works for both.
     """
 
     def __init__(self, folder):
-        """Point the reader at one unzipped fire folder.
-
-        Nothing is read yet. Members are loaded one at a time when asked for.
-
-        Args:
-            folder (str | Path): the p<id>/ folder.
-        """
+        """Point the reader at one unzipped fire folder."""
         self.folder = Path(folder)
 
     @cached_property
     def files(self):
-        """List the folder's member names, like NpzFile.files.
-
-        Each member is one .npy file. The names are the file names without .npy.
-
-        Returns:
-            list[str]: e.g. ["num_windows", "data_000", "label_000"].
-        """
+        """List the folder's member names, like NpzFile.files."""
         return [path.stem for path in self.folder.glob("*.npy")]
 
     def __getitem__(self, key):
-        """Load one member as a numpy array.
-
-        Only the requested .npy file is read. Pickled objects are refused.
-
-        Args:
-            key (str): the member name, e.g. "data_000".
-
-        Returns:
-            np.ndarray: the member's array.
-        """
+        """Load one member's .npy file (pickles refused)."""
         return np.load(self.folder / f"{key}.npy", allow_pickle=False)
 
     def __enter__(self):
-        """Start a `with` block; a folder needs no open file handle.
-
-        This exists so the folder can be used like an open archive. It does nothing
-        but return the reader.
-
-        Returns:
-            _FireFolder: this reader.
-        """
+        """Start a `with` block; a folder needs no open file handle."""
         return self
 
     def __exit__(self, *exc_info):
-        """End a `with` block; there is nothing to close.
-
-        This exists so the folder can be used like an open archive. Exceptions
-        raised inside the block are not swallowed.
-
-        Args:
-            *exc_info: the exception details, if any (ignored).
-
-        Returns:
-            bool: False, so exceptions propagate.
-        """
+        """End a `with` block; there is nothing to close."""
         return False
 
 
 def open_fire(source):
-    """Open a fire's archive or unzipped folder for reading.
-
-    Use it as `with open_fire(source) as archive:` and read members with
-    archive["data_000"]. Archives and unzipped folders give the same arrays.
-
-    Args:
-        source (str | Path): a p<id>.npz archive or p<id>/ folder.
-
-    Returns:
-        numpy.lib.npyio.NpzFile | _FireFolder: the open reader.
-    """
-    # Both kinds answer archive[key] with the same numpy array.
+    """Open a p<id>.npz archive or unzipped p<id>/ folder; both answer archive["data_000"] with the same array."""
     if Path(source).is_dir():
         return _FireFolder(source)
-    return np.load(source, allow_pickle=False)
+    return open_npz(source)
 
 
 def index_fires(sources):
@@ -289,43 +298,19 @@ def index_fires(sources):
             # Reject old archives rather than silently loading the whole
             # `data` member and defeating lazy decompression.
             if "num_windows" not in archive.files:
-                raise RuntimeError(
-                    f"{npz_path} uses the old NPZ format. Expected "
-                    "num_windows plus data_###/label_### members."
-                )
-
-            number_of_windows = int(
-                np.asarray(archive["num_windows"]).item()
-            )
-
+                raise RuntimeError(f"{npz_path} uses the old NPZ format. "
+                                   "Expected num_windows plus data_###/label_### members.")
+            number_of_windows = int(np.asarray(archive["num_windows"]).item())
             if "format_version" in archive.files:
-                format_version = int(
-                    np.asarray(archive["format_version"]).item()
-                )
+                format_version = int(np.asarray(archive["format_version"]).item())
                 if format_version != ARCHIVE_FORMAT_VERSION:
-                    raise RuntimeError(
-                        f"{npz_path} has unsupported format version "
-                        f"{format_version}; expected version {ARCHIVE_FORMAT_VERSION}"
-                    )
-
-            # Checking member names reads only the ZIP directory; it does
-            # not decompress the large window arrays.
+                    raise RuntimeError(f"{npz_path} has unsupported format version {format_version}; "
+                                       f"expected version {ARCHIVE_FORMAT_VERSION}")
             for window_idx in range(number_of_windows):
-                suffix = f"{window_idx:03d}"
-                data_key = f"data_{suffix}"
-                label_key = f"label_{suffix}"
-
-                if data_key not in archive.files:
-                    raise RuntimeError(
-                        f"{npz_path} is missing member {data_key}"
-                    )
-                if label_key not in archive.files:
-                    raise RuntimeError(
-                        f"{npz_path} is missing member {label_key}"
-                    )
-
+                for key in (f"data_{window_idx:03d}", f"label_{window_idx:03d}"):
+                    if key not in archive.files:
+                        raise RuntimeError(f"{npz_path} is missing member {key}")
                 index.append((npz_path, window_idx))
-
     return index
 
 
@@ -333,39 +318,14 @@ def index_fires(sources):
 
 
 def _archive_signature(archive_path):
-    """Describe an archive file so a later unzip can tell whether it changed.
-
-    The description (path, size, modification time) is stored in a marker
-    inside the unzipped folder. A different description means the archive was
-    replaced and must be unzipped again.
-
-    Args:
-        archive_path (str | Path): the archive.
-
-    Returns:
-        dict: {"archive": path, "size": bytes, "mtime_ns": modification time}.
-    """
+    """Describe an archive by path, size and mtime, so a later unzip can tell whether it changed."""
     archive_path = Path(archive_path).resolve()
     stat = archive_path.stat()
-    return {
-        "archive": str(archive_path),
-        "size": stat.st_size,
-        "mtime_ns": stat.st_mtime_ns,
-    }
+    return {"archive": str(archive_path), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
 
 
 def _read_unzip_marker(folder):
-    """Read the marker an unzip left in a fire folder.
-
-    The marker says which archive the folder came from. A missing or broken
-    marker means the folder cannot be trusted and is unzipped again.
-
-    Args:
-        folder (Path): an unzipped p<id>/ folder.
-
-    Returns:
-        dict | None: the marker, or None when it is missing or unreadable.
-    """
+    """Read the marker an unzip left in a fire folder; None (missing or broken) means unzip again."""
     try:
         return json.loads((folder / _UNZIP_MARKER).read_text())
     except (OSError, ValueError):
@@ -389,8 +349,6 @@ def _unzip_fire(archive_path, folder):
     Raises:
         ValueError: if the archive holds anything other than plain .npy members.
     """
-    # Unzip into a hidden temporary folder first, then rename it into place, so an
-    # interrupted unzip never looks like a finished one.
     work = folder.with_name(f".{folder.name}.partial")
     if work.exists():
         shutil.rmtree(work)
@@ -398,12 +356,7 @@ def _unzip_fire(archive_path, folder):
     with zipfile.ZipFile(archive_path) as archive:
         for member in archive.infolist():
             name = member.filename
-            if (
-                not name.endswith(".npy")
-                or name.startswith(".")
-                or "/" in name
-                or "\\" in name
-            ):
+            if not name.endswith(".npy") or name.startswith(".") or "/" in name or "\\" in name:
                 raise ValueError(f"{archive_path}: unexpected member {name!r}")
             # ZipFile checks each member's CRC as it is read.
             with archive.open(member) as src, open(work / name, "wb") as dst:
@@ -415,12 +368,7 @@ def _unzip_fire(archive_path, folder):
     return folder
 
 
-def unzip_data_root(
-    data_root,
-    unzip_root,
-    splits=("train", "val", "test"),
-    workers=None,
-):
+def unzip_data_root(data_root, unzip_root, splits=("train", "val", "test"), workers=None):
     """Unzip every split's archives once, so training reads windows faster.
 
     Reading an unzipped .npy file skips decompression on every read; the arrays
@@ -449,8 +397,7 @@ def unzip_data_root(
     # Plan the work: unzip only archives whose folder is missing or out of date
     # (the marker file records which archive, size and time it came from), and
     # remove folders whose archive no longer exists.
-    jobs = []
-    stale = []
+    jobs, stale = [], []
     for split, archives in sources.items():
         split_dir = unzip_root / split
         for archive in archives:
@@ -460,11 +407,8 @@ def unzip_data_root(
         # Folders this function made for fires that data_root no longer has.
         names = {archive.stem for archive in archives}
         if split_dir.is_dir():
-            stale += [
-                folder
-                for folder in split_dir.iterdir()
-                if folder.name not in names and (folder / _UNZIP_MARKER).is_file()
-            ]
+            stale += [folder for folder in split_dir.iterdir()
+                      if folder.name not in names and (folder / _UNZIP_MARKER).is_file()]
 
     for folder in stale:
         shutil.rmtree(folder)
@@ -485,18 +429,13 @@ def unzip_data_root(
         print(f"Cannot write {unzip_root} ({error}); reading the archives directly")
         return data_root
     if needed + (1 << 30) > free:
-        print(
-            f"Unzipping needs {needed / 2**30:.1f} GiB but {unzip_root} has "
-            f"{free / 2**30:.1f} GiB free; reading the archives directly"
-        )
+        print(f"Unzipping needs {needed / 2**30:.1f} GiB but {unzip_root} has "
+              f"{free / 2**30:.1f} GiB free; reading the archives directly")
         return data_root
 
-    print(
-        f"Unzipping {len(jobs)} fire archives ({needed / 2**30:.1f} GiB) "
-        f"into {unzip_root}"
-    )
+    print(f"Unzipping {len(jobs)} fire archives ({needed / 2**30:.1f} GiB) into {unzip_root}")
     try:
-        # zlib and file writes release the GIL, so threads unzip in parallel.
+        # Decompression and file writes release the GIL, so threads unzip in parallel.
         with ThreadPoolExecutor(max_workers=workers or os.cpu_count()) as pool:
             for _ in pool.map(lambda job: _unzip_fire(*job), jobs):
                 pass
@@ -504,3 +443,185 @@ def unzip_data_root(
         print(f"Unzipping failed ({error}); reading the archives directly")
         return data_root
     return unzip_root
+
+
+# ===== TESSERA files ===== #
+
+
+# ----- Grid size ----- #
+
+
+def cells_per_pixel_of(shape, expected=None):
+    """Find how many TESSERA cells per VIIRS pixel side a stored map has.
+
+    A map holds k x k cells for every one of the 256 x 256 VIIRS pixels, so its
+    side is 256 k. k = 1 is one averaged vector per VIIRS pixel. A map whose
+    side is not a whole multiple of 256 is refused.
+
+    Args:
+        shape (tuple[int, ...]): the embedding shape (128, S, S) or coverage shape (S, S).
+        expected (int | None): the k the caller needs, or None for any.
+
+    Returns:
+        int: k.
+
+    Raises:
+        ValueError: if the shape is not square, not a multiple of 256, or not the expected k.
+    """
+    side = shape[-1]
+    if len(shape) < 2 or shape[-2] != side or side % CROP_SIZE or side == 0:
+        raise ValueError(f"TESSERA map shape {tuple(shape)} is not a square multiple of {CROP_SIZE}")
+    if len(shape) == 3 and shape[0] != TESSERA_BANDS:
+        raise ValueError(f"TESSERA map shape {tuple(shape)} does not have {TESSERA_BANDS} bands")
+    cells = side // CROP_SIZE
+    if expected is not None and cells != expected:
+        raise ValueError(f"TESSERA map has {cells} cells per VIIRS pixel; this run needs {expected}")
+    return cells
+
+
+# ----- Writing ----- #
+
+
+def save_tessera_npz(save_path, embedding, coverage, metadata):
+    """Write one fire's TESSERA file and check that it reads back.
+
+    The embedding is stored as float16 (missing cells as 0) to halve the file
+    size, together with the coverage map and provenance metadata, all
+    Zstandard-compressed. The file is read back once to make sure it is complete.
+
+    Args:
+        save_path (str | Path): where to write tessera/p<id>.npz.
+        embedding (np.ndarray): (128, 256 k, 256 k) float32, NaN where there is no data
+            (k TESSERA cells per VIIRS pixel side; 1 by default).
+        coverage (np.ndarray): (256 k, 256 k), the fraction of 10 m pixels with data.
+        metadata (dict): extra members (fire id, years, grid, versions).
+
+    Returns:
+        Path: save_path.
+
+    Raises:
+        ValueError: on a wrong shape or a value too large for float16.
+        RuntimeError: if the written file does not read back correctly.
+    """
+    cells = cells_per_pixel_of(embedding.shape)
+    if coverage.shape != embedding.shape[1:]:
+        raise ValueError(f"Unexpected coverage shape {coverage.shape}")
+
+    # float16 halves the file size; TESSERA values are small enough not to overflow.
+    stored = np.nan_to_num(embedding, nan=0.0).astype(np.float16)
+    if not np.isfinite(stored).all():
+        raise ValueError(f"{save_path}: embedding overflows float16")
+
+    write_npz(save_path, {
+        "format_version": np.asarray(TESSERA_FORMAT_VERSION, dtype=np.int16),
+        "embedding": stored,
+        "coverage": coverage.astype(np.float16),
+        **{key: np.asarray(value) for key, value in metadata.items()},
+    })
+
+    # Read the file back once to make sure it is complete.
+    with open_npz(save_path) as archive:
+        if archive["embedding"].shape != (TESSERA_BANDS, CROP_SIZE * cells, CROP_SIZE * cells):
+            raise RuntimeError(f"Failed to verify {save_path}")
+    return Path(save_path)
+
+
+# ----- Reading and model input ----- #
+
+
+def read_tessera(path, cells_per_pixel=None):
+    """Read one fire's TESSERA embedding and coverage.
+
+    The arrays are marked read-only, because one fire's map is shared by all of
+    its windows (and by DataLoader worker processes). Nothing may change it.
+
+    Args:
+        path (str | Path): a tessera/p<id>.npz file.
+        cells_per_pixel (int | None): the k the caller needs, or None for any.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray]: (embedding (128, 256 k, 256 k) float16,
+        coverage (256 k, 256 k) float16).
+
+    Raises:
+        ValueError: if the embedding has the wrong shape or another k.
+    """
+    path = Path(path)
+    with open_npz(path) as archive:
+        embedding = archive["embedding"]
+        coverage = archive["coverage"]
+    try:
+        cells_per_pixel_of(embedding.shape, cells_per_pixel)
+    except ValueError as error:
+        raise ValueError(f"{path}: embedding has shape {embedding.shape}; {error}") from None
+    embedding.flags.writeable = False
+    coverage.flags.writeable = False
+    return embedding, coverage
+
+
+def tessera_paths(tessera_dir, fire_sources):
+    """Map every fire to its TESSERA file, {"p<id>": path}; a missing one fails now, before training."""
+    tessera_dir = Path(tessera_dir)
+    names = [fire_name(path) for path in fire_sources]
+    missing = [f"{name}.npz" for name in names if not (tessera_dir / f"{name}.npz").exists()]
+    if missing:
+        raise RuntimeError(f"{len(missing)} fires have no TESSERA file in {tessera_dir}: {missing[:10]}")
+    return {name: tessera_dir / f"{name}.npz" for name in names}
+
+
+def load_tessera_maps(tessera_dir, fire_sources, cells_per_pixel=None):
+    """Read every fire's TESSERA file once; pass the result to both compute_tessera_stats and FireDataset."""
+    return {name: read_tessera(path, cells_per_pixel)
+            for name, path in tessera_paths(tessera_dir, fire_sources).items()}
+
+
+def iter_tessera_maps(tessera_dir, fire_sources, cells_per_pixel=None):
+    """Read the fires' TESSERA files one at a time: k-cell maps (about 400 MiB at k = 5) do not fit together."""
+    paths = tessera_paths(tessera_dir, fire_sources)
+    return (read_tessera(path, cells_per_pixel) for path in paths.values())
+
+
+def compute_tessera_stats(tessera_maps, min_coverage=0.5):
+    """Compute the per-band mean and spread of TESSERA over well-covered pixels.
+
+    These statistics standardize the embeddings before the model sees them.
+    Compute them from the training fires only and reuse them for validation
+    and test, so nothing is learned from held-out fires. Pixels with less
+    coverage than min_coverage are left out.
+
+    Args:
+        tessera_maps (Iterable[tuple[np.ndarray, np.ndarray]]): (embedding, coverage) pairs.
+        min_coverage (float): the smallest coverage a pixel needs to count.
+
+    Returns:
+        dict: {"mean": (128,) float32, "std": (128,) float32, "min_coverage": float}.
+
+    Raises:
+        RuntimeError: if no pixel has enough coverage.
+    """
+    # Accumulate sum and sum of squares over all well-covered pixels of the
+    # training fires (float64 to avoid rounding drift), then mean and std per band.
+    total = np.zeros(TESSERA_BANDS, dtype=np.float64)
+    total_sq = np.zeros(TESSERA_BANDS, dtype=np.float64)
+    count = 0
+    for embedding, coverage in tessera_maps:
+        valid = coverage.astype(np.float32) >= min_coverage
+        # Select first, then widen: only the kept pixels are copied to float64.
+        values = embedding[:, valid].astype(np.float64)
+        total += values.sum(axis=1)
+        total_sq += (values ** 2).sum(axis=1)
+        count += values.shape[1]
+    if count == 0:
+        raise RuntimeError("No TESSERA pixels with sufficient coverage")
+    mean = total / count
+    std = np.sqrt(np.maximum(total_sq / count - mean ** 2, 1e-12))
+    return {"mean": mean.astype(np.float32), "std": std.astype(np.float32), "min_coverage": float(min_coverage)}
+
+
+def static_map(embedding, valid, stats):
+    """Build one fire's TESSERA input (129, H, W): standardized embedding (0 where invalid) plus a validity mask."""
+    embedding = embedding.astype(np.float32)
+    mean = stats["mean"][:, None, None]
+    std = stats["std"][:, None, None]
+    embedding = np.where(valid, (embedding - mean) / std, 0.0)
+    return np.concatenate((embedding, valid[None].astype(np.float32)), axis=0).astype(np.float32)
