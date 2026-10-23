@@ -12,12 +12,13 @@ import pack_code  # noqa: E402
 
 
 def test_zip_holds_the_package_and_a_manifest_but_no_caches(tmp_path):
-    """firepred/, roi/ and pyproject.toml go in with code_version.json; caches, tests and notebooks stay out."""
+    """Package, checks, ROI and project files go in with the manifest; caches, tests and notebooks stay out."""
     out, record = pack_code.pack(ROOT, tmp_path / "code.zip")
     with zipfile.ZipFile(out) as bundle:
         names = bundle.namelist()
         manifest = json.loads(bundle.read("code_version.json"))
     assert "firepred/cli/train.py" in names and "roi/us_fire_2021_out_new.csv" in names and "pyproject.toml" in names
+    assert "checks/count_windows.py" in names
     assert not [name for name in names if "__pycache__" in name or name.endswith(".pyc")]
     assert not [name for name in names if name.startswith(("tests/", "notebooks/", "docs/"))]
     assert manifest == record and manifest["files"] == len(names) - 1
