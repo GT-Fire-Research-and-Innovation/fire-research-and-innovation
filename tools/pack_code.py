@@ -6,7 +6,7 @@
 The notebooks never clone from GitHub: they run exactly the code on this
 machine. Upload the zip as a Kaggle Dataset (Kaggle unpacks it; point the
 training notebook's CODE_SOURCE at the dataset folder) or to Colab's /content
-(the data-grab notebook's CODE_SOURCE). The zip holds firepred/, roi/ and
+(the data-grab notebook's CODE_SOURCE). The zip holds firepred/, checks/, roi/ and
 pyproject.toml, plus code_version.json: the commit it was packed from, whether
 the checkout had uncommitted changes, and a hash of every packed file.
 firepred.data.files.code_version() reads that file when there is no git
@@ -29,8 +29,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from firepred.config.dataset import CODE_MANIFEST_FILE, REPO_ROOT  # noqa: E402
 
-# What a notebook needs to run the CLIs: the package, the fire lists and the project file.
-INCLUDE = ("firepred", "roi", "pyproject.toml")
+# What a notebook needs: the package, diagnostic scripts, fire lists and project file.
+INCLUDE = ("firepred", "checks", "roi", "pyproject.toml")
 SKIP_PARTS = {"__pycache__", ".DS_Store", ".ipynb_checkpoints"}
 DEFAULT_OUT = REPO_ROOT / "dist" / "firepred-code.zip"
 

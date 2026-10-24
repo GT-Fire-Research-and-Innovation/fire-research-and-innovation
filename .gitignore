@@ -29,3 +29,5 @@ __pycache__/
 /wandb/
 /evaluation_plot/
 /saved_models/
+
+AGENTS.md

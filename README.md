@@ -18,6 +18,7 @@ from scratch in [docs/swinunetr3d/](docs/swinunetr3d/).
     │   ├── training/             # L3 loss, metrics, loop, evaluation, W&B, checkpoints
     │   └── cli/                  # L4 train, dataset, check, new_model
     ├── tests/                    # pytest: unit tests, golden/ (same-output values), end-to-end runs
+    ├── checks/                   # dataset checks and experiment diagnostics (start with count_windows.py)
     ├── tools/                    # trace_shapes.py: real tensor shapes through SwinUNETR-3D
     ├── docs/                     # ARCHITECTURE, KNOWN_ISSUES, swinunetr3d/ explainer
     ├── roi/                      # fire metadata CSVs (ids, dates, locations, label rule)
@@ -65,6 +66,7 @@ repo), then zips and uploads data.zip.
 ```
 python -m firepred.cli.check model -m swinunetr3d            # model sanity check, one step
 python -m firepred.cli.check labels --data-root ./data        # background vs fire pixels of train/
+python checks/count_windows.py --data-root ./data --batch-size 8  # windows and batches per epoch
 python -m firepred.cli.train -m swinunetr3d -mode pred -b 8 -r 1 -lr 0.001 -nh 3 -ed 36 -ts 6 -it 1 --data-root ./data
 python -m firepred.cli.train ... -test --checkpoint <file.pth>
 ```
