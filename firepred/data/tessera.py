@@ -15,6 +15,8 @@ grid's georeference, streams the TESSERA embeddings covering it, and averages
 every 10 m TESSERA pixel into the crop pixel containing its centre. With
 cells_per_pixel=k each VIIRS pixel is split into k x k cells first (k = 5 gives
 75 m cells and a 1280 x 1280 map); the default 1 is one vector per VIIRS pixel.
+quantization="int8" stores the map as int8 codes instead of float16 (about 2.3x
+smaller files; data/archive.py), read back the same way.
 
 Embeddings come from the year before the fire: an annual embedding for the
 fire year is built partly from post-fire imagery and would leak the burn scar
@@ -39,6 +41,7 @@ from firepred.config.dataset import (
     TESSERA_BANDS,
     TESSERA_CELLS_PER_PIXEL,
     TESSERA_EXCLUDED_LIST,
+    TESSERA_QUANTIZATION,
     WINDOW_CONFIG_FILE,
 )
 from firepred.data.archive import save_tessera_npz
@@ -219,7 +222,7 @@ def grid_tessera(gt, dst_crs, dst_transform, year, size=CROP_SIZE, strip_rows=ST
 
 
 def build_fire_tessera(gt, fire_id, day_paths, fire_year, save_path, strip_rows=STRIP_ROWS,
-                       cells_per_pixel=TESSERA_CELLS_PER_PIXEL):
+                       cells_per_pixel=TESSERA_CELLS_PER_PIXEL, quantization=TESSERA_QUANTIZATION):
     """Build and save one fire's TESSERA file from two of its VIIRS_Day GeoTIFFs.
 
     All given days must share one georeference, otherwise the fixed crop would
@@ -236,6 +239,8 @@ def build_fire_tessera(gt, fire_id, day_paths, fire_year, save_path, strip_rows=
         strip_rows (int): rows read per request.
         cells_per_pixel (int): TESSERA cells along each side of one VIIRS pixel
             (1: one averaged vector per pixel; 5: 5 x 5 cells of 75 m).
+        quantization (str): how the file stores the embedding: "none" (float16)
+            or "int8" (codes plus a scale and offset per band).
 
     Returns:
         FireTessera: the written path, the year used and the coverage map.
@@ -282,7 +287,7 @@ def build_fire_tessera(gt, fire_id, day_paths, fire_year, save_path, strip_rows=
     if cells_per_pixel > 1:
         # Files without this member have one cell per VIIRS pixel (all files built before the option).
         metadata["cells_per_pixel"] = np.int16(cells_per_pixel)
-    path = save_tessera_npz(save_path, embedding, coverage, metadata)
+    path = save_tessera_npz(save_path, embedding, coverage, metadata, quantization=quantization)
     return FireTessera(path, tessera_year, coverage)
 
 

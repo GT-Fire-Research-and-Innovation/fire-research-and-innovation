@@ -256,6 +256,13 @@ VAL_IDS = [
 
 # Per-fire files tessera/p<id>.npz (see firepred/data/tessera.py). [ours]
 TESSERA_FORMAT_VERSION = 1
+# How a TESSERA file stores its embedding (data/archive.py). "none" keeps float16.
+# "int8" cuts each band's range in that fire into 254 equal steps, so nothing is
+# clipped. Measured on four real 5 x 5 maps: files 2.3x smaller (366 -> 155 MB),
+# RMS error 0.014-0.018 band standard deviations, band spreads kept within 0.2%,
+# and faster to read. Readers handle both and return float16. [ours]
+TESSERA_QUANTIZATIONS = ("none", "int8")
+TESSERA_QUANTIZATION = "none"
 # First year of published TESSERA embeddings; fires need the year before.
 FIRST_TESSERA_YEAR = 2017
 # Drop list shipped inside tessera.zip, one window archive path per line.
@@ -296,5 +303,8 @@ ZIP_FOLDERS = ("test", "train", "val", "tessera")
 # Fires per Hugging Face commit while publishing windows / TESSERA files.
 WINDOW_UPLOAD_BATCH = 10
 TESSERA_UPLOAD_BATCH = 1
+# Converted TESSERA files per commit (tessera_master.convert_tessera_repo), which is
+# also the most kept on disk at once: about 10 x 155 MB as int8 at 5 x 5 cells.
+TESSERA_CONVERT_BATCH = 10
 # Rows per TESSERA strip read at once (memory vs number of requests).
 STRIP_ROWS = 128

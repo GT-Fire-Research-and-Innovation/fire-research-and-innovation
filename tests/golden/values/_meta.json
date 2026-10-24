@@ -143,6 +143,18 @@
         "names"
       ],
       "reason": "--ce-weight defaults to auto: 1.0 and the training split's background-to-fire ratio from window_config.json, falling back to the paper's (1.0, 446.7836) when the file has no usable counts (now also when it counts no fire pixels)."
+    },
+    {
+      "groups": [
+        "cli"
+      ],
+      "reason": "dataset tessera: new --tessera-quantization flag (none | int8, default none)"
+    },
+    {
+      "groups": [
+        "cli"
+      ],
+      "reason": "dataset: new tessera-convert subcommand (--dest-tessera-repo, --tessera-quantization, --batch-size, --overwrite, --only-fires)"
     }
   ]
 }
