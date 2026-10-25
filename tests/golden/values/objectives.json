@@ -26,7 +26,7 @@
 [
 1
 ],
-"h0/KQQ=="
+"1ydqQw=="
 ],
 [
 "dict",
@@ -39,7 +39,7 @@
 [
 1
 ],
-"yi0jPw=="
+"FIFRQw=="
 ]
 ],
 [
@@ -67,7 +67,7 @@
 [
 1
 ],
-"H7gEQg=="
+"JcU2Qw=="
 ],
 [
 "dict",
@@ -80,7 +80,7 @@
 [
 1
 ],
-"TnPkPg=="
+"VwkWQw=="
 ]
 ],
 [
@@ -404,11 +404,11 @@
 ],
 [
 "train_loss",
-"Training Dice + Weighted Cross-Entropy Loss \u2014 Next-Day Fire Growth"
+"Training Weighted Dice + Cross-Entropy Loss \u2014 Next-Day Fire Growth"
 ],
 [
 "val_loss",
-"Validation Dice + Weighted Cross-Entropy Loss \u2014 Next-Day Fire Growth"
+"Validation Weighted Dice + Cross-Entropy Loss \u2014 Next-Day Fire Growth"
 ],
 [
 "train_fire_f1",
@@ -488,19 +488,19 @@
 ],
 [
 "train_dice_loss",
-"Training Dice Loss (x lambda_dice) \u2014 Next-Day Fire Growth"
+"Training Weighted Dice Loss \u2014 Next-Day Fire Growth"
 ],
 [
 "train_ce_loss",
-"Training Weighted Cross-Entropy Loss (x lambda_ce) \u2014 Next-Day Fire Growth"
+"Training Weighted Cross-Entropy Loss \u2014 Next-Day Fire Growth"
 ],
 [
 "val_dice_loss",
-"Validation Dice Loss (x lambda_dice) \u2014 Next-Day Fire Growth"
+"Validation Weighted Dice Loss \u2014 Next-Day Fire Growth"
 ],
 [
 "val_ce_loss",
-"Validation Weighted Cross-Entropy Loss (x lambda_ce) \u2014 Next-Day Fire Growth"
+"Validation Weighted Cross-Entropy Loss \u2014 Next-Day Fire Growth"
 ]
 ]
 ],

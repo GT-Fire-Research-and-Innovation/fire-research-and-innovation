@@ -32,6 +32,17 @@ TESSERA files [ours], tessera/p<id>.npz, built by data/tessera.py:
     format_version, plus provenance metadata (fire_id, fire_year, tessera_year, crs,
     transform, bounds, bounds_lonlat, source_store, model_version, geotessera_version,
     code_version, day_files, and cells_per_pixel when k > 1)
+
+With quantization "int8" (TESSERA_QUANTIZATION) the embedding member is replaced by
+
+    embedding_int8     (128, 256 k, 256 k) int8 codes, 0 where coverage is 0
+    embedding_scale    (128,) float32, one step of each band (its range / 254)
+    embedding_offset   (128,) float32, the middle of each band's range
+    quantization       "int8"
+
+value = code x scale + offset. read_tessera returns float16 for both kinds, so
+nothing after it changes. A reader that predates int8 finds no "embedding" member
+and fails, instead of using the codes as values.
 """
 
 import json
@@ -50,6 +61,8 @@ from firepred.config.dataset import (
     NPZ_COMPRESSLEVEL,
     TESSERA_BANDS,
     TESSERA_FORMAT_VERSION,
+    TESSERA_QUANTIZATION,
+    TESSERA_QUANTIZATIONS,
 )
 
 if sys.version_info >= (3, 14):
@@ -479,15 +492,71 @@ def cells_per_pixel_of(shape, expected=None):
     return cells
 
 
+# ----- int8 quantization ----- #
+
+
+def quantize_int8(embedding, has_data):
+    """Store an embedding as int8 codes: each band's range in equal steps.
+
+    Each band's range over the cells with data, minimum to maximum, is cut
+    into 254 equal steps (codes -127 .. 127), so no value is clipped and
+    dequantize_int8 is off by at most half a step. TESSERA bands have heavy
+    tails (up to 18 standard deviations from the mean on real maps), so a range
+    fixed in standard deviations would clip them. Cells without data get code
+    0. Bands are done one at a time, so a 5 x 5 map never has a second full
+    float copy. A band with a single value gets step 1 and comes back exactly
+    as the offset.
+
+    Args:
+        embedding (np.ndarray): (128, S, S) float, NaN allowed only where has_data is False.
+        has_data (np.ndarray): (S, S) bool, the cells with data.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray, np.ndarray]: (codes (128, S, S) int8,
+        scale (128,) float32, offset (128,) float32); value = code x scale + offset.
+
+    Raises:
+        ValueError: if a cell with data holds NaN or infinity.
+    """
+    codes = np.zeros(embedding.shape, dtype=np.int8)
+    scale = np.ones(len(embedding), dtype=np.float32)
+    offset = np.zeros(len(embedding), dtype=np.float32)
+    for band, values in enumerate(embedding):
+        kept = values[has_data].astype(np.float32)
+        if kept.size == 0:
+            continue
+        if not np.isfinite(kept).all():
+            raise ValueError(f"TESSERA band {band} has a missing value in a cell with data")
+        low, high = float(kept.min()), float(kept.max())
+        offset[band] = (low + high) / 2
+        if high > low:
+            scale[band] = (high - low) / 254
+        # Codes come from the stored float32 offset and scale; the clip only
+        # guards against float rounding at the two ends of the range.
+        codes[band][has_data] = np.clip(np.rint((kept - offset[band]) / scale[band]), -127, 127)
+    return codes, scale, offset
+
+
+def dequantize_int8(codes, scale, offset, dtype=np.float16):
+    """Turn int8 codes back into values (code x scale + offset), one band at a time to keep memory low."""
+    values = np.empty(codes.shape, dtype=dtype)
+    for band in range(len(codes)):
+        values[band] = codes[band] * scale[band] + offset[band]
+    return values
+
+
 # ----- Writing ----- #
 
 
-def save_tessera_npz(save_path, embedding, coverage, metadata):
+def save_tessera_npz(save_path, embedding, coverage, metadata, quantization=TESSERA_QUANTIZATION):
     """Write one fire's TESSERA file and check that it reads back.
 
-    The embedding is stored as float16 (missing cells as 0) to halve the file
-    size, together with the coverage map and provenance metadata, all
-    Zstandard-compressed. The file is read back once to make sure it is complete.
+    By default the embedding is stored as float16 (missing cells as 0) to halve
+    the file size. Quantization "int8" stores int8 codes plus one scale and
+    offset per band instead, about 2.3x smaller again on real 5 x 5 maps
+    (quantize_int8). The coverage map and provenance metadata are stored with
+    it, all Zstandard-compressed. The file is read back once to make sure it
+    is complete.
 
     Args:
         save_path (str | Path): where to write tessera/p<id>.npz.
@@ -495,35 +564,92 @@ def save_tessera_npz(save_path, embedding, coverage, metadata):
             (k TESSERA cells per VIIRS pixel side; 1 by default).
         coverage (np.ndarray): (256 k, 256 k), the fraction of 10 m pixels with data.
         metadata (dict): extra members (fire id, years, grid, versions).
+        quantization (str): "none" (float16) or "int8".
 
     Returns:
         Path: save_path.
 
     Raises:
-        ValueError: on a wrong shape or a value too large for float16.
+        ValueError: on a wrong shape, an unknown quantization, a value too large
+            for float16, or (int8) a missing value in a cell with data.
         RuntimeError: if the written file does not read back correctly.
     """
     cells = cells_per_pixel_of(embedding.shape)
     if coverage.shape != embedding.shape[1:]:
         raise ValueError(f"Unexpected coverage shape {coverage.shape}")
+    if quantization not in TESSERA_QUANTIZATIONS:
+        raise ValueError(f"Unknown TESSERA quantization {quantization!r}; choose from {TESSERA_QUANTIZATIONS}")
 
-    # float16 halves the file size; TESSERA values are small enough not to overflow.
-    stored = np.nan_to_num(embedding, nan=0.0).astype(np.float16)
-    if not np.isfinite(stored).all():
-        raise ValueError(f"{save_path}: embedding overflows float16")
+    if quantization == "int8":
+        codes, scale, offset = quantize_int8(embedding, np.asarray(coverage) > 0)
+        stored = {"embedding_int8": codes, "embedding_scale": scale, "embedding_offset": offset,
+                  "quantization": np.asarray(quantization)}
+    else:
+        # float16 halves the file size; TESSERA values are small enough not to overflow.
+        stored = {"embedding": np.nan_to_num(embedding, nan=0.0).astype(np.float16)}
+        if not np.isfinite(stored["embedding"]).all():
+            raise ValueError(f"{save_path}: embedding overflows float16")
 
     write_npz(save_path, {
         "format_version": np.asarray(TESSERA_FORMAT_VERSION, dtype=np.int16),
-        "embedding": stored,
+        **stored,
         "coverage": coverage.astype(np.float16),
         **{key: np.asarray(value) for key, value in metadata.items()},
     })
 
     # Read the file back once to make sure it is complete.
+    member = next(iter(stored))
     with open_npz(save_path) as archive:
-        if archive["embedding"].shape != (TESSERA_BANDS, CROP_SIZE * cells, CROP_SIZE * cells):
+        if archive[member].shape != (TESSERA_BANDS, CROP_SIZE * cells, CROP_SIZE * cells):
             raise RuntimeError(f"Failed to verify {save_path}")
     return Path(save_path)
+
+
+# ----- Converting ----- #
+
+
+# The members that hold the map itself; every other member is provenance metadata.
+_TESSERA_MAP_MEMBERS = frozenset(("format_version", "embedding", "embedding_int8", "embedding_scale",
+                                  "embedding_offset", "quantization", "coverage"))
+
+
+def tessera_quantization_of(path):
+    """Say how a TESSERA file stores its embedding: "int8" or "none" (float16); only the zip index is read."""
+    with open_npz(path) as archive:
+        return "int8" if "embedding_int8" in archive.files else "none"
+
+
+def convert_tessera_npz(source_path, save_path, quantization, metadata=None):
+    """Rewrite one TESSERA file with another storage, keeping its coverage and provenance.
+
+    The embedding is read back as float16 (read_tessera) and written again with
+    the new quantization, so float16 -> int8 adds only int8's rounding. Every
+    provenance member (fire id, years, grid, versions) is kept as it was. A
+    file already stored that way is copied unchanged, so nothing is rounded
+    twice.
+
+    Args:
+        source_path (str | Path): the TESSERA file to convert (not changed).
+        save_path (str | Path): where to write the converted file.
+        quantization (str): the storage to convert to, "none" (float16) or "int8".
+        metadata (dict | None): extra members for a rewritten file, e.g. where it came from.
+
+    Returns:
+        Path: save_path.
+
+    Raises:
+        ValueError: on an unknown quantization or a malformed source file.
+    """
+    if quantization not in TESSERA_QUANTIZATIONS:
+        raise ValueError(f"Unknown TESSERA quantization {quantization!r}; choose from {TESSERA_QUANTIZATIONS}")
+    if tessera_quantization_of(source_path) == quantization:
+        shutil.copyfile(source_path, save_path)
+        return Path(save_path)
+    with open_npz(source_path) as archive:
+        provenance = {name: archive[name] for name in archive.files if name not in _TESSERA_MAP_MEMBERS}
+    embedding, coverage = read_tessera(source_path)
+    return save_tessera_npz(save_path, embedding, coverage, {**provenance, **(metadata or {})},
+                            quantization=quantization)
 
 
 # ----- Reading and model input ----- #
@@ -532,7 +658,9 @@ def save_tessera_npz(save_path, embedding, coverage, metadata):
 def read_tessera(path, cells_per_pixel=None):
     """Read one fire's TESSERA embedding and coverage.
 
-    The arrays are marked read-only, because one fire's map is shared by all of
+    int8 files are turned back into float16 here, with 0 where coverage is 0
+    as in float16 files, so callers never see how a file was stored. The
+    arrays are marked read-only, because one fire's map is shared by all of
     its windows (and by DataLoader worker processes). Nothing may change it.
 
     Args:
@@ -548,12 +676,18 @@ def read_tessera(path, cells_per_pixel=None):
     """
     path = Path(path)
     with open_npz(path) as archive:
-        embedding = archive["embedding"]
+        quantized = "embedding_int8" in archive.files
+        embedding = archive["embedding_int8" if quantized else "embedding"]
         coverage = archive["coverage"]
+        if quantized:
+            scale, offset = archive["embedding_scale"], archive["embedding_offset"]
     try:
         cells_per_pixel_of(embedding.shape, cells_per_pixel)
     except ValueError as error:
         raise ValueError(f"{path}: embedding has shape {embedding.shape}; {error}") from None
+    if quantized:
+        embedding = dequantize_int8(embedding, scale, offset)
+        embedding[:, coverage == 0] = 0
     embedding.flags.writeable = False
     coverage.flags.writeable = False
     return embedding, coverage

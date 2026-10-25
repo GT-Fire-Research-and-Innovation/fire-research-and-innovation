@@ -18,6 +18,7 @@ from scratch in [docs/swinunetr3d/](docs/swinunetr3d/).
     │   ├── training/             # L3 loss, metrics, loop, evaluation, W&B, checkpoints
     │   └── cli/                  # L4 train, dataset, check, new_model
     ├── tests/                    # pytest: unit tests, golden/ (same-output values), end-to-end runs
+    ├── checks/                   # dataset checks and experiment diagnostics (start with count_windows.py)
     ├── tools/                    # trace_shapes.py: real tensor shapes through SwinUNETR-3D
     ├── docs/                     # ARCHITECTURE, KNOWN_ISSUES, swinunetr3d/ explainer
     ├── roi/                      # fire metadata CSVs (ids, dates, locations, label rule)
@@ -65,6 +66,7 @@ repo), then zips and uploads data.zip.
 ```
 python -m firepred.cli.check model -m swinunetr3d            # model sanity check, one step
 python -m firepred.cli.check labels --data-root ./data        # background vs fire pixels of train/
+python checks/count_windows.py --data-root ./data --batch-size 8  # windows and batches per epoch
 python -m firepred.cli.train -m swinunetr3d -mode pred -b 8 -r 1 -lr 0.001 -nh 3 -ed 36 -ts 6 -it 1 --data-root ./data
 python -m firepred.cli.train ... -test --checkpoint <file.pth>
 ```
@@ -74,7 +76,8 @@ released fixed numbers instead); checkpoints record the numbers, and `-test` reu
 Dice + CE class weights default to `--ce-weight auto`: 1.0 and the training split's
 background-to-fire pixel ratio from `window_config.json` (`check labels` recounts the same number
 from the labels). Without usable counts the run falls back to the paper's `1.0 446.7836` and
-records that in W&B (`defaults_used`); two numbers set the weights by hand. Add a model with
+records that in W&B (`defaults_used`); two numbers set the weights by hand. Dice + CE is MONAI's
+`DiceCELoss`, as in the paper: the class weight scales both the Dice and the CE term. Add a model with
 `python -m firepred.cli.new_model NAME` (see docs/ARCHITECTURE.md). This repository
 covers the paper's prediction task only.
 

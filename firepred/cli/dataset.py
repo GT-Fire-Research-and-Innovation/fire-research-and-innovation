@@ -8,7 +8,8 @@ The token defaults to the HF_TOKEN environment variable; --window-repo to the
 repo for the chosen -ts/-it (window_repo_for).
 
     python -m firepred.cli.dataset process -ts 6 -it 1 [--only-fires 21890003 ...]
-    python -m firepred.cli.dataset tessera [--only-fires 21890003 ...]
+    python -m firepred.cli.dataset tessera [--only-fires 21890003 ...] [--tessera-quantization int8]
+    python -m firepred.cli.dataset --tessera-repo <float16 repo> tessera-convert --dest-tessera-repo <new repo>
     python -m firepred.cli.dataset tessera-zip
     python -m firepred.cli.dataset pull-zip --data-root ./data && python -m firepred.cli.dataset pull-tessera --data-root ./data
     python -m firepred.cli.dataset download -ts 6 -it 1 --data-root ./data [--tessera]
@@ -25,7 +26,7 @@ import inspect
 import os
 from dataclasses import dataclass, field
 
-from firepred.config.dataset import DATA_DIR, SPLITS, window_repo_for
+from firepred.config.dataset import DATA_DIR, SPLITS, TESSERA_QUANTIZATIONS, window_repo_for
 from firepred.data import tessera_master, windows_master
 
 ZIP_REPOS = ("window", "tessera")
@@ -136,6 +137,23 @@ COMMANDS = (
                 Option(("--tessera-cells-per-pixel",), "cells_per_pixel", {
                     "type": int, "help": "TESSERA cells per VIIRS pixel side: 1 averages each pixel, 5 keeps 5x5 "
                     "cells of 75 m (use a separate --tessera-repo per value)"}),
+                Option(("--tessera-quantization",), "quantization", {
+                    "choices": TESSERA_QUANTIZATIONS,
+                    "help": "How files store the embedding: none = float16, int8 = codes plus a scale and offset "
+                    "per band (about 2.3x smaller at 5x5 cells; read back the same)"}),
+            )),
+    # Re-encode a built TESSERA repo into a new one (float16 -> int8) without the TESSERA store.
+    Command("tessera-convert", tessera_master.convert_tessera_repo,
+            "Copy --tessera-repo's files into --dest-tessera-repo with another storage, a batch at a time", (
+                Option(("--dest-tessera-repo",), "dest_repo", {
+                    "help": "The new repo for the converted files (required; never --tessera-repo)"}),
+                Option(("--tessera-quantization",), "quantization", {
+                    "choices": TESSERA_QUANTIZATIONS, "help": "Storage to convert to"}),
+                Option(("--batch-size",), "batch_size", {
+                    "type": int, "help": "Converted files per upload, the most kept on disk at once"}),
+                Option(("--overwrite",), "overwrite", {"action": "store_true",
+                                                       "help": "Convert files already in --dest-tessera-repo again"}),
+                Option(("--only-fires",), "only_fires", {"nargs": "+", "help": "Restrict to these fire IDs (test run)"}),
             )),
     Command("tessera-zip", tessera_master.upload_tessera_zip,
             "Bundle --tessera-repo tessera/ and the drop list into tessera.zip there"),

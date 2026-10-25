@@ -75,13 +75,14 @@ class LossConfig:
 
     Attributes:
         name (str): "dice", "dicece" or "dicefocal".
-        ce_weight (tuple[float, float] | str): class weights (background, fire) for dicece, or "auto".
+        ce_weight (tuple[float, float] | str): class weights (background, fire) for dicece, or "auto";
+            MONAI's DiceCELoss applies them to the Dice and the cross-entropy term.
         lambda_dice (float): weight of the Dice term.
         lambda_ce (float): weight of the cross-entropy term (dicece).
         lambda_focal (float): weight of the focal term (dicefocal).
-        focal_gamma (float): focal exponent, >= 0 (dicefocal).
-        focal_alpha (float | None): weight of fire pixels in the focal term, in [0, 1];
-            background pixels get 1 - alpha. None turns it off (dicefocal).
+        focal_gamma (float): focal exponent (dicefocal).
+        focal_alpha (float | None): weight of fire pixels in the focal term, background
+            pixels get 1 - alpha; None turns it off (dicefocal).
         ce_weight_counts (tuple[int, int] | None): the (background, fire) training pixels an
             automatic ce_weight was computed from; None for weights given by hand.
     """
@@ -96,19 +97,14 @@ class LossConfig:
     ce_weight_counts: tuple = None
 
     def __post_init__(self):
-        """Check that ce_weight is two numbers or "auto", and the focal settings are in range.
+        """Check that ce_weight is two numbers or "auto".
 
-        A misspelt "auto", a single number or an alpha above 1 would otherwise
-        reach the loss and fail there, or quietly train something else, mid-run.
-        The check runs whenever a LossConfig is built.
+        A misspelt "auto" or a single number would otherwise reach the loss and
+        fail there, mid-run. The check runs whenever a LossConfig is built.
 
         Raises:
-            ValueError: on any other ce_weight, an alpha outside [0, 1] or a negative gamma.
+            ValueError: on any other ce_weight.
         """
-        if self.focal_alpha is not None and not 0.0 <= self.focal_alpha <= 1.0:
-            raise ValueError(f"focal_alpha must be in [0, 1] or None, got {self.focal_alpha!r}")
-        if self.focal_gamma < 0:
-            raise ValueError(f"focal_gamma must be >= 0, got {self.focal_gamma!r}")
         if self.ce_weight == AUTO_CE_WEIGHT:
             return
         if isinstance(self.ce_weight, str) or len(self.ce_weight) != 2:

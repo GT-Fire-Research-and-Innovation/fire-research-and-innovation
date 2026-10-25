@@ -771,7 +771,7 @@ false
 ],
 "loss",
 null,
-"dice: released TS-SatFire code. dicece: the paper's prediction loss, 1:1 Dice + CE with --ce-weight (use with -lr 0.001). dicefocal (NEW, not in the paper): --lambda-dice x Dice + --lambda-focal x focal loss on the fire channel, no CE. Default: the paper's choice per model, dice for attunet and dicece otherwise",
+"dice: released TS-SatFire code. dicece: the paper's prediction loss, MONAI's DiceCELoss with --ce-weight on both terms, lambdas 1:1 (use with -lr 0.001). dicefocal (NEW, not in the paper): --lambda-dice x Dice + --lambda-focal x focal loss on the fire channel, no CE. Default: the paper's choice per model, dice for attunet and dicece otherwise",
 [
 "tuple",
 [
@@ -892,7 +892,7 @@ false
 ],
 "focal_gamma",
 2.0,
-"dicefocal only: focusing exponent (default 2, Lin et al.'s); 0 with --focal-alpha none makes the focal term plain binary cross entropy",
+"dicefocal only: focusing exponent; 0 makes the focal term plain binary cross entropy",
 null,
 null,
 "float",
@@ -1236,6 +1236,10 @@ null
 [
 "cells_per_pixel",
 1
+],
+[
+"quantization",
+"none"
 ]
 ]
 ],
@@ -2217,6 +2221,164 @@ false
 null,
 null,
 "int",
+null,
+false
+]
+],
+[
+"tuple",
+[
+[
+"tuple",
+[
+"--tessera-quantization"
+]
+],
+"quantization",
+"none",
+"How files store the embedding: none = float16, int8 = codes plus a scale and offset per band (about 2.3x smaller at 5x5 cells; read back the same)",
+[
+"tuple",
+[
+"none",
+"int8"
+]
+],
+null,
+"None",
+null,
+false
+]
+]
+]
+]
+]
+],
+[
+"tuple",
+[
+"subcommand",
+"tessera-convert",
+[
+"list",
+[
+[
+"tuple",
+[
+[
+"tuple",
+[
+"-h",
+"--help"
+]
+],
+"help",
+"==SUPPRESS==",
+"show this help message and exit",
+null,
+0,
+"None",
+null,
+false
+]
+],
+[
+"tuple",
+[
+[
+"tuple",
+[
+"--dest-tessera-repo"
+]
+],
+"dest_repo",
+null,
+"The new repo for the converted files (required; never --tessera-repo)",
+null,
+null,
+"None",
+null,
+false
+]
+],
+[
+"tuple",
+[
+[
+"tuple",
+[
+"--tessera-quantization"
+]
+],
+"quantization",
+"int8",
+"Storage to convert to",
+[
+"tuple",
+[
+"none",
+"int8"
+]
+],
+null,
+"None",
+null,
+false
+]
+],
+[
+"tuple",
+[
+[
+"tuple",
+[
+"--batch-size"
+]
+],
+"batch_size",
+10,
+"Converted files per upload, the most kept on disk at once",
+null,
+null,
+"int",
+null,
+false
+]
+],
+[
+"tuple",
+[
+[
+"tuple",
+[
+"--overwrite"
+]
+],
+"overwrite",
+false,
+"Convert files already in --dest-tessera-repo again",
+null,
+0,
+"None",
+null,
+false
+]
+],
+[
+"tuple",
+[
+[
+"tuple",
+[
+"--only-fires"
+]
+],
+"only_fires",
+null,
+"Restrict to these fire IDs (test run)",
+null,
+"+",
+"None",
 null,
 false
 ]
@@ -3460,7 +3622,7 @@ false
 ],
 "loss",
 "dicece",
-"dice: released TS-SatFire code. dicece: the paper's prediction loss, 1:1 Dice + CE with --ce-weight (use with -lr 0.001). dicefocal (NEW, not in the paper): --lambda-dice x Dice + --lambda-focal x focal loss on the fire channel, no CE. Default: the paper's choice per model, dice for attunet and dicece otherwise",
+"dice: released TS-SatFire code. dicece: the paper's prediction loss, MONAI's DiceCELoss with --ce-weight on both terms, lambdas 1:1 (use with -lr 0.001). dicefocal (NEW, not in the paper): --lambda-dice x Dice + --lambda-focal x focal loss on the fire channel, no CE. Default: the paper's choice per model, dice for attunet and dicece otherwise",
 [
 "tuple",
 [
@@ -3562,7 +3724,7 @@ false
 ],
 "focal_gamma",
 2.0,
-"dicefocal only: focusing exponent (default 2, Lin et al.'s); 0 with --focal-alpha none makes the focal term plain binary cross entropy",
+"dicefocal only: focusing exponent; 0 makes the focal term plain binary cross entropy",
 null,
 null,
 "float",
@@ -3894,7 +4056,7 @@ false
 ],
 "loss",
 "dicece",
-"dice: released TS-SatFire code. dicece: the paper's prediction loss, 1:1 Dice + CE with --ce-weight (use with -lr 0.001). dicefocal (NEW, not in the paper): --lambda-dice x Dice + --lambda-focal x focal loss on the fire channel, no CE. Default: the paper's choice per model, dice for attunet and dicece otherwise",
+"dice: released TS-SatFire code. dicece: the paper's prediction loss, MONAI's DiceCELoss with --ce-weight on both terms, lambdas 1:1 (use with -lr 0.001). dicefocal (NEW, not in the paper): --lambda-dice x Dice + --lambda-focal x focal loss on the fire channel, no CE. Default: the paper's choice per model, dice for attunet and dicece otherwise",
 [
 "tuple",
 [
@@ -3996,7 +4158,7 @@ false
 ],
 "focal_gamma",
 2.0,
-"dicefocal only: focusing exponent (default 2, Lin et al.'s); 0 with --focal-alpha none makes the focal term plain binary cross entropy",
+"dicefocal only: focusing exponent; 0 makes the focal term plain binary cross entropy",
 null,
 null,
 "float",

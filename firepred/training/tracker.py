@@ -46,9 +46,10 @@ class Tracker:
         """
         loss_title = {
             "dice": "Dice Loss",
-            # Named apart from the old "Weighted Dice + Cross-Entropy Loss", whose Dice
-            # term carried the class weight (docs/KNOWN_ISSUES.md #2).
-            "dicece": "Dice + Weighted Cross-Entropy Loss",
+            # The class weight scales both terms (MONAI's DiceCELoss, docs/KNOWN_ISSUES.md #2).
+            # Runs between Oct 20 and 25, 2026 weighted CE only and charted "Dice + Weighted
+            # Cross-Entropy Loss".
+            "dicece": "Weighted Dice + Cross-Entropy Loss",
             "dicefocal": "Dice + Focal Loss",
         }[loss_name]
         labels = {
@@ -86,11 +87,11 @@ class Tracker:
             "learning_rate": "Learning Rate",
         }
         if loss_name == "dicece":
+            # The pre-Oct-20 names, so these runs share charts with older runs of the
+            # same loss; the parts are lambda-weighted (lambdas default to 1).
             for prefix, split in (("train", "Training"), ("val", "Validation")):
-                labels[f"{prefix}_dice_loss"] = f"{split} Dice Loss (x lambda_dice) — Next-Day Fire Growth"
-                labels[f"{prefix}_ce_loss"] = (
-                    f"{split} Weighted Cross-Entropy Loss (x lambda_ce) — Next-Day Fire Growth"
-                )
+                labels[f"{prefix}_dice_loss"] = f"{split} Weighted Dice Loss — Next-Day Fire Growth"
+                labels[f"{prefix}_ce_loss"] = f"{split} Weighted Cross-Entropy Loss — Next-Day Fire Growth"
         if loss_name == "dicefocal":
             for prefix, split in (("train", "Training"), ("val", "Validation")):
                 labels[f"{prefix}_dice_loss"] = f"{split} Dice Loss (x lambda_dice) — Next-Day Fire Growth"

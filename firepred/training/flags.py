@@ -195,10 +195,10 @@ FLAGS = (
                                      "help": "Append per-fire TESSERA embeddings (128 bands + validity mask)"}),
     Flag(("--tessera-dir",), "tessera_dir", {"help": "Folder of tessera/p<id>.npz files; default <data-root>/tessera"}),
     Flag(("--loss",), "loss.name", {
-        "choices": LOSSES, "help": "dice: released TS-SatFire code. dicece: the paper's prediction loss, 1:1 Dice + CE "
-        "with --ce-weight (use with -lr 0.001). dicefocal (NEW, not in the paper): --lambda-dice x Dice + "
-        "--lambda-focal x focal loss on the fire channel, no CE. Default: the paper's choice per model, dice for "
-        "attunet and dicece otherwise"}, default=None),
+        "choices": LOSSES, "help": "dice: released TS-SatFire code. dicece: the paper's prediction loss, MONAI's "
+        "DiceCELoss with --ce-weight on both terms, lambdas 1:1 (use with -lr 0.001). dicefocal (NEW, not in the "
+        "paper): --lambda-dice x Dice + --lambda-focal x focal loss on the fire channel, no CE. Default: the paper's "
+        "choice per model, dice for attunet and dicece otherwise"}, default=None),
     Flag(("--swin-temporal-downsample",), "swin_temporal_downsample", {
         "action": "store_true", "help": "swinunetr3d: also halve the days in patch merging, as the released code "
         "does. Default follows the paper: no temporal downsampling"}),
@@ -215,8 +215,7 @@ FLAGS = (
     Flag(("--lambda-focal",), "loss.lambda_focal", {
         "type": float, "help": "dicefocal only: weight of the focal term (--lambda-dice weighs the Dice term)"}),
     Flag(("--focal-gamma",), "loss.focal_gamma", {
-        "type": float, "help": "dicefocal only: focusing exponent (default 2, Lin et al.'s); 0 with "
-        "--focal-alpha none makes the focal term plain binary cross entropy"}),
+        "type": float, "help": "dicefocal only: focusing exponent; 0 makes the focal term plain binary cross entropy"}),
     Flag(("--focal-alpha",), "loss.focal_alpha", {
         "type": focal_alpha_value, "help": "dicefocal only: weight of fire pixels in the focal term, background "
         "gets 1 - alpha (default 0.25, Lin et al.'s); 'none' turns it off"}),
