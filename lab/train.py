@@ -102,6 +102,7 @@ def main():
     parser.add_argument("--batch", type=int, default=64)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--results", type=Path, default=None, help="CSV to append to (default: CACHE/results.csv)")
     args = parser.parse_args()
     started = time.time()
     torch.manual_seed(args.seed)
@@ -184,7 +185,7 @@ def main():
            "random_bands": args.random_bands, "gate": args.gate, "epochs": args.epochs,
            "val_ap": round(float(ap), 5), "val_f1": round(float(f1), 5),
            "seconds": round(time.time() - started, 1), "n_bands": len(bands), "bands": " ".join(map(str, bands))}
-    results = args.cache / "results.csv"
+    results = args.results or args.cache / "results.csv"
     new = not results.exists()
     with results.open("a", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(row))

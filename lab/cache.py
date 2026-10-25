@@ -79,6 +79,8 @@ def main():
             out["label"][i] = fire[rows, cols]
             out["fire"][i] = fires.setdefault(fire_name(source), len(fires))
             i += 1
+            if i % 500 == 0:
+                print(f"{i}/{n} windows", flush=True)
     for array in out.values():
         array.flush()
     size_gb = sum(array.nbytes for array in out.values()) / 1e9
