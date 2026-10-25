@@ -135,7 +135,7 @@
 "training.DEFAULT_EPOCHS": 100,
 "training.DEFAULT_NUM_WORKERS": 0,
 "training.DEFAULT_UNZIP_DIR": "off",
-"training.FOCAL_ALPHA": null,
+"training.FOCAL_ALPHA": 0.25,
 "training.FOCAL_GAMMA": 2.0,
 "training.LAMBDA_CE": 1.0,
 "training.LAMBDA_DICE": 1.0,

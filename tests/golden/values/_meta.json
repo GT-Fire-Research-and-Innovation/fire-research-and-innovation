@@ -166,6 +166,15 @@
         "training"
       ],
       "reason": "dicece is MONAI's DiceCELoss again, as in the paper's MONAI 1.3.2 environment: the class weight scales Dice and CE (models and training values equal the pre-dcbb12f ones). dicefocal back to alpha off. --ce-weight auto stays the default."
+    },
+    {
+      "groups": [
+        "cli",
+        "config",
+        "names",
+        "objectives"
+      ],
+      "reason": "dicefocal: --focal-alpha defaults to 0.25 (Lin et al.) and accepts 'none' to turn it off; dicece unchanged."
     }
   ]
 }

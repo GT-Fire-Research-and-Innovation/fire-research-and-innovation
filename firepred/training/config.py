@@ -81,7 +81,8 @@ class LossConfig:
         lambda_ce (float): weight of the cross-entropy term (dicece).
         lambda_focal (float): weight of the focal term (dicefocal).
         focal_gamma (float): focal exponent (dicefocal).
-        focal_alpha (float | None): weight of fire pixels in the focal term (dicefocal).
+        focal_alpha (float | None): weight of fire pixels in the focal term, background
+            pixels get 1 - alpha; None turns it off (dicefocal).
         ce_weight_counts (tuple[int, int] | None): the (background, fire) training pixels an
             automatic ce_weight was computed from; None for weights given by hand.
     """

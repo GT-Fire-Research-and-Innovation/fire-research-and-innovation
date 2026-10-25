@@ -136,10 +136,14 @@ def test_names_never_change():
 
 def test_command_line_round_trips_through_run_config():
     """argv_for(config) parses back to the same RunConfig, so notebooks can launch exactly a config."""
-    for extra in ([], ["--tessera", "--loss", "dicefocal", "--focal-alpha", "0.25", "--lr-schedule", "cosine"],
+    for extra in ([], ["--tessera", "--loss", "dicefocal", "--focal-alpha", "0.4", "--lr-schedule", "cosine"],
+                  ["--loss", "dicefocal", "--focal-alpha", "none"],
                   ["-test", "--checkpoint", "x.pth", "--model-option", "depth=2", "-nc", "43", "--no-test-after-train"]):
         config = config_from_args(parse_args(BASE + extra))
         assert config_from_args(parse_args(argv_for(config))) == config
+    # Focal alpha defaults to 0.25; "none" turns it off and survives argv_for.
+    assert config_from_args(parse_args(BASE + ["--loss", "dicefocal"])).loss.focal_alpha == 0.25
+    assert config_from_args(parse_args(BASE + ["--focal-alpha", "none"])).loss.focal_alpha is None
     # Without --ce-weight the class weights are "auto" (window_config.json), and stay so through argv_for.
     default = config_from_args(parse_args(BASE))
     assert default.loss.ce_weight == "auto" and argv_for(default)[argv_for(default).index("--ce-weight") + 1] == "auto"

@@ -121,6 +121,11 @@ class CeWeightAction(argparse.Action):
         setattr(namespace, self.dest, weights)
 
 
+def focal_alpha_value(value):
+    """Read --focal-alpha: a number, or "none" (or "off") to turn the class weight off."""
+    return None if value.lower() in ("none", "off") else float(value)
+
+
 def ce_weight_value(value):
     """Turn the parsed --ce-weight into the LossConfig value.
 
@@ -212,7 +217,8 @@ FLAGS = (
     Flag(("--focal-gamma",), "loss.focal_gamma", {
         "type": float, "help": "dicefocal only: focusing exponent; 0 makes the focal term plain binary cross entropy"}),
     Flag(("--focal-alpha",), "loss.focal_alpha", {
-        "type": float, "help": "dicefocal only: weight of fire pixels in the focal term (e.g. 0.25); default off"}),
+        "type": focal_alpha_value, "help": "dicefocal only: weight of fire pixels in the focal term, background "
+        "gets 1 - alpha (default 0.25, Lin et al.'s); 'none' turns it off"}),
     Flag(("--lr-schedule",), "schedule.name", {
         "choices": LR_SCHEDULES, "help": "NEW, not in the paper: learning-rate decay. none = constant rate (paper and "
         "official code); plateau = multiply by --lr-decay-factor after --lr-patience epochs without a lower "
@@ -386,6 +392,9 @@ def argv_for(config):
                 argv += [name, f"{key}={item!r}"]
         elif flag.action is CeWeightAction:
             argv += [name, value] if value == AUTO_CE_WEIGHT else [name, *(repr(float(item)) for item in value)]
+        elif flag.options.get("type") is focal_alpha_value:
+            # None is a setting here ("off"), not "not given": the default is 0.25.
+            argv += [name, "none" if value is None else text(value)]
         elif value is not None:
             argv += [name, text(value)]
     return argv

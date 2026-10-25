@@ -29,10 +29,11 @@ PAPER_CE_WEIGHT = (1.0, 446.7836)
 LAMBDA_DICE = 1.0
 LAMBDA_CE = 1.0
 # Focal term of dicefocal: sigmoid focal loss (Lin et al. 2017) on the fire
-# channel; gamma down-weights easy pixels, alpha (None = off) balances classes. [ours]
+# channel; gamma down-weights easy pixels, alpha weighs fire pixels and 1 - alpha
+# background (None = off). Defaults are Lin et al.'s gamma 2 and alpha 0.25. [ours]
 LAMBDA_FOCAL = 1.0
 FOCAL_GAMMA = 2.0
-FOCAL_ALPHA = None
+FOCAL_ALPHA = 0.25
 
 # ----- Optimizer and learning-rate schedule ----- #
 

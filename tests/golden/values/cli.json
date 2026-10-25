@@ -144,7 +144,7 @@ false
 ],
 [
 "focal_alpha",
-null
+0.25
 ],
 [
 "lr_schedule",
@@ -910,11 +910,11 @@ false
 ]
 ],
 "focal_alpha",
+0.25,
+"dicefocal only: weight of fire pixels in the focal term, background gets 1 - alpha (default 0.25, Lin et al.'s); 'none' turns it off",
 null,
-"dicefocal only: weight of fire pixels in the focal term (e.g. 0.25); default off",
 null,
-null,
-"float",
+"focal_alpha_value",
 null,
 false
 ]
@@ -3742,11 +3742,11 @@ false
 ]
 ],
 "focal_alpha",
+0.25,
+"dicefocal only: weight of fire pixels in the focal term, background gets 1 - alpha (default 0.25, Lin et al.'s); 'none' turns it off",
 null,
-"dicefocal only: weight of fire pixels in the focal term (e.g. 0.25); default off",
 null,
-null,
-"float",
+"focal_alpha_value",
 null,
 false
 ]
@@ -4176,11 +4176,11 @@ false
 ]
 ],
 "focal_alpha",
+0.25,
+"dicefocal only: weight of fire pixels in the focal term, background gets 1 - alpha (default 0.25, Lin et al.'s); 'none' turns it off",
 null,
-"dicefocal only: weight of fire pixels in the focal term (e.g. 0.25); default off",
 null,
-null,
-"float",
+"focal_alpha_value",
 null,
 false
 ]
