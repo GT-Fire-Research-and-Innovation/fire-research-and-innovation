@@ -76,7 +76,8 @@ released fixed numbers instead); checkpoints record the numbers, and `-test` reu
 Dice + CE class weights default to `--ce-weight auto`: 1.0 and the training split's
 background-to-fire pixel ratio from `window_config.json` (`check labels` recounts the same number
 from the labels). Without usable counts the run falls back to the paper's `1.0 446.7836` and
-records that in W&B (`defaults_used`); two numbers set the weights by hand. Add a model with
+records that in W&B (`defaults_used`); two numbers set the weights by hand. Dice + CE is MONAI's
+`DiceCELoss`, as in the paper: the class weight scales both the Dice and the CE term. Add a model with
 `python -m firepred.cli.new_model NAME` (see docs/ARCHITECTURE.md). This repository
 covers the paper's prediction task only.
 

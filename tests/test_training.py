@@ -73,19 +73,23 @@ def test_dicece_reports_its_two_parts():
     assert loss("dice")(logits, labels)[1] == {}
 
 
-def test_dicece_puts_the_class_weight_on_cross_entropy_only():
-    """Dice+CE is lambda_dice x unweighted Dice + lambda_ce x class-weighted CE (the paper's 1:1 mixture)."""
+def test_dicece_is_monai_dicece_with_the_class_weight_on_both_terms():
+    """Dice+CE is MONAI's DiceCELoss (the paper's): the class weight scales Dice and CE; parts are lambda x each."""
+    from monai.losses import DiceCELoss, DiceLoss
+
     torch.manual_seed(3)
     logits = torch.randn(2, 2, 8, 8) * 3
     labels = masks(torch.rand(8, 8) > 0.9).expand(2, -1, -1, -1)
+    weight = torch.tensor([1.0, 400.0])
     total, parts = loss("dicece", ce_weight=(1.0, 400.0), lambda_dice=0.5, lambda_ce=2.0)(logits, labels)
-    dice = loss("dice")(logits, labels)[0]
-    ce = nn.CrossEntropyLoss(weight=torch.tensor([1.0, 400.0]))(logits, labels)
-    assert torch.isclose(parts["dice_loss"], 0.5 * dice)
+    reference = DiceCELoss(sigmoid=True, weight=weight, lambda_dice=0.5, lambda_ce=2.0)(logits, labels)
+    assert torch.isclose(total, reference)
+    weighted_dice = DiceLoss(sigmoid=True, weight=weight)(logits, labels)
+    ce = nn.CrossEntropyLoss(weight=weight)(logits, labels)
+    assert torch.isclose(parts["dice_loss"], 0.5 * weighted_dice)
     assert torch.isclose(parts["ce_loss"], 2.0 * ce)
-    assert torch.isclose(total, 0.5 * dice + 2.0 * ce)
-    # With the weight off the Dice term, Dice stays between 0 and lambda_dice.
-    assert 0.0 <= parts["dice_loss"].item() <= 0.5
+    # The fire Dice term carries the 400x weight, so Dice exceeds what an unweighted Dice could reach.
+    assert parts["dice_loss"].item() > 0.5 > 0.5 * loss("dice")(logits, labels)[0].item()
 
 
 def test_dicefocal_parts_are_lambda_weighted():
@@ -132,14 +136,10 @@ def test_names_never_change():
 
 def test_command_line_round_trips_through_run_config():
     """argv_for(config) parses back to the same RunConfig, so notebooks can launch exactly a config."""
-    for extra in ([], ["--tessera", "--loss", "dicefocal", "--focal-alpha", "0.4", "--lr-schedule", "cosine"],
-                  ["--loss", "dicefocal", "--focal-alpha", "none", "--focal-gamma", "0"],
+    for extra in ([], ["--tessera", "--loss", "dicefocal", "--focal-alpha", "0.25", "--lr-schedule", "cosine"],
                   ["-test", "--checkpoint", "x.pth", "--model-option", "depth=2", "-nc", "43", "--no-test-after-train"]):
         config = config_from_args(parse_args(BASE + extra))
         assert config_from_args(parse_args(argv_for(config))) == config
-    # "none" turns the class weight off; without the flag it is 0.25.
-    assert config_from_args(parse_args(BASE + ["--focal-alpha", "none"])).loss.focal_alpha is None
-    assert config_from_args(parse_args(BASE + ["--loss", "dicefocal"])).loss.focal_alpha == 0.25
     # Without --ce-weight the class weights are "auto" (window_config.json), and stay so through argv_for.
     default = config_from_args(parse_args(BASE))
     assert default.loss.ce_weight == "auto" and argv_for(default)[argv_for(default).index("--ce-weight") + 1] == "auto"
@@ -158,7 +158,9 @@ def test_wandb_chart_names_are_stable():
     """Dashboards are built on the chart names, so they change only when what they chart changes."""
     labels = Tracker.chart_labels("dicece")
     assert labels["val_fire_f1"] == "Validation F1 — Next-Day Fire Growth"
-    assert labels["train_ce_loss"] == "Training Weighted Cross-Entropy Loss (x lambda_ce) — Next-Day Fire Growth"
+    assert labels["train_ce_loss"] == "Training Weighted Cross-Entropy Loss — Next-Day Fire Growth"
+    assert labels["val_dice_loss"] == "Validation Weighted Dice Loss — Next-Day Fire Growth"
+    assert labels["train_loss"] == "Training Weighted Dice + Cross-Entropy Loss — Next-Day Fire Growth"
     assert labels["val_background_iou"] == "Validation IoU — Background"
     assert labels["periodic_test_background_iou"] == "Test IoU — Background (periodic, current weights)"
     assert "miou" not in labels and "mdice" not in labels
@@ -197,8 +199,8 @@ def test_checkpoints_load_without_running_pickled_code(tmp_path):
 
 
 def test_dicefocal_is_weighted_dice_plus_weighted_focal():
-    """dicefocal = lambda_dice x Dice + lambda_focal x mean focal on the fire channel, no cross entropy."""
-    from torchvision.ops import sigmoid_focal_loss
+    """dicefocal = lambda_dice x Dice + lambda_focal x focal on the fire channel, no cross entropy."""
+    from monai.losses import FocalLoss
 
     torch.manual_seed(3)
     logits = torch.randn(2, 2, 8, 8, requires_grad=True)
@@ -207,23 +209,12 @@ def test_dicefocal_is_weighted_dice_plus_weighted_focal():
     total, parts = criterion(logits, labels)
     assert set(parts) == {"dice_loss", "focal_loss"}  # no cross entropy
     dice, _ = loss("dice")(logits, labels)
-    # An independent implementation (torchvision's), averaged over the fire channel's pixels.
-    focal = sigmoid_focal_loss(logits[:, 1], labels[:, 1], alpha=0.25, gamma=2.0, reduction="mean")
+    focal = FocalLoss(include_background=False, gamma=2.0, alpha=0.25)(logits, labels)  # fire channel only
     assert torch.isclose(total, 0.5 * dice + 2.5 * focal)
     total.backward()
     assert torch.isfinite(logits.grad).all()
     names = ("dice", "dicece", "dicefocal")
     assert [loss(n, ce_weight=PAPER_CE_WEIGHT).name for n in names] == list(names)
-
-
-def test_dicefocal_defaults_are_retinanet_settings():
-    """Focal defaults are Lin et al.'s gamma 2 and alpha 0.25; settings out of range are refused."""
-    config = LossConfig("dicefocal")
-    assert (config.lambda_dice, config.lambda_focal, config.focal_gamma, config.focal_alpha) == (1.0, 1.0, 2.0, 0.25)
-    assert LossConfig("dicefocal", focal_alpha=None).focal_alpha is None  # off is allowed
-    for bad in ({"focal_alpha": 1.5}, {"focal_alpha": -0.1}, {"focal_gamma": -1.0}):
-        with pytest.raises(ValueError, match="focal_"):
-            LossConfig("dicefocal", **bad)
 
 
 def test_dicefocal_names_and_charts():

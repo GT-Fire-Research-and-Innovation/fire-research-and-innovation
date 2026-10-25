@@ -20,7 +20,7 @@ import torch
 RUN_CLI = Path(__file__).resolve().parent / "support" / "run_cli.py"
 EPOCH = "Training Epoch (Starting at 0)"
 LEARNING_RATE = "Learning Rate"
-VAL_LOSS_DICECE = "Validation Dice + Weighted Cross-Entropy Loss — Next-Day Fire Growth"
+VAL_LOSS_DICECE = "Validation Weighted Dice + Cross-Entropy Loss — Next-Day Fire Growth"
 PERIODIC_F1 = "Test F1 — Next-Day Fire Growth (periodic, current weights)"
 CHECKPOINT_FIELDS = {
     "epoch", "model_state_dict", "optimizer_state_dict", "loss", "use_tessera", "model_input_channels",
@@ -148,9 +148,9 @@ def test_training_run_charts_fire_and_background_scores(dicece_run):
             for target in ("Next-Day Fire Growth", "Background"):
                 assert all(f"{split} {score} — {target}{suffix}" in log for log in logs), (split, score, target)
     for log in dicece_run.train_logs():
-        parts = (log["Training Dice Loss (x lambda_dice) — Next-Day Fire Growth"]
-                 + log["Training Weighted Cross-Entropy Loss (x lambda_ce) — Next-Day Fire Growth"])
-        assert parts == pytest.approx(log["Training Dice + Weighted Cross-Entropy Loss — Next-Day Fire Growth"])
+        parts = (log["Training Weighted Dice Loss — Next-Day Fire Growth"]
+                 + log["Training Weighted Cross-Entropy Loss — Next-Day Fire Growth"])
+        assert parts == pytest.approx(log["Training Weighted Dice + Cross-Entropy Loss — Next-Day Fire Growth"])
     assert not any("Mean" in key for log in dicece_run.val_logs() for key in log)
 
 

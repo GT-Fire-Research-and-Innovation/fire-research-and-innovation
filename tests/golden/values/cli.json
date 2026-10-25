@@ -144,7 +144,7 @@ false
 ],
 [
 "focal_alpha",
-0.25
+null
 ],
 [
 "lr_schedule",
@@ -771,7 +771,7 @@ false
 ],
 "loss",
 null,
-"dice: released TS-SatFire code. dicece: the paper's prediction loss, 1:1 Dice + CE with --ce-weight (use with -lr 0.001). dicefocal (NEW, not in the paper): --lambda-dice x Dice + --lambda-focal x focal loss on the fire channel, no CE. Default: the paper's choice per model, dice for attunet and dicece otherwise",
+"dice: released TS-SatFire code. dicece: the paper's prediction loss, MONAI's DiceCELoss with --ce-weight on both terms, lambdas 1:1 (use with -lr 0.001). dicefocal (NEW, not in the paper): --lambda-dice x Dice + --lambda-focal x focal loss on the fire channel, no CE. Default: the paper's choice per model, dice for attunet and dicece otherwise",
 [
 "tuple",
 [
@@ -892,7 +892,7 @@ false
 ],
 "focal_gamma",
 2.0,
-"dicefocal only: focusing exponent (default 2, Lin et al.'s); 0 with --focal-alpha none makes the focal term plain binary cross entropy",
+"dicefocal only: focusing exponent; 0 makes the focal term plain binary cross entropy",
 null,
 null,
 "float",
@@ -910,11 +910,11 @@ false
 ]
 ],
 "focal_alpha",
-0.25,
-"dicefocal only: weight of fire pixels in the focal term, background gets 1 - alpha (default 0.25, Lin et al.'s); 'none' turns it off",
+null,
+"dicefocal only: weight of fire pixels in the focal term (e.g. 0.25); default off",
 null,
 null,
-"focal_alpha_value",
+"float",
 null,
 false
 ]
@@ -3622,7 +3622,7 @@ false
 ],
 "loss",
 "dicece",
-"dice: released TS-SatFire code. dicece: the paper's prediction loss, 1:1 Dice + CE with --ce-weight (use with -lr 0.001). dicefocal (NEW, not in the paper): --lambda-dice x Dice + --lambda-focal x focal loss on the fire channel, no CE. Default: the paper's choice per model, dice for attunet and dicece otherwise",
+"dice: released TS-SatFire code. dicece: the paper's prediction loss, MONAI's DiceCELoss with --ce-weight on both terms, lambdas 1:1 (use with -lr 0.001). dicefocal (NEW, not in the paper): --lambda-dice x Dice + --lambda-focal x focal loss on the fire channel, no CE. Default: the paper's choice per model, dice for attunet and dicece otherwise",
 [
 "tuple",
 [
@@ -3724,7 +3724,7 @@ false
 ],
 "focal_gamma",
 2.0,
-"dicefocal only: focusing exponent (default 2, Lin et al.'s); 0 with --focal-alpha none makes the focal term plain binary cross entropy",
+"dicefocal only: focusing exponent; 0 makes the focal term plain binary cross entropy",
 null,
 null,
 "float",
@@ -3742,11 +3742,11 @@ false
 ]
 ],
 "focal_alpha",
-0.25,
-"dicefocal only: weight of fire pixels in the focal term, background gets 1 - alpha (default 0.25, Lin et al.'s); 'none' turns it off",
+null,
+"dicefocal only: weight of fire pixels in the focal term (e.g. 0.25); default off",
 null,
 null,
-"focal_alpha_value",
+"float",
 null,
 false
 ]
@@ -4056,7 +4056,7 @@ false
 ],
 "loss",
 "dicece",
-"dice: released TS-SatFire code. dicece: the paper's prediction loss, 1:1 Dice + CE with --ce-weight (use with -lr 0.001). dicefocal (NEW, not in the paper): --lambda-dice x Dice + --lambda-focal x focal loss on the fire channel, no CE. Default: the paper's choice per model, dice for attunet and dicece otherwise",
+"dice: released TS-SatFire code. dicece: the paper's prediction loss, MONAI's DiceCELoss with --ce-weight on both terms, lambdas 1:1 (use with -lr 0.001). dicefocal (NEW, not in the paper): --lambda-dice x Dice + --lambda-focal x focal loss on the fire channel, no CE. Default: the paper's choice per model, dice for attunet and dicece otherwise",
 [
 "tuple",
 [
@@ -4158,7 +4158,7 @@ false
 ],
 "focal_gamma",
 2.0,
-"dicefocal only: focusing exponent (default 2, Lin et al.'s); 0 with --focal-alpha none makes the focal term plain binary cross entropy",
+"dicefocal only: focusing exponent; 0 makes the focal term plain binary cross entropy",
 null,
 null,
 "float",
@@ -4176,11 +4176,11 @@ false
 ]
 ],
 "focal_alpha",
-0.25,
-"dicefocal only: weight of fire pixels in the focal term, background gets 1 - alpha (default 0.25, Lin et al.'s); 'none' turns it off",
+null,
+"dicefocal only: weight of fire pixels in the focal term (e.g. 0.25); default off",
 null,
 null,
-"focal_alpha_value",
+"float",
 null,
 false
 ]

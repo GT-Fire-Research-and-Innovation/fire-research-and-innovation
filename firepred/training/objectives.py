@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 import torch
 from monai.data import decollate_batch
 from monai.losses import FocalLoss
-from monai.losses.dice import DiceLoss
+from monai.losses.dice import DiceCELoss, DiceLoss
 from monai.transforms import Activations, AsDiscrete, Compose
 from torch import nn
 
@@ -38,10 +38,11 @@ class TrainingLoss(nn.Module):
     def __init__(self, config):
         """Build the MONAI loss terms for a LossConfig.
 
-        Dice+CE is the paper's 1:1 mixture: an unweighted sigmoid Dice plus a
-        class-weighted cross entropy. The class weight goes to the cross entropy
-        only. MONAI's DiceCELoss (>= 1.2) also puts it on the Dice term, which
-        made Dice about 40 times larger than CE (docs/KNOWN_ISSUES.md #2).
+        Dice+CE is the paper's loss as its authors' environment (MONAI 1.3.2)
+        builds it: MONAI's DiceCELoss with the class weight and lambdas 1:1. The
+        class weight scales both terms, the sigmoid Dice per channel and the
+        softmax cross entropy, so the fire Dice term dominates the total
+        (docs/KNOWN_ISSUES.md #2). Dice+focal builds its two terms itself.
 
         Args:
             config (LossConfig): which loss, with its weights.
@@ -57,17 +58,17 @@ class TrainingLoss(nn.Module):
             if config.is_auto:
                 raise ValueError("ce_weight 'auto' must be counted from the training labels before the loss is "
                                  "built (RunConfig.with_label_counts)")
-            self.dice = DiceLoss(include_background=True, reduction="mean", sigmoid=True)
-            # Softmax cross entropy over the two channels, with the one-hot labels as
-            # class probabilities (what MONAI's DiceCELoss does for two channels).
-            self.ce = nn.CrossEntropyLoss(weight=torch.tensor(config.ce_weight, dtype=torch.float32),
-                                          reduction="mean")
-            self.lambda_dice = config.lambda_dice
-            self.lambda_ce = config.lambda_ce
+            # Kept whole, so its weights and reductions are exactly MONAI's.
+            self.dicece = DiceCELoss(
+                include_background=True,
+                sigmoid=True,
+                reduction="mean",
+                weight=torch.tensor(config.ce_weight, dtype=torch.float32),
+                lambda_dice=config.lambda_dice,
+                lambda_ce=config.lambda_ce,
+            )
         elif config.name == "dicefocal":
             self.dice = DiceLoss(include_background=True, reduction="mean", sigmoid=True)
-            # Both terms are means, combined lambda_dice : lambda_focal like MONAI's
-            # DiceFocalLoss, which is what "1:1" means in most papers.
             self.focal = FocalLoss(
                 include_background=False, gamma=config.focal_gamma, alpha=config.focal_alpha, reduction="mean"
             )
@@ -93,8 +94,9 @@ class TrainingLoss(nn.Module):
         if self.name == "dice":
             return self.dice(outputs, labels), {}
         if self.name == "dicece":
-            dice = self.lambda_dice * self.dice(outputs, labels)
-            ce = self.lambda_ce * self.ce(outputs, labels.to(outputs.dtype))
+            # The same sum DiceCELoss.forward computes, split into its two parts.
+            dice = self.dicece.lambda_dice * self.dicece.dice(outputs, labels)
+            ce = self.dicece.lambda_ce * self.dicece.ce(outputs, labels)
             return dice + ce, {"dice_loss": dice.detach(), "ce_loss": ce.detach()}
         dice = self.lambda_dice * self.dice(outputs, labels)
         focal = self.lambda_focal * self.focal(outputs, labels)
