@@ -50,7 +50,8 @@ def coarse_firepred(tmp_path):
 
     Band 0 holds the pixel centre's x coordinate in km (a linear field bilinear
     reproduces exactly), land cover holds one class per 10 km column strip, and
-    the angle bands hold 355 west of x = 596 km and 5 east of it.
+    wind direction and aspect hold 355 west of x = 596 km and 5 east of it, and
+    forecast wind direction (stored as -90..90 in the real files) -5 and 5.
     """
     import synth
     from rasterio.transform import from_origin
@@ -61,8 +62,9 @@ def coarse_firepred(tmp_path):
     pred = np.zeros((19, n, n), dtype=np.float32)
     pred[0] = x_km[None, :]
     pred[13] = 1 + (np.floor(x_km - x_km[0]) // 10 % 17)[None, :]
-    for band in (4, 10, 16):
+    for band in (4, 10):
         pred[band] = np.where(x_km < 596.0, 355.0, 5.0)[None, :]
+    pred[16] = np.where(x_km < 596.0, -5.0, 5.0)[None, :]
     transform = from_origin(*VIIRS_ORIGIN, COARSE_PIXEL, COARSE_PIXEL)
     for name, path in local_map.items():
         if "/FirePred/" in name:
@@ -124,8 +126,12 @@ def test_coarser_firepred_is_resampled_onto_the_viirs_crop(tmp_path):
     # Land cover stays whole classes (nearest), angles never average to the opposite direction.
     landcover = frame.image[21]
     assert np.array_equal(landcover, np.round(landcover)) and set(np.unique(landcover)) <= set(range(1, 18))
-    angles = frame.image[[12, 18, 24]]
+    angles = frame.image[[12, 18]]
     assert ((angles >= 350.0) | (angles <= 10.0)).all()
+    # Each angle band keeps its own convention: -90..90 stays signed.
+    forecast = frame.image[24]
+    assert (np.abs(forecast) <= 5.0 + 1e-4).all() and forecast.min() < 0
 
     windows = build_fire_windows("fire", local_map, length=6, interval=1, label_sel=0)
     assert windows.count == 2 and np.isfinite(windows.inputs).all()
+

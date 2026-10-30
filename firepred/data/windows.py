@@ -196,7 +196,14 @@ def resample_to_crop(array, profile, reference, offset, shape):
     out[[FIREPRED_LANDCOVER_BAND]] = warp(source[[FIREPRED_LANDCOVER_BAND]], Resampling.nearest)
     radians = np.deg2rad(source[FIREPRED_ANGLE_BANDS])
     cos, sin = warp(np.cos(radians), Resampling.bilinear), warp(np.sin(radians), Resampling.bilinear)
-    out[FIREPRED_ANGLE_BANDS] = np.rad2deg(np.arctan2(sin, cos)) % 360.0
+    degrees = np.rad2deg(np.arctan2(sin, cos))  # -180 .. 180
+    for i, band in enumerate(FIREPRED_ANGLE_BANDS):
+        # Keep the band's own convention: forecast wind direction is stored as
+        # -90..90, the others as 0..360 (sin(), which the model sees, agrees on both).
+        if not np.nanmin(source[band], initial=0.0) < 0:
+            degrees[i] %= 360.0
+            degrees[i][degrees[i] >= 360.0] = 0.0  # float32: a tiny negative angle mod 360 rounds to 360
+    out[FIREPRED_ANGLE_BANDS] = degrees
     return out
 
 
