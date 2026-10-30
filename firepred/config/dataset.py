@@ -58,6 +58,9 @@ STORED_CHANNEL_NAMES = (
 )
 N_STORED_CHANNELS = 27
 
+# Stored channels FIREPRED_FIRST_CHANNEL.. come from the FirePred GeoTIFF (its band 0 onward).
+FIREPRED_FIRST_CHANNEL = 8
+
 # Angles in degrees. Must stay a list: x[[12, 18, 24]] selects three
 # channels, while x[(12, 18, 24)] would index a single element. [released]
 DEGREE_CHANNELS = [12, 18, 24]

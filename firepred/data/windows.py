@@ -18,6 +18,13 @@ input and uses day i+length as the target:
 
 The burned-area mask accumulates active fire (AF band) and, with label_sel 0,
 the NIFC perimeters (BA band) too; label_sel 1 uses AF only.
+
+The crop is by pixel index, so it only covers the same ground in every file
+when the files share one grid. Some FirePred files do not: the 2017 fires'
+FirePred is on a 500 m grid while VIIRS is on 375 m, so the same rows/cols
+landed 14-40 km away. Each day's FirePred grid is therefore compared with that
+day's VIIRS_Day grid when it is read; a differing one is resampled onto the
+VIIRS crop before stacking, a matching one is cropped by index as before.
 """
 
 import os
@@ -25,7 +32,20 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from firepred.config.dataset import CROP_OFFSET, CROP_SIZE, N_STORED_CHANNELS, TS_INTERVAL, TS_LENGTH
+from firepred.config.dataset import (
+    CROP_OFFSET,
+    CROP_SIZE,
+    DEGREE_CHANNELS,
+    FIREPRED_FIRST_CHANNEL,
+    LANDCOVER_CHANNEL,
+    N_STORED_CHANNELS,
+    TS_INTERVAL,
+    TS_LENGTH,
+)
+
+# FirePred band numbers (0-based inside the FirePred file) that need their own resampling.
+FIREPRED_ANGLE_BANDS = [channel - FIREPRED_FIRST_CHANNEL for channel in DEGREE_CHANNELS]
+FIREPRED_LANDCOVER_BAND = LANDCOVER_CHANNEL - FIREPRED_FIRST_CHANNEL
 
 
 @dataclass(frozen=True)
@@ -99,6 +119,87 @@ def binary_mask(array):
     return np.isfinite(array) & (array > 0)
 
 
+def same_grid(profile, reference):
+    """Tell whether two rasters put pixel (row, col) on the same ground.
+
+    Same CRS, same pixel size and rotation (to a millionth of a pixel, so the
+    drift stays far below a pixel across the crop), and the same origin (to a
+    hundredth of a pixel). Raster sizes may differ: the crop is by index from
+    the shared origin.
+
+    Args:
+        profile (dict): rasterio profile of the raster to check.
+        reference (dict): rasterio profile of the reference raster (VIIRS_Day).
+
+    Returns:
+        bool: whether cropping both by the same rows/cols covers the same ground.
+    """
+    if profile["crs"] != reference["crs"]:
+        return False
+    t, r = profile["transform"], reference["transform"]
+    pixel = max(abs(r.a), abs(r.e))
+    scale_close = all(abs(x - y) <= 1e-6 * pixel for x, y in ((t.a, r.a), (t.b, r.b), (t.d, r.d), (t.e, r.e)))
+    origin_close = abs(t.c - r.c) <= 0.01 * pixel and abs(t.f - r.f) <= 0.01 * pixel
+    return scale_close and origin_close
+
+
+def resample_to_crop(array, profile, reference, offset, shape):
+    """Resample a FirePred stack onto the reference raster's crop window.
+
+    The result covers rows/cols offset .. offset + shape of the reference grid,
+    so it lines up pixel for pixel with the reference's index crop. Missing
+    values (NaN, infinity) stay NaN and become 0 later with every other band.
+    Continuous bands are bilinear, as the TS-SatFire paper resampled its
+    auxiliary data; land cover is a class, so nearest; angles are averaged as
+    unit vectors (bilinear on raw degrees would turn 350 and 10 into 180).
+
+    Args:
+        array (np.ndarray): (19, H, W) FirePred bands on their own grid.
+        profile (dict): rasterio profile of `array`.
+        reference (dict): rasterio profile of the VIIRS_Day file.
+        offset (int): first row/column of the crop on the reference grid.
+        shape (tuple[int, int]): (rows, cols) of the reference crop.
+
+    Returns:
+        np.ndarray: (19, rows, cols) float32 on the reference crop grid.
+    """
+    from rasterio.warp import Resampling, reproject
+    from rasterio.windows import Window
+    from rasterio.windows import transform as window_transform
+
+    crop_transform = window_transform(Window(offset, offset, shape[1], shape[0]), reference["transform"])
+
+    def warp(source, method):
+        """Resample a (bands, H, W) stack onto the crop grid with one resampling method.
+
+        Every band uses the same method. Pixels the source does not cover, or
+        covers only with NaN, come out NaN.
+
+        Args:
+            source (np.ndarray): (bands, H, W) float32 on the FirePred grid.
+            method (rasterio.enums.Resampling): the resampling method.
+
+        Returns:
+            np.ndarray: (bands, rows, cols) float32 on the crop grid.
+        """
+        destination = np.full((source.shape[0], *shape), np.nan, dtype=np.float32)
+        reproject(
+            source=source, destination=destination,
+            src_transform=profile["transform"], src_crs=profile["crs"],
+            dst_transform=crop_transform, dst_crs=reference["crs"],
+            src_nodata=np.nan, dst_nodata=np.nan, resampling=method,
+        )
+        return destination
+
+    source = np.where(np.isfinite(array), array, np.nan).astype(np.float32)
+    out = warp(source, Resampling.bilinear)
+    out[[FIREPRED_LANDCOVER_BAND]] = warp(source[[FIREPRED_LANDCOVER_BAND]], Resampling.nearest)
+    radians = np.deg2rad(source[FIREPRED_ANGLE_BANDS])
+    cos, sin = warp(np.cos(radians), Resampling.bilinear), warp(np.sin(radians), Resampling.bilinear)
+    out[FIREPRED_ANGLE_BANDS] = np.rad2deg(np.arctan2(sin, cos)) % 360.0
+    return out
+
+
 def read_day_frame(file_name, offset=CROP_OFFSET, size=CROP_SIZE, debug=False):
     """Read one day's three GeoTIFFs and crop them to the fire's square.
 
@@ -155,14 +256,22 @@ def read_day_frame(file_name, offset=CROP_OFFSET, size=CROP_SIZE, debug=False):
         array_night = np.zeros((2, original_shape_x, original_shape_y), dtype=np.float32)
 
     # FirePred holds the 19 auxiliary bands (vegetation, weather, forecast, terrain, drought, land cover).
-    array_pred, _ = read_tiff(file_name.replace("VIIRS_Day", "FirePred"))
+    pred_file = file_name.replace("VIIRS_Day", "FirePred")
+    array_pred, pred_profile = read_tiff(pred_file)
 
     # Stack the 27 stored channels for this day, cropped to the fire square:
     # 6 day bands + 2 night bands + 19 FirePred bands.
     row_slice = slice(offset, offset + size)
     col_slice = slice(offset, offset + size)
-    img = np.concatenate((array_day[:6, row_slice, col_slice], array_night[:, row_slice, col_slice],
-                          array_pred[:, row_slice, col_slice]), axis=0)
+    day_crop = array_day[:6, row_slice, col_slice]
+    if same_grid(pred_profile, day_profile):
+        pred_crop = array_pred[:, row_slice, col_slice]
+    else:
+        # Decided per file: the same rows/cols would cover other ground, so
+        # resample FirePred onto the VIIRS crop instead.
+        pred_crop = resample_to_crop(array_pred, pred_profile, day_profile, offset, day_crop.shape[1:])
+        notes.append(f"{pred_file}: FirePred grid differs from VIIRS_Day; resampled onto the VIIRS grid")
+    img = np.concatenate((day_crop, array_night[:, row_slice, col_slice], pred_crop), axis=0)
     img = img[:, :size, :size]
     expected_shape = (N_STORED_CHANNELS, size, size)
     if img.shape != expected_shape:

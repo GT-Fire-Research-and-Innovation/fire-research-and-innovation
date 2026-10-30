@@ -172,8 +172,11 @@ def test_window_config_decision_is_pure():
     assert hub.decide_window_config(None, settings, False, "r").written
     with pytest.raises(ValueError, match="ts_interval"):
         hub.decide_window_config({**settings, "ts_interval": 3}, settings, False, "r")
-    kept = hub.decide_window_config({"ts_length": 6}, settings, False, "r")
+    kept = hub.decide_window_config({"ts_length": 6, "firepred_grid": "viirs_day"}, settings, False, "r")
     assert not kept.written and "ts_interval" in kept.missing
+    # Without firepred_grid the file holds index-cropped FirePred windows: a conflict, not a gap.
+    with pytest.raises(ValueError, match="firepred_grid"):
+        hub.decide_window_config({"ts_length": 6}, settings, False, "r")
     assert json.loads(json.dumps(settings)) == settings
 
 

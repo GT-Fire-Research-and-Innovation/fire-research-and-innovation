@@ -448,6 +448,10 @@
 256
 ],
 [
+"firepred_grid",
+"viirs_day"
+],
+[
 "stored_channels",
 27
 ],
