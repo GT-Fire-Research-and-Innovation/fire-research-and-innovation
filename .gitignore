@@ -30,4 +30,9 @@ __pycache__/
 /evaluation_plot/
 /saved_models/
 
+main
 AGENTS.md
+=======
+.venv/
+.idea/
+convlstm
