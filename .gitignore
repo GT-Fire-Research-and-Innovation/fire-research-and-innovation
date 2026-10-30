@@ -32,7 +32,6 @@ __pycache__/
 
 main
 AGENTS.md
-=======
 .venv/
 .idea/
 convlstm
