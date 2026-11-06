@@ -236,7 +236,10 @@ def forward_model(model, batch):
     Models may predict one map per input day, (B, K, T, H, W), or one map,
     (B, K, H, W). A per-day output is averaged over the days [released], so
     every model ends with the same (B, K, H, W) logits. A model with a TESSERA
-    stem takes the pair (data, static).
+    stem takes the pair (data, static). A one-window batch on a model spread
+    over several GPUs (nn.DataParallel) runs on the first GPU directly:
+    DataParallel would copy the model to that GPU alone, which fails in NCCL
+    on Kaggle's T4 x2 (the last partial batch of a split or test fire).
 
     Args:
         model (torch.nn.Module): the model.
@@ -246,7 +249,10 @@ def forward_model(model, batch):
     Returns:
         torch.Tensor: logits of shape (B, K, H, W).
     """
-    outputs = model(*batch) if isinstance(batch, tuple) else model(batch)
+    inputs = batch if isinstance(batch, tuple) else (batch,)
+    if len(getattr(model, "device_ids", ())) > 1 and len(inputs[0]) == 1:
+        model = model.module
+    outputs = model(*inputs)
     if outputs.ndim == 5:
         return outputs.mean(dim=2)
     return outputs

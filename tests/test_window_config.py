@@ -54,12 +54,23 @@ def test_existing_config_is_kept_without_overwrite(hub):
 
 def test_older_smaller_config_is_kept_without_overwrite(hub):
     """A config that predates newer settings is kept (with a note) until --overwrite."""
-    hub.upload_file(json.dumps({"ts_length": 6, "ts_interval": 1}).encode(), "window_config.json", REPO)
+    older = {"ts_length": 6, "ts_interval": 1, "firepred_grid": "viirs_day"}
+    hub.upload_file(json.dumps(older).encode(), "window_config.json", REPO)
     decision = data_hub.ensure_window_config(REPO, data_hub.window_settings(6, 1))
-    assert stored(hub) == {"ts_length": 6, "ts_interval": 1}
+    assert stored(hub) == older
     assert not decision.written and "predates" in decision.message
     data_hub.ensure_window_config(REPO, data_hub.window_settings(6, 1), overwrite=True)
     assert stored(hub)["train_val_label_sel"] == 0
+
+
+def test_config_without_firepred_grid_holds_index_cropped_windows(hub):
+    """A config from before firepred_grid was recorded means index-cropped FirePred: building into it needs --overwrite."""
+    hub.upload_file(json.dumps({"ts_length": 6, "ts_interval": 1}).encode(), "window_config.json", REPO)
+    with pytest.raises(ValueError, match="firepred_grid: repo has 'pixel_index', asked for 'viirs_day'"):
+        data_hub.ensure_window_config(REPO, data_hub.window_settings(6, 1))
+    data_hub.ensure_window_config(REPO, data_hub.window_settings(6, 1), overwrite=True)
+    config = stored(hub)
+    assert config["firepred_grid"] == "viirs_day" and "resampled" in config["notes"]["firepred_grid"]["viirs_day"]
 
 
 def test_conflicting_setting_needs_overwrite(hub):

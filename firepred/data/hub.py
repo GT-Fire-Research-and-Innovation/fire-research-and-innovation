@@ -40,6 +40,18 @@ LABEL_SEL_MEANING = {
     "1": "burned area = accumulated active fire only, no NIFC perimeters (released TS-SatFire code)",
 }
 
+# How FirePred is placed on the crop (data/windows.read_day_frame), and what each value means.
+FIREPRED_GRID = "viirs_day"
+FIREPRED_GRID_MEANING = {
+    "viirs_day": "FirePred on another grid than VIIRS_Day is resampled onto the VIIRS crop "
+                 "(bilinear; nearest for land cover; angles as unit vectors); on the same grid it is cropped by index",
+    "pixel_index": "FirePred cropped by the same rows/cols as VIIRS whatever its grid (before 2026-10-30)",
+}
+
+# Settings a window_config.json may predate, with the value its archives were built with.
+# A file without the key holds windows built that way, so another value is a conflict.
+SETTINGS_BEFORE_RECORDED = {"firepred_grid": "pixel_index"}
+
 
 def _hub():
     """Import huggingface_hub on first use, so a notebook can pin its cache folders before it loads."""
@@ -182,7 +194,7 @@ def window_settings(length, interval, train_val_label_sel=TRAIN_VAL_LABEL_SEL, u
         use_roi_label_sel (bool): whether test fires use their CSV's rule.
 
     Returns:
-        dict: the settings (window length and stride, label rules, crop, channels, format, split).
+        dict: the settings (window length and stride, label rules, crop, FirePred grid, channels, format, split).
     """
     return {
         "ts_length": int(length),
@@ -191,6 +203,7 @@ def window_settings(length, interval, train_val_label_sel=TRAIN_VAL_LABEL_SEL, u
         "test_label_sel": "roi" if use_roi_label_sel else int(train_val_label_sel),
         "crop_offset": CROP_OFFSET,
         "crop_size": CROP_SIZE,
+        "firepred_grid": FIREPRED_GRID,
         "stored_channels": N_STORED_CHANNELS,
         "archive_format_version": ARCHIVE_FORMAT_VERSION,
         "train_val_years": list(TRAIN_VAL_YEARS),
@@ -210,6 +223,7 @@ def window_config_notes():
     """
     return {
         "label_sel": LABEL_SEL_MEANING,
+        "firepred_grid": FIREPRED_GRID_MEANING,
         "test_label_sel": '"roi": each test fire uses the label_sel column of the 2021 ROI CSV; '
                           "a number: every test fire uses that rule",
         "npz_compression": "zstd",
@@ -233,7 +247,9 @@ def decide_window_config(existing, settings, overwrite, window_repo):
 
     A repo without the file gets it. An existing file is never rewritten
     without overwrite: a differing setting is an error, and settings the file
-    predates are reported and left out. This function only decides; it reads
+    predates are reported and left out. A predated setting listed in
+    SETTINGS_BEFORE_RECORDED counts as its old value, so archives built the old
+    way are never mixed with new ones. This function only decides; it reads
     and writes nothing.
 
     Args:
@@ -250,6 +266,7 @@ def decide_window_config(existing, settings, overwrite, window_repo):
     """
     if existing is None:
         return WindowConfigDecision(written=True, message="new window_config.json")
+    existing = {**{k: v for k, v in SETTINGS_BEFORE_RECORDED.items() if k in settings}, **existing}
     changed = tuple(sorted(key for key, value in settings.items() if key in existing and existing[key] != value))
     missing = tuple(key for key in settings if key not in existing)
     if overwrite:

@@ -175,6 +175,12 @@
         "objectives"
       ],
       "reason": "dicefocal: --focal-alpha defaults to 0.25 (Lin et al.) and accepts 'none' to turn it off; dicece unchanged."
+    },
+    {
+      "groups": [
+        "hub"
+      ],
+      "reason": "window_config.json records firepred_grid (FirePred resampled onto the VIIRS grid when the grids differ)"
     }
   ]
 }
