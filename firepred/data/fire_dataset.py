@@ -7,8 +7,9 @@ PyTorch needs: dataset[i] runs plain functions, each returning new arrays:
     normalize      standardize every channel except angles and land cover (the training
                    split's statistics from window_config.json, or the paper's)
     augment        (training only) random flips and 90-degree rotation
-    preprocess     sin(angle) for the angle channels, one-hot land cover:
-                   -> {"data": (43, T, 256, 256), "labels": (2, 256, 256)}
+    preprocess     observed wind direction -> degrees / 180 - 1 (the whole compass on
+                   -1..1), sin(angle) for aspect and forecast wind direction, one-hot
+                   land cover: -> {"data": (43, T, 256, 256), "labels": (2, 256, 256)}
 
 In TESSERA mode an item also carries "static": (129, 256, 256), the fire's normalized
 embedding plus a validity mask, and batch_inputs repeats it across the T days on the
@@ -35,6 +36,7 @@ from firepred.config.dataset import (
     NORMALIZATION_STD,
     TESSERA_CELLS_PER_PIXEL,
     TESSERA_CHANNELS,
+    WIND_DIRECTION_CHANNEL,
 )
 from firepred.data.archive import (
     find_fire_sources,
@@ -150,11 +152,15 @@ def augment(x, y, static=None, degree_channels=DEGREE_CHANNELS, rng=np.random):
 
 
 def preprocess(x, one_hot_matrix, degree_channels=DEGREE_CHANNELS, landcover_channel=LANDCOVER_CHANNEL):
-    """Encode a window for the model: sin() of the angles and one-hot land cover.
+    """Encode a window for the model: the angles as numbers in -1..1, and one-hot land cover.
 
-    Angles in degrees become sin(angle) [released]. The land-cover channel
-    (class 1..17, 0 = missing) becomes 17 one-hot planes, so the stored 27
-    channels become 43. A new tensor is returned and x is unchanged.
+    The observed wind direction becomes degrees / 180 - 1 [ours]: north -1,
+    east -0.5, south 0, west 0.5, rising toward 1 back at north, so every
+    direction has its own value (config.dataset.WIND_DIRECTION_CHANNEL). The
+    other angles become sin(angle) [released], which gives north and south the
+    same 0. The land-cover channel (class 1..17, 0 = missing) becomes 17 one-hot
+    planes, so the stored 27 channels become 43. A new tensor is returned and x
+    is unchanged.
 
     Args:
         x (torch.Tensor): a window, shape (27, T, H, W).
@@ -183,13 +189,16 @@ def preprocess(x, one_hot_matrix, degree_channels=DEGREE_CHANNELS, landcover_cha
     landcover_encoding = one_hot_matrix[landcover_classes.flatten()].reshape(new_shape).permute(3, 0, 1, 2)
 
     # Assemble the output channel by channel, so `x` itself is never written:
-    # angles become sin(angle) (after augmentation has rotated them), land
-    # cover becomes its one-hot planes, every other channel is kept.
+    # angles are encoded after augmentation has rotated them, land cover
+    # becomes its one-hot planes, every other channel is kept.
     degree_channels = set(degree_channels)
     pieces = []
     for channel in range(x.shape[0]):
         if channel == landcover_channel:
             pieces.append(landcover_encoding)
+        elif channel == WIND_DIRECTION_CHANNEL and channel in degree_channels:
+            # [ours] the whole compass on -1..1 (0 and 360 are the same north).
+            pieces.append(torch.remainder(x[channel:channel + 1], 360.0) / 180.0 - 1.0)
         elif channel in degree_channels:
             pieces.append(torch.sin(torch.deg2rad(x[channel:channel + 1])))
         else:
@@ -271,8 +280,8 @@ def prepare_window(x, y, one_hot_matrix, static=None, train=False, rng=np.random
     """Turn a read window into model input: standardize, (training only) augment, encode.
 
     The steps run in the released order: normalize before augmentation, then
-    sin() of the angles and one-hot land cover. Every step returns new tensors,
-    so x and y are unchanged.
+    the angles as numbers in -1..1 and one-hot land cover. Every step returns
+    new tensors, so x and y are unchanged.
 
     Args:
         x (torch.Tensor): the stored window, (27, T, H, W).
@@ -292,7 +301,7 @@ def prepare_window(x, y, one_hot_matrix, static=None, train=False, rng=np.random
     # [released] augment training examples but leave validation unchanged.
     if train:
         x, y, static = augment(x, y, static, list(DEGREE_CHANNELS), rng=rng)
-    # [released] degrees -> sine, land cover -> one-hot.
+    # Degrees -> -1..1 (observed wind [ours]; the others sine [released]), land cover -> one-hot.
     x = preprocess(x, one_hot_matrix, list(DEGREE_CHANNELS))
     sample = {"data": x, "labels": y}
     if static is not None:

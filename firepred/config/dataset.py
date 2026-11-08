@@ -13,7 +13,8 @@ model sees it:
   * every channel except the angles and land cover is standardized with the
     training split's mean/std from <data-root>/window_config.json (or, with
     --normalization paper, NORMALIZATION_MEAN/STD);
-  * the three angle channels (degrees) become sin(angle);
+  * the observed wind direction (degrees) becomes degrees / 180 - 1, so -1..1
+    covers the whole compass; aspect and forecast wind direction become sin(angle);
   * land cover (integer class 1..17, 0 = missing) becomes 17 one-hot planes.
 So the model receives 27 - 1 + 17 = 43 channels. TESSERA mode appends 128
 embedding bands plus 1 validity mask: 43 + 129 = 172.
@@ -68,6 +69,15 @@ DEGREE_CHANNELS = [12, 18, 24]
 # Land-cover class per pixel, replaced by one-hot planes. [released]
 LANDCOVER_CHANNEL = 21
 N_LANDCOVER_CLASSES = 17
+
+# The observed (gridMET) wind direction: a full 0..360 compass angle. The model
+# sees it as degrees / 180 - 1 (data/fire_dataset.preprocess): north (0) is -1,
+# east -0.5, south 0, west 0.5, and the values rise toward 1 as the direction
+# returns to north, so every direction gets its own value. The released
+# sin(direction) gave north and south both 0. Aspect and the forecast wind
+# direction (stored as -90..90, half a circle) keep sin(). The archives hold
+# degrees either way, so the encoding belongs to the code, not the dataset. [ours]
+WIND_DIRECTION_CHANNEL = 12
 
 # Per-channel training statistics of the 27 stored channels, from the authors'
 # training data. Used with --normalization paper and for checkpoints that predate
