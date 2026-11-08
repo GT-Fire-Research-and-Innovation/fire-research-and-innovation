@@ -300,6 +300,21 @@ def test_swinunetr3d_variants_share_its_checks(tmp_path):
     assert CheckpointLoader("cpu", RunConfig("unet3d")).load(path)["swin_temporal_downsample"] is True
 
 
+def test_wandb_config_records_the_run_settings():
+    """The W&B config lists the model shape, data and testing settings; model- and mode-specific keys only apply."""
+    logged = RunConfig("unetr3d", num_heads=4, feature_size=48, seed=7, num_workers=2).wandb_config(device_type="cuda")
+    assert {key: logged[key] for key in ("num_heads", "feature_size", "ts_length", "ts_interval", "seed")} == {
+        "num_heads": 4, "feature_size": 48, "ts_length": 6, "ts_interval": 1, "seed": 7}
+    assert logged["num_workers"] == 2 and logged["test_csv"] == "us_fire_2021_out_new.csv"
+    assert logged["device"] == "cuda" and logged["unetr_version"] == "v1"
+    assert "checkpoint" not in logged and "tessera_dir" not in logged
+    assert RunConfig("tiny3d").wandb_config(device_type="xla")["device"] == "tpu"
+    assert "device" not in RunConfig("tiny3d").wandb_config() and "unetr_version" not in RunConfig("tiny3d").wandb_config()
+    tested = RunConfig("tiny3d", tessera=True, test_only=True, load_epoch=12, data_root=Path("d")).wandb_config()
+    assert tested["checkpoint"] is None and tested["load_epoch"] == 12
+    assert tested["tessera_dir"] == str(Path("d") / "tessera") and tested["tessera_min_coverage"] == 0.5
+
+
 def test_loader_without_config_reads_but_refuses_to_check(tmp_path):
     """read() needs no config; load() without one fails with a clear message."""
     path = tmp_path / "c.pth"

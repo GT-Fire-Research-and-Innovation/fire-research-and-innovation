@@ -181,6 +181,12 @@
         "hub"
       ],
       "reason": "window_config.json records firepred_grid (FirePred resampled onto the VIIRS grid when the grids differ)"
+    },
+    {
+      "groups": [
+        "hub"
+      ],
+      "reason": "window_config.json names its window repo as \"dataset\" (first key); training logs it to W&B with its Hugging Face link"
     }
   ]
 }

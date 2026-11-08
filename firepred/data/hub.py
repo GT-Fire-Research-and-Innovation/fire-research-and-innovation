@@ -6,11 +6,12 @@ its cache folders after importing the masters. There is no global login:
 every call takes the token explicitly. Every function returns what it
 fetched or wrote.
 
-Every window repo carries window_config.json: the settings that decided what
-its archives contain (window length and stride, label rules, crop, channels,
-format, split), plus a "notes" block for humans (what each label rule means,
-compression level, code version). The archive file names encode none of this,
-so the file is what keeps one repo to one set of settings.
+Every window repo carries window_config.json: the repo it belongs to ("dataset",
+logged to W&B by training), the settings that decided what its archives contain
+(window length and stride, label rules, crop, channels, format, split), plus a
+"notes" block for humans (what each label rule means, compression level, code
+version). The archive file names encode none of this, so the file is what keeps
+one repo to one set of settings.
 """
 
 import json
@@ -31,6 +32,7 @@ from firepred.config.dataset import (
     VAL_IDS,
     WINDOW_CONFIG_FILE,
     window_repo_for,
+    with_dataset,
 )
 from firepred.data.files import code_version, unzip_into
 
@@ -295,6 +297,6 @@ def ensure_window_config(window_repo, settings, overwrite=False, token=None):
     """Record a run's window settings in a repo before any fire is built, refusing to mix settings."""
     decision = decide_window_config(read_window_config(window_repo, token), settings, overwrite, window_repo)
     if decision.written:
-        config = {**settings, "notes": window_config_notes()}
+        config = with_dataset({**settings, "notes": window_config_notes()}, window_repo)
         upload_file(json.dumps(config, indent=2).encode(), WINDOW_CONFIG_FILE, window_repo, token)
     return decision

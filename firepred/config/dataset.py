@@ -214,6 +214,25 @@ WINDOW_REPO = window_repo_for()
 # new windows are added so one repo never mixes window settings.
 WINDOW_CONFIG_FILE = "window_config.json"
 
+# window_config.json names the window repo its windows come from under this key
+# (its first key), and training logs it to W&B. It records provenance, not a window
+# setting, so two copies are never compared on it. [ours]
+WINDOW_CONFIG_DATASET_KEY = "dataset"
+
+# A Hugging Face dataset repo's page.
+HF_DATASET_URL = "https://huggingface.co/datasets/{repo}"
+
+
+def dataset_url(repo):
+    """Give the Hugging Face page of a dataset repo (HF_DATASET_URL with the repo id filled in)."""
+    return HF_DATASET_URL.format(repo=repo)
+
+
+def with_dataset(config, repo):
+    """Give a copy of a window_config.json dict that names `repo` as its dataset (its first key)."""
+    rest = {key: value for key, value in config.items() if key != WINDOW_CONFIG_DATASET_KEY}
+    return {WINDOW_CONFIG_DATASET_KEY: repo, **rest}
+
 # ----- Window archives ----- #
 
 # One archive per fire: data_###/label_### members plus num_windows (see

@@ -657,14 +657,16 @@ class RunConfig:
             settings["model_options"] = dict(self.extra_model_options)
         return settings
 
-    def wandb_config(self, on_tpu=False):
-        """Collect the run's W&B config: hyperparameters, loss, schedule and model options.
+    def wandb_config(self, device_type=None):
+        """Collect the run's W&B config: hyperparameters, model shape, data, loss, schedule and options.
 
         This is what the W&B dashboard shows and filters by. Model-specific keys
-        appear only when they apply.
+        appear only when they apply. The dataset and its window settings come
+        from window_config.json and are added by the Tracker.
 
         Args:
-            on_tpu (bool): record that the run uses a TPU.
+            device_type (str | None): the torch device type ("cpu", "cuda", or "xla",
+                logged as "tpu"); None logs no device.
 
         Returns:
             dict: the config.
@@ -677,16 +679,36 @@ class RunConfig:
             "batch_size": self.batch_size,
             "mode": self.mode,
             "model": self.model,
+            "num_heads": self.num_heads,
+            "feature_size": self.feature_size,
+            "ts_length": self.ts_length,
+            "ts_interval": self.ts_interval,
+            "seed": self.seed,
+            "run_number": self.run_number,
             # The checkpoint's (and model artifact's) names for the same settings.
             "use_tessera": self.tessera,
             "model_input_channels": self.input_channels,
             "normalization": self.normalization,
+            "data_root": str(self.data_root),
+            "unzip_dir": self.unzip_dir,
+            "num_workers": self.num_workers,
+            "test_csv": Path(self.test_csv).name,
+            "test_after_train": self.test_after_train,
+            "keep_checkpoints": self.keep_checkpoints,
+            "upload_checkpoints": self.upload_checkpoints,
             **self.loss.record(),
         }
         if self.tessera:
             config["tessera_cells_per_pixel"] = self.tessera_cells
-        if on_tpu:
-            config["device"] = "tpu"
+            config["tessera_dir"] = str(self.tessera_root)
+            config["tessera_min_coverage"] = self.tessera_min_coverage
+        if device_type is not None:
+            config["device"] = "tpu" if device_type == "xla" else device_type
+        if self.test_only:
+            config["checkpoint"] = None if self.checkpoint is None else str(self.checkpoint)
+            config["load_epoch"] = self.load_epoch
+        if self.model.startswith("unetr"):
+            config["unetr_version"] = self.unetr_version
         if self.is_swinunetr3d:
             config["swin_temporal_downsample"] = self.swin_temporal_downsample
         if self.extra_model_options:

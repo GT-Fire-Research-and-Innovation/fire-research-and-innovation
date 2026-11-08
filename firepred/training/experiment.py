@@ -15,7 +15,8 @@ back into an earlier step:
        --ce-weight auto, the class weights from its pixel counts, in the
        RunConfig, before anything records them. When the file lacks them, the
        official TS-SatFire values stand in and RunConfig.defaults_used says why
-    4. the Tracker (the W&B run)
+    4. the Tracker (the W&B run), whose config also records the dataset and
+       window settings from window_config.json
     5. the model (registry), wrapped in DataParallel
     6. training only: datasets and loaders -> Trainer.fit -> best checkpoint
     7. testing: CheckpointLoader.load that (or the given) checkpoint, Evaluator.score,
@@ -533,7 +534,7 @@ class Experiment:
             # Found before W&B starts, so a missing checkpoint leaves no empty run behind.
             checkpoint = config.checkpoint or find_test_checkpoint(config.test_checkpoint_pattern)
             print(f"Testing checkpoint {checkpoint}")
-        with Tracker(config, device) as tracker:
+        with Tracker(config, device, window_config) as tracker:
             model = self.prepare_model(device)
             if not config.test_only:
                 checkpoint = self.train(data, model, device, tracker)

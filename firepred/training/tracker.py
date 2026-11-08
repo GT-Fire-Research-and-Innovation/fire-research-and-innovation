@@ -3,7 +3,7 @@
 Level 3 (training). Used by training/experiment.py (it opens the Tracker) and
 training/trainer.py (it reports to it). Nothing else imports wandb.
 
-    with Tracker(config, device) as tracker:   # login, init, charts, name, config
+    with Tracker(config, device, window_config) as tracker:   # login, init, charts, name, config
         tracker.checkpoint_dir                 # where this run's checkpoints go
         tracker.log_train / log_validation / log_periodic_test / log_checkpoint
         tracker.log_final(scores)
@@ -17,6 +17,7 @@ import os
 from pathlib import Path
 
 from firepred.config.training import WANDB_PROJECT
+from firepred.data.files import code_version
 from firepred.training.accelerator import Device
 
 # W&B tag of runs that used official TS-SatFire values because window_config.json lacked some.
@@ -98,7 +99,7 @@ class Tracker:
                 labels[f"{prefix}_focal_loss"] = f"{split} Focal Loss (x lambda_focal) — Next-Day Fire Growth"
         return labels
 
-    def __init__(self, config, device):
+    def __init__(self, config, device, window_config=None):
         """Remember the run's settings; nothing is sent to W&B yet.
 
         The chart names follow from the loss. W&B is imported on entering the block.
@@ -106,11 +107,31 @@ class Tracker:
         Args:
             config (RunConfig): the run's settings.
             device (Device | torch.device): the training device.
+            window_config (WindowConfig | None): the data root's window_config.json, whose
+                dataset and window settings go into the W&B config.
         """
         self.config = config
         self.device = Device.of(device)
+        self.window_config = window_config
         self.labels = self.chart_labels(config.loss.name)
         self.wandb = None
+
+    def run_config(self):
+        """Collect everything the W&B config records about the run.
+
+        That is the RunConfig's settings and the device, then the dataset (with its
+        Hugging Face link) and window settings from window_config.json, and the
+        code version (the git commit, or a packed copy's code_version.json, so
+        Kaggle runs are traceable too).
+
+        Returns:
+            dict: the W&B config.
+        """
+        config = self.config.wandb_config(device_type=self.device.type)
+        if self.window_config is not None:
+            config.update(self.window_config.record())
+        config["code_version"] = code_version()
+        return config
 
     def __enter__(self):
         """Log in, start the run, declare the charts, name the run and record its config.
@@ -135,7 +156,7 @@ class Tracker:
                 if key != "epoch":
                     wandb.define_metric(label, step_metric=epoch)
         wandb.run.name = self.config.run_name
-        wandb.config.update(self.config.wandb_config(on_tpu=self.device.is_xla))
+        wandb.config.update(self.run_config())
         return self
 
     def __exit__(self, *exc_info):
