@@ -14,7 +14,7 @@ TRAIN_FLAGS = {
     "--test-csv", "--plot-dir", "--test-every", "--test-after-train", "--tessera", "--tessera-dir", "--loss",
     "--swin-temporal-downsample", "--ce-weight", "--lambda-dice", "--lambda-ce", "--lr-schedule",
     "--lr-decay-factor", "--lr-patience", "--lr-min", "--upload-checkpoints", "--tessera-min-coverage",
-    "--model-option", "--wandb-user", "--lambda-focal", "--focal-gamma", "--focal-alpha",
+    "--model-option", "--wandb-user",
 }
 REQUIRED = ["-m", "swinunetr3d", "-mode", "pred", "-b", "8", "-r", "1", "-lr", "0.001",
             "-nh", "3", "-ed", "36", "-ts", "6", "-it", "1"]
