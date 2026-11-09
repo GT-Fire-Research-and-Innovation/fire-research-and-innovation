@@ -5,7 +5,7 @@ Modules in import order (each imports only earlier ones):
     config.py       RunConfig (frozen): every setting and every derived name
     accelerator.py  Device (--device): CPU, CUDA GPU or TPU (PyTorch/XLA)
     flags.py        the training command line, defined once (FLAGS -> parser, RunConfig, argv)
-    objectives.py   TrainingLoss (Dice / Dice+CE / Dice+focal) and Scorer (F1/IoU)
+    objectives.py   TrainingLoss (Dice / Dice+CE) and Scorer (F1/IoU)
     checkpoints.py  CheckpointStore (best N on disk), CheckpointLoader (safe loading)
     tracker.py      Tracker: the only module that talks to Weights & Biases
     evaluator.py    Evaluator: per-fire test scores and plots

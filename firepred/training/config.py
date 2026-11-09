@@ -35,11 +35,8 @@ from firepred.config.training import (
     DEFAULT_EPOCHS,
     DEFAULT_NUM_WORKERS,
     DEFAULT_UNZIP_DIR,
-    FOCAL_ALPHA,
-    FOCAL_GAMMA,
     LAMBDA_CE,
     LAMBDA_DICE,
-    LAMBDA_FOCAL,
     LOSSES,
     LR_DECAY_FACTOR,
     LR_MIN,
@@ -74,15 +71,11 @@ class LossConfig:
     no usable counts (training/experiment.with_window_label_counts).
 
     Attributes:
-        name (str): "dice", "dicece" or "dicefocal".
+        name (str): "dice" or "dicece".
         ce_weight (tuple[float, float] | str): class weights (background, fire) for dicece, or "auto";
             MONAI's DiceCELoss applies them to the Dice and the cross-entropy term.
-        lambda_dice (float): weight of the Dice term.
+        lambda_dice (float): weight of the Dice term (dicece).
         lambda_ce (float): weight of the cross-entropy term (dicece).
-        lambda_focal (float): weight of the focal term (dicefocal).
-        focal_gamma (float): focal exponent (dicefocal).
-        focal_alpha (float | None): weight of fire pixels in the focal term, background
-            pixels get 1 - alpha; None turns it off (dicefocal).
         ce_weight_counts (tuple[int, int] | None): the (background, fire) training pixels an
             automatic ce_weight was computed from; None for weights given by hand.
     """
@@ -91,9 +84,6 @@ class LossConfig:
     ce_weight: tuple = AUTO_CE_WEIGHT
     lambda_dice: float = LAMBDA_DICE
     lambda_ce: float = LAMBDA_CE
-    lambda_focal: float = LAMBDA_FOCAL
-    focal_gamma: float = FOCAL_GAMMA
-    focal_alpha: float = FOCAL_ALPHA
     ce_weight_counts: tuple = None
 
     def __post_init__(self):
@@ -171,13 +161,6 @@ class LossConfig:
             config.update(ce_weight=weight, lambda_dice=self.lambda_dice, lambda_ce=self.lambda_ce)
             if self.ce_weight_counts is not None:
                 config["ce_weight_counts"] = list(self.ce_weight_counts)
-        if self.name == "dicefocal":
-            config.update(
-                lambda_dice=self.lambda_dice,
-                lambda_focal=self.lambda_focal,
-                focal_gamma=self.focal_gamma,
-                focal_alpha=self.focal_alpha,
-            )
         return config
 
 

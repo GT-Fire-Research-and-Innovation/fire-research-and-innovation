@@ -36,11 +36,11 @@ class Tracker:
         """Give the W&B chart name of every logged value for a loss.
 
         Dashboards are built on these names, so a name changes only when what it
-        charts changes. Dice+CE and Dice+focal also chart their two parts, each
-        multiplied by its lambda, so the parts add up to the total.
+        charts changes. Dice+CE also charts its two parts, each multiplied by
+        its lambda, so the parts add up to the total.
 
         Args:
-            loss_name (str): "dice", "dicece" or "dicefocal".
+            loss_name (str): "dice" or "dicece".
 
         Returns:
             dict[str, str]: {internal name: chart name}.
@@ -51,7 +51,6 @@ class Tracker:
             # Runs between Oct 20 and 25, 2026 weighted CE only and charted "Dice + Weighted
             # Cross-Entropy Loss".
             "dicece": "Weighted Dice + Cross-Entropy Loss",
-            "dicefocal": "Dice + Focal Loss",
         }[loss_name]
         labels = {
             "epoch": "Training Epoch (Starting at 0)",
@@ -93,10 +92,6 @@ class Tracker:
             for prefix, split in (("train", "Training"), ("val", "Validation")):
                 labels[f"{prefix}_dice_loss"] = f"{split} Weighted Dice Loss — Next-Day Fire Growth"
                 labels[f"{prefix}_ce_loss"] = f"{split} Weighted Cross-Entropy Loss — Next-Day Fire Growth"
-        if loss_name == "dicefocal":
-            for prefix, split in (("train", "Training"), ("val", "Validation")):
-                labels[f"{prefix}_dice_loss"] = f"{split} Dice Loss (x lambda_dice) — Next-Day Fire Growth"
-                labels[f"{prefix}_focal_loss"] = f"{split} Focal Loss (x lambda_focal) — Next-Day Fire Growth"
         return labels
 
     def __init__(self, config, device, window_config=None):
