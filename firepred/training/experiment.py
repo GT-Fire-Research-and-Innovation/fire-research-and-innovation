@@ -46,7 +46,7 @@ from firepred.data.fire_dataset import FireDataset, make_dataloader, validate_da
 from firepred.data.stats import MissingStatistics, WindowConfig
 from firepred.models.registry import build_model
 from firepred.training.accelerator import Device
-from firepred.training.checkpoints import CheckpointLoader, CheckpointStore, find_test_checkpoint
+from firepred.training.checkpoints import CheckpointLoader, CheckpointStore, RunState, find_test_checkpoint
 from firepred.training.config import NORMALIZE_LIKE_PAPER
 from firepred.training.evaluator import Evaluator
 from firepred.training.tracker import Tracker
@@ -451,18 +451,20 @@ class Experiment:
         model.to(Device.of(device).torch_device)
         return model
 
-    def train(self, data, model, device, tracker):
+    def train(self, data, model, device, tracker, resumed=None):
         """Train the model and return its best checkpoint.
 
         The data, an optional evaluator for periodic test scores, and the
-        checkpoint store are built here and handed to Trainer.fit. The kept
-        checkpoints are printed afterwards.
+        checkpoint store are built here and handed to Trainer.fit. With --resume
+        a state read before W&B started is put back first, and training goes on
+        after its last finished epoch. The kept checkpoints are printed afterwards.
 
         Args:
             data (FireData): where the data is.
             model (torch.nn.Module): the model.
             device (Device): where it runs.
             tracker (Tracker): the W&B run.
+            resumed (dict | None): the --resume state to continue from, or None.
 
         Returns:
             Path: the best checkpoint.
@@ -478,7 +480,13 @@ class Experiment:
                 print(f"No test archives in {data.root / 'test'}; --test-every is ignored")
         store = CheckpointStore(tracker.checkpoint_dir, config.checkpoint_template,
                                 config.checkpoint_settings(training.tessera_stats), keep=config.keep_checkpoints)
-        best = Trainer(config, model, device).fit(training, tracker, store, evaluator)
+        trainer = Trainer(config, model, device)
+        run_state = RunState(config.resume) if config.resume is not None else None
+        start = 0
+        if resumed is not None:
+            start = RunState.restore(resumed, trainer, store, getattr(training.train_loader, "generator", None))
+            print(f"Resuming {config.resume}: epochs 1-{start} done, continuing at epoch {start + 1}")
+        best = trainer.fit(training, tracker, store, evaluator, start_epoch=start, run_state=run_state)
         for loss, path in store.ranking():
             print(f"Best checkpoint: loss={loss:.6f}: {path}")
         return best
@@ -556,10 +564,14 @@ class Experiment:
             # Found before W&B starts, so a missing checkpoint leaves no empty run behind.
             checkpoint = config.checkpoint or find_test_checkpoint(config.test_checkpoint_pattern)
             print(f"Testing checkpoint {checkpoint}")
-        with Tracker(config, device, window_config) as tracker:
+        resumed = None
+        if config.resume is not None and not config.test_only and RunState(config.resume).exists():
+            # Read before W&B starts, so a state from another run stops this one before an empty W&B run.
+            resumed = RunState(config.resume).read(device, config)
+        with Tracker(config, device, window_config, resume_id=resumed and resumed["wandb_run_id"]) as tracker:
             model = self.prepare_model(device)
             if not config.test_only:
-                checkpoint = self.train(data, model, device, tracker)
+                checkpoint = self.train(data, model, device, tracker, resumed)
                 if not config.test_after_train:
                     return RunResult(checkpoint)
                 if not data.has_test():

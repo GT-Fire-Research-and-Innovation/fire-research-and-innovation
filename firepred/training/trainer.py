@@ -61,6 +61,15 @@ class LearningRateSchedule:
         else:
             raise ValueError(f"Unsupported learning-rate schedule: {schedule.name}")
 
+    def state_dict(self):
+        """Give the scheduler's state for a RunState (None without a schedule)."""
+        return self.scheduler.state_dict() if self.scheduler is not None else None
+
+    def load_state_dict(self, state):
+        """Put back a state_dict() result."""
+        if self.scheduler is not None and state is not None:
+            self.scheduler.load_state_dict(state)
+
     def step(self, val_loss):
         """Advance the schedule by one epoch.
 
@@ -111,6 +120,26 @@ class Trainer:
         self.scaler = GradScaler(enabled=self.device.type == "cuda")
         self.schedule = LearningRateSchedule(self.optimizer, config.schedule, config.epochs)
         self.scorer = Scorer()
+
+    def state_dict(self):
+        """Give everything that changes while training, for a RunState (--resume).
+
+        Returns:
+            dict: model, optimizer, gradient scaler and schedule states.
+        """
+        return {"model": self.model.state_dict(), "optimizer": self.optimizer.state_dict(),
+                "scaler": self.scaler.state_dict(), "schedule": self.schedule.state_dict()}
+
+    def load_state_dict(self, state):
+        """Put back a state_dict() result, so training continues where it stopped.
+
+        Args:
+            state (dict): state_dict()'s result.
+        """
+        self.model.load_state_dict(state["model"])
+        self.optimizer.load_state_dict(state["optimizer"])
+        self.scaler.load_state_dict(state["scaler"])
+        self.schedule.load_state_dict(state["schedule"])
 
     @property
     def learning_rate(self):
@@ -278,24 +307,28 @@ class Trainer:
         every = self.config.test_every
         return evaluator is not None and every > 0 and (epoch + 1) % every == 0
 
-    def fit(self, data, tracker, store, evaluator=None):
+    def fit(self, data, tracker, store, evaluator=None, start_epoch=0, run_state=None):
         """Train for every epoch and return the checkpoint with the lowest validation loss.
 
         Each epoch: train, validate, offer the checkpoint to the store (uploading
         it when asked), step the schedule, and every --test-every epochs score the
         test fires for the charts. The checkpoint is saved before the schedule
-        steps, so it keeps that epoch's learning rate. Results only flow out.
+        steps, so it keeps that epoch's learning rate. With a run state (--resume)
+        the finished epoch is then written to it, so a stopped job continues from
+        there (start_epoch). Results only flow out.
 
         Args:
             data (TrainingData): the training and validation loaders.
             tracker (Tracker): where results are logged.
             store (CheckpointStore): where checkpoints are kept.
             evaluator (Evaluator | None): scores the test fires, or None.
+            start_epoch (int): the first epoch to train (0, or after a resumed state).
+            run_state (RunState | None): where to save the state after every epoch.
 
         Returns:
             Path: the best checkpoint.
         """
-        for epoch in range(self.config.epochs):
+        for epoch in range(start_epoch, self.config.epochs):
             # 1. Train, then chart the epoch's training scores.
             train = tracker.log_train(epoch, self.train_epoch(data.train_loader, epoch))
             # 2. Validate with the same weights, and chart it with this epoch's learning rate.
@@ -312,4 +345,7 @@ class Trainer:
             # 5. Optional test-fire scores with the current weights, for the charts only.
             if self.periodic_test_due(epoch, evaluator):
                 tracker.log_periodic_test(epoch, evaluator.score(self.model))
+            # 6. With --resume: everything needed to continue after this epoch.
+            if run_state is not None:
+                run_state.write(epoch, self, store, tracker.run_id, getattr(data.train_loader, "generator", None))
         return store.best

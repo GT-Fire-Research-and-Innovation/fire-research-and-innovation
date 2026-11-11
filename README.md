@@ -20,6 +20,7 @@ from scratch in [docs/swinunetr3d/](docs/swinunetr3d/).
     ├── tests/                    # pytest: unit tests, golden/ (same-output values), end-to-end runs
     ├── checks/                   # dataset checks and experiment diagnostics (start with count_windows.py)
     ├── tools/                    # trace_shapes.py: real tensor shapes through SwinUNETR-3D
+    ├── scripts/ice/              # GT PACE ICE: setup, Slurm jobs for data and training, status
     ├── docs/                     # ARCHITECTURE, KNOWN_ISSUES, swinunetr3d/ explainer
     ├── roi/                      # fire metadata CSVs (ids, dates, locations, label rule)
     └── figures/                  # dataset figures from the paper
@@ -140,6 +141,37 @@ python -m firepred.cli.train -m swinunetr3d -mode pred -b 8 -lr 0.001 -nh 3 -ed 
 Add a model with
 `python -m firepred.cli.new_model NAME` (see docs/ARCHITECTURE.md). This repository
 covers the paper's prediction task only.
+
+**Resuming (`--resume FILE`, new):** training rewrites FILE after every epoch with the weights,
+optimizer, gradient scaler, schedule, kept checkpoints, every random generator and the W&B run id.
+Running the same command again continues after the last finished epoch, in the same W&B run, and
+ends with the same weights as a run that was never stopped. A file from a run with other settings
+(model, epochs, learning rate, batch size, seed, -ts/-it, zones) is refused.
+
+## GT PACE ICE
+
+`scripts/ice/` runs everything from a terminal on PACE ICE: `ssh <gt-username>@login-ice.pace.gatech.edu`
+(GT VPN when off campus), or in a browser ICE OnDemand > Clusters > ICE Shell Access. The jobs use the
+`coe-gpu` partition (one H100 or H200) and `ice-cpu`, both under the `coe-ice` QOS, with a 16 h limit;
+check yours with `sacctmgr show assoc user=$USER format=account,partition,qos%40` and pass
+`PARTITION=ice-gpu QOS=...` (or `sbatch -p ... --qos ...`) if they differ. Everything large lives in
+`~/scratch` (the home directory is small: `pace-quota`).
+```
+git clone -b fire-split-zones https://github.com/GT-Fire-Research-and-Innovation/fire-research-and-innovation.git
+cd fire-research-and-innovation
+bash scripts/ice/setup.sh                       # once: Python env in ~/scratch/envs/firepred, HF + W&B logins
+NAME=swin_daily bash scripts/ice/plan.sh        # data (first time) -> GPU smoke test -> 3 chained 16 h jobs
+NAME=swin_zones ZONES=1 bash scripts/ice/plan.sh   # the same run trained one sample per fire (zone files)
+bash scripts/ice/status.sh                      # jobs, run states, last epoch of the latest logs
+```
+- `data.sbatch` converts `ts-satfire-processed-6-1` into a daily root at `~/scratch/firepred/data-daily`
+  (`DAILY_REPO=...` downloads an existing daily repo instead; `DEST_REPO=...` also uploads the conversion)
+  and builds its zone files for `-ts 6` (`TS=`, `SCALE_KM=` for others).
+- `train.sbatch` trains one run with `--resume ~/scratch/firepred/runs/$NAME.state`, so each job of a
+  chain continues the last one; a finished run leaves `$NAME.done` and the rest of the chain exits.
+  `MODEL`, `BATCH`, `LR`, `TS`, `IT`, `ZONES` and `EXTRA` (any other train flags) set the run. Daily
+  archives are cut at its `-ts`/`-it`; zone files must be built for the same `-ts`.
+- Checkpoints and W&B runs go to `~/scratch/firepred/wandb/`; logs to `logs/` in the repository.
 
 ## Author
 

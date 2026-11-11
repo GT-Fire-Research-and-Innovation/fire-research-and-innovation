@@ -262,6 +262,8 @@ class RunConfig:
         test_only (bool): test a checkpoint instead of training.
         checkpoint (Path | None): the checkpoint to test.
         trust_checkpoint (bool): allow full unpickling of that checkpoint.
+        resume (Path | None): run-state file: continue training from it when it exists,
+            and rewrite it after every epoch (clusters with time limits).
         load_epoch (int | None): the epoch of the checkpoint -test looks for without
             --checkpoint; None takes any epoch.
         test_csv (Path): the test fires, in scoring order.
@@ -306,6 +308,7 @@ class RunConfig:
     test_only: bool = False
     checkpoint: Path = None
     trust_checkpoint: bool = False
+    resume: Path = None                # [ours] --resume: run state rewritten every epoch
     load_epoch: int = None
     test_csv: Path = DEFAULT_TEST_CSV
     plot_dir: Path = Path("evaluation_plot")

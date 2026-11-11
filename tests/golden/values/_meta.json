@@ -216,6 +216,12 @@
         "cli"
       ],
       "reason": "fire-split-zones: --zones-dir (train and check data) trains one sample per fire of each window from zone files"
+    },
+    {
+      "groups": [
+        "cli"
+      ],
+      "reason": "train: --resume (run state rewritten every epoch)"
     }
   ]
 }
