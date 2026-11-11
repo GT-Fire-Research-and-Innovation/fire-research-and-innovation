@@ -1,5 +1,5 @@
 #!/bin/bash
-# GT PACE ICE: one training run on one GPU (coe-gpu: H100 or H200, whichever frees up first).
+# GT PACE ICE: one training run on one GPU of the College of Computing's coc-gpu partition (coc-ice QOS).
 # The run state ($RUNS/$NAME.state, --resume) is rewritten every epoch, so after the 16 h limit the
 # same command continues where it stopped; plan.sh chains such jobs. A finished run leaves
 # $RUNS/$NAME.done and later jobs of the chain exit at once.
@@ -7,10 +7,10 @@
 #   NAME=swin_zones ZONES=1 sbatch scripts/ice/train.sbatch               # one training sample per fire
 #   NAME=swin_it2 IT=2 EXTRA="--epochs 50" sbatch scripts/ice/train.sbatch
 #   MODEL, BATCH, LR, TS, IT, ZONES_ROOT, EXTRA (any other train flags) also apply.
-#   No coe-gpu access? sbatch -p ice-gpu --qos=<yours> scripts/ice/train.sbatch  (sacctmgr show assoc user=$USER)
+#   Other access? sbatch -p ice-gpu --qos=<yours> scripts/ice/train.sbatch  (sacctmgr show assoc user=$USER)
 #SBATCH -J fp-train
-#SBATCH -p coe-gpu
-#SBATCH --qos=coe-ice
+#SBATCH -p coc-gpu
+#SBATCH --qos=coc-ice
 #SBATCH --gres=gpu:1
 #SBATCH -N 1 --cpus-per-task=8 --mem=64G
 #SBATCH -t 16:00:00

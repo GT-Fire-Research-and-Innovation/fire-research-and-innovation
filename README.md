@@ -152,9 +152,11 @@ ends with the same weights as a run that was never stopped. A file from a run wi
 
 `scripts/ice/` runs everything from a terminal on PACE ICE: `ssh <gt-username>@login-ice.pace.gatech.edu`
 (GT VPN when off campus), or in a browser ICE OnDemand > Clusters > ICE Shell Access. The jobs use the
-`coe-gpu` partition (one H100 or H200) and `ice-cpu`, both under the `coe-ice` QOS, with a 16 h limit;
-check yours with `sacctmgr show assoc user=$USER format=account,partition,qos%40` and pass
-`PARTITION=ice-gpu QOS=...` (or `sbatch -p ... --qos ...`) if they differ. Everything large lives in
+College of Computing's `coc-gpu` partition (one GPU per job) and `ice-cpu`, both under the `coc-ice`
+QOS, with a 16 h limit per job. `plan.sh` checks the partitions with `sinfo` before submitting; see yours
+with `sinfo -s` and `sacctmgr show assoc user=$USER format=account,partition,qos%40`, and pass
+`PARTITION=... CPU_PARTITION=... QOS=...` (or `sbatch -p ... --qos ...`) if they differ (College of
+Engineering: `PARTITION=coe-gpu QOS=coe-ice`). Everything large lives in
 `~/scratch` (the home directory is small: `pace-quota`).
 ```
 git clone -b fire-split-zones https://github.com/GT-Fire-Research-and-Innovation/fire-research-and-innovation.git

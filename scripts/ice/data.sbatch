@@ -6,7 +6,7 @@
 #   SCALE_KM=3 ZONES_ROOT=... TS=6 also apply. Rerunning skips fires already converted and zone files built.
 #SBATCH -J fp-data
 #SBATCH -p ice-cpu
-#SBATCH --qos=coe-ice
+#SBATCH --qos=coc-ice
 #SBATCH -N 1 --cpus-per-task=8 --mem=64G
 #SBATCH -t 16:00:00
 #SBATCH -o logs/%x-%j.out
