@@ -62,6 +62,28 @@ on either statistics command also writes it back to the window repo. `rebuild-zi
 it: it downloads every archive, measures both statistics into `window_config.json` (local and
 repo), then zips and uploads data.zip.
 
+### Daily archives (format 3): the same windows, about 6x smaller
+A window archive stores every window whole, so with `-it 1` each day is stored up to 6 times.
+A daily archive stores each day once: terrain and land cover once per fire, the other channels in
+blocks of 6 days, and the targets as bits. Windows are cut from the days when they are read. Every
+reader (training, statistics, checks) gets the same arrays bit for bit, and the window list comes
+from the number of days, so nothing changes for training. A data root holds the archives once,
+with no data.zip and nothing to unzip.
+```
+python -m firepred.cli.dataset convert-daily -ts 6 -it 1 --data-root ./data --dest-root ./data-daily
+python -m firepred.cli.dataset --window-repo SamuelWu318/ts-satfire-processed-6-1 convert-daily -ts 6 -it 1 \
+    --dest-root ./data-daily --dest-repo SamuelWu318/ts-satfire-daily   # one fire on disk at a time
+python -m firepred.cli.dataset --window-repo SamuelWu318/ts-satfire-daily download --data-root ./data-daily
+```
+`convert-daily` reads every converted window and target back and compares them bit for bit with the
+source, then keeps the source's `window_config.json` statistics (they describe identical windows).
+`stage` downloads a repo without data.zip one archive at a time, straight into its split folder.
+- One daily archive gives windows of any length and stride whose target days it holds.
+  `open_fire(path, length, interval)` reads them; an archive converted from 6-1 windows serves
+  `-ts 6` and longer, at any `-it`. Training still uses the settings in `window_config.json`.
+- Code from before format 3 stops on these files with "unsupported format version 3".
+  Format-2 archives still read as before.
+
 ## Train and test
 ```
 python -m firepred.cli.check model -m swinunetr3d            # model sanity check, one step

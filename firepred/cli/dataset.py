@@ -19,6 +19,7 @@ repo for the chosen -ts/-it (window_repo_for).
     python -m firepred.cli.dataset pull-zip --data-root ./data [--zip-repo window|tessera]
     python -m firepred.cli.dataset rebuild-zip -ts 6 -it 1
     python -m firepred.cli.dataset stage --work-dir /kaggle/temp/fire-research [--tessera]
+    python -m firepred.cli.dataset convert-daily -ts 6 -it 1 [--data-root ./data] --dest-root ./data-daily [--dest-repo REPO]
 """
 
 import argparse
@@ -216,9 +217,25 @@ COMMANDS = (
                     "help": "Zip the repo's window_config.json as it is, without measuring the data"}),
                 Option(("--workers",), "workers", {"type": int, "help": "Reading threads for the statistics"}),
             ), windows=True),
+    # convert-daily: format-2 window archives -> daily archives (each day stored once), every
+    # window checked to read back bit-identical. -ts/-it are the source's window settings.
+    Command("convert-daily", windows_master.convert_daily,
+            "Convert --data-root's (or --window-repo's) window archives into daily archives in --dest-root", (
+                Option(("--data-root",), "data_root", {
+                    "help": "Convert this data root's archives (default: download --window-repo one fire at a time)"}),
+                Option(("--dest-root",), "dest_root"),
+                Option(("--dest-repo",), "dest_repo", {
+                    "help": "Also upload the daily archives and window_config.json to this repo"}),
+                splits_option("Splits to convert"),
+                Option(("--block-days",), "block_days", {"type": int, "help": "Days per compressed block"}),
+                Option(("--compresslevel",), "compresslevel", {"type": int, "help": "Zstandard level"}),
+                Option(("--batch-size",), "batch_size", {"type": int, "help": "Fires per upload commit"}),
+                Option(("--overwrite",), "overwrite", {"action": "store_true",
+                                                       "help": "Convert fires whose daily archive exists"}),
+            ), windows=True),
     # stage: what the training notebooks run before training (a training root under --work-dir).
     Command("stage", windows_master.stage_training_data,
-            "Download/extract data.zip (and tessera.zip) under --work-dir and print the training root", (
+            "Download/extract data.zip (or a daily repo's archives) under --work-dir and print the training root", (
                 Option(("--tessera",), "use_tessera", {"action": "store_true",
                                                        "help": "Also stage TESSERA and drop excluded fires"}),
                 Option(("--attached-data-root",), "attached_data_root", {"help": "An extracted data root to use as is"}),
