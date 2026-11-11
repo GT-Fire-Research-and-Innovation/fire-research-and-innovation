@@ -55,12 +55,45 @@ python -m firepred.cli.dataset process -ts 6 -it 1          # raw GeoTIFFs -> wi
 python -m firepred.cli.dataset download -ts 6 -it 1 --data-root ./data
 python -m firepred.cli.dataset count-pixels --data-root ./data            # background/fire pixels per split
 python -m firepred.cli.dataset compute-normalization --data-root ./data   # per-channel mean/std of train/
+python -m firepred.cli.dataset zones --data-root ./data                   # optional: separate fires -> zones/
+python checks/fire_scale_sweep.py --data-root ./data --perturb            # choose zones' --scale-km
 ```
+`zones` splits each archive's targets into separate fires (new ignitions far away, fronts
+that break in two, fires that meet) and writes `<data-root>/zones/p<id>.npz` beside the
+archives, which stay unchanged. One distance, `--scale-km` (default 2.25), sets every
+threshold: gaps shorter than it are noise to bridge, longer gaps separate fires.
 Training reads `<data-root>/window_config.json` first and will not start without it.
 `download` copies it from the window repo; `upload-zip` packs it into data.zip; `--upload`
 on either statistics command also writes it back to the window repo. `rebuild-zip` does all of
 it: it downloads every archive, measures both statistics into `window_config.json` (local and
 repo), then zips and uploads data.zip.
+
+### Daily archives (format 3): the same windows, about 6x smaller
+A window archive stores every window whole, so with `-it 1` each day is stored up to 6 times.
+A daily archive stores each day once: terrain and land cover once per fire, the other channels in
+blocks of 6 days, and the targets as bits. Windows are cut from the days when they are read. Every
+reader (training, statistics, checks) gets the same arrays bit for bit, and the window list comes
+from the number of days, so nothing changes for training. A data root holds the archives once,
+with no data.zip and nothing to unzip.
+```
+python -m firepred.cli.dataset convert-daily -ts 6 -it 1 --data-root ./data --dest-root ./data-daily
+python -m firepred.cli.dataset --window-repo SamuelWu318/ts-satfire-processed-6-1 convert-daily -ts 6 -it 1 \
+    --dest-root ./data-daily --dest-repo SamuelWu318/ts-satfire-daily   # one fire on disk at a time
+python -m firepred.cli.dataset --window-repo SamuelWu318/ts-satfire-daily download --data-root ./data-daily
+```
+`convert-daily` reads every converted window and target back and compares them bit for bit with the
+source, then keeps the source's `window_config.json` statistics (they describe identical windows).
+`stage` downloads a repo without data.zip one archive at a time, straight into its split folder.
+- One daily archive gives windows of any length and stride whose target days it holds.
+  `open_fire(path, length, interval)` reads them; an archive converted from 6-1 windows serves
+  `-ts 6` and longer, at any `-it`. Training still uses the settings in `window_config.json`.
+- Code from before format 3 stops on these files with "unsupported format version 3".
+  Format-2 archives still read as before.
+- Zones work on daily archives unchanged, and the zone files are bit-identical to those built from the
+  window archives. Zones read only the targets and the night I4 of the first window, and a daily
+  archive gives both for windows starting every day, whatever `-it` it records. So `zones` needs
+  `-it 1` only on format-2 data. A zone file numbers windows by their first day: with daily data
+  trained at `-it k`, training window `w` is zone window `w x k`.
 
 ## Train and test
 ```

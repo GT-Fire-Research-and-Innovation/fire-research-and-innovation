@@ -81,8 +81,8 @@ def test_training_path_skips_dataset_building_dependencies():
 
 # Import order inside a subpackage: each module imports only modules listed before it.
 ORDER = {
-    "data": ["archive", "stats", "fire_dataset", "files", "tessera", "hub", "windows", "tessera_master",
-             "windows_master"],
+    "data": ["fire_records", "archive", "stats", "fire_dataset", "files", "tessera", "hub", "windows",
+             "fire_tracks", "fire_zones", "tessera_master", "windows_master", "zones_master"],
     "training": ["config", "accelerator", "flags", "objectives", "checkpoints", "tracker", "evaluator", "trainer",
                  "experiment"],
 }
@@ -124,7 +124,7 @@ def test_dataset_masters_import_without_geo_or_training_packages():
         "import sys\n"
         "for name in ('rasterio', 'pyproj', 'geotessera'):\n"
         "    sys.modules[name] = None  # importing them now raises ImportError\n"
-        "import firepred.data.windows_master, firepred.data.tessera_master\n"
+        "import firepred.data.windows_master, firepred.data.tessera_master, firepred.data.zones_master\n"
         "print(sorted({'torch', 'huggingface_hub', 'wandb', 'monai'} & set(sys.modules)))\n"
     )
     result = subprocess.run([sys.executable, "-c", code], cwd=PACKAGE.parent, capture_output=True, text=True)

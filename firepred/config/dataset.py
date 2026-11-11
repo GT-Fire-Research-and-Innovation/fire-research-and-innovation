@@ -258,6 +258,33 @@ SPLITS = ("train", "val", "test")
 # real archives).
 NPZ_COMPRESSLEVEL = 6
 
+# ----- Daily archives ----- #
+
+# Format version 3 stores each fire's days once instead of its windows: with
+# -it 1 every day sat in up to TS_LENGTH windows, and day t of window k is
+# bit-identical to day t-1 of window k+1 (the running maxima of channels 3, 4,
+# 6, 7 carry over from the fire's first day, never from a window's). Windows are
+# sliced from the days when read, for the archive's own window settings or any
+# other whose target days it holds. See firepred/data/archive.py. [ours]
+DAILY_FORMAT_VERSION = 3
+ARCHIVE_FORMAT_VERSIONS = (ARCHIVE_FORMAT_VERSION, DAILY_FORMAT_VERSION)
+
+# Days per compressed block of one channel. Compressing each day alone packs
+# about 2x worse (neighbouring days share most pixels); one block per channel
+# per fire packs tightest but makes every window decompress the whole fire.
+# 6 days matched the whole-fire size within 1% on real fires (30.4 -> 5.5 MB,
+# 12 windows) and decoded a window in about 15 ms, as fast as a format-2 window.
+DAILY_BLOCK_DAYS = 6
+
+# Daily archives are written once and read many times. Zstandard decodes at the
+# same speed at every level, so they use a high one: 19 packed real fires 13%
+# tighter than 6, for slower writing only.
+DAILY_COMPRESSLEVEL = 19
+
+# The Hugging Face repo of daily archives converted from the 6-1 window repo. One
+# repo serves every window length >= 6 and every stride. [ours]
+DAILY_REPO = "SamuelWu318/ts-satfire-daily"
+
 # ----- Prediction labels ----- #
 
 # The target is the pixels newly burned on the day after the input window:
@@ -283,6 +310,33 @@ VAL_IDS = [
     '24462788', '24462753', '24103571', '21998313', '21751303',
     '22141596', '21999381', '23301962', '22712904', '22713339',
 ]
+
+# ----- Fire split zones ----- #
+
+# One crop can hold several fires: a new ignition far from the main fire, or one
+# fire whose front breaks into two. data/fire_tracks.py follows each fire day by
+# day from the window archives' labels, and data/fire_zones.py turns that into
+# per-window zone files zones/p<id>.npz. One distance sets every threshold:
+# gaps smaller than it are noise to bridge, gaps larger than it separate two
+# fires. Smaller = more splits; larger = more cleaning. 2.25 km matches FIRED's
+# MTBS-tuned 2.3 km and stays above 2x the 0.8 km VIIRS edge-of-scan pixel. [ours]
+FIRE_SEPARATION_KM = 2.25
+VIIRS_PIXEL_KM = 0.375
+# Spread rates that turn the separation distance into days. Slow (0.2 km/day,
+# FIRED 2.3 km / 11 days and FEDS 1 km / 5 days agree) sets how long a quiet
+# fire is remembered; fast (1 km/day, FEDS forest buffer, Paugam 2026) sets how
+# many recent days count as a fire's front when testing for a split.
+SLOW_SPREAD_KM_PER_DAY = 0.2
+FAST_SPREAD_KM_PER_DAY = 1.0
+# Days a new fire must grow on (and a split must hold) before it counts.
+MIN_GROWTH_DAYS = 2
+# Before the first target day the labels say nothing, so night I4 hotter than
+# this marks early fire pixels ("seeds"; night background is about 290 K). They
+# count like burned pixels; scattered warm pixels never group into a fire.
+SEED_NIGHT_I4_KELVIN = 310.0
+NIGHT_I4_CHANNEL = 6
+ZONE_FORMAT_VERSION = 1
+ZONE_DIR = "zones"
 
 # ----- TESSERA embeddings ----- #
 
@@ -327,6 +381,7 @@ DEFAULT_DATA_ROOT = Path("data")
 # to the working directory unless a master function is given other paths.
 WORK_DIR = "."                 # temp/ and staging/ go here while building
 DATA_DIR = "./data"            # a local data root: train/, val/, test/ (+ tessera/)
+DAILY_DATA_DIR = "./data-daily"  # convert-daily writes daily archives here
 ROI_CACHE_DIR = "hf_roi"       # downloaded ROI CSVs
 DATA_ZIP = "data.zip"          # the window data bundle in a window repo
 TESSERA_ZIP = "tessera.zip"    # the TESSERA bundle in TESSERA_REPO
