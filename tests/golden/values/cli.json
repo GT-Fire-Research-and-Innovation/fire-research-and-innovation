@@ -381,7 +381,7 @@ true
 ],
 "it",
 1,
-"Days between window starts the windows were built with (optional; recorded only, not part of any name)",
+"Days between window starts (default 1; not part of any name). Daily archives are cut every -it days; window archives were built with it and are checked against window_config.json",
 null,
 null,
 "int",

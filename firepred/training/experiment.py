@@ -256,7 +256,8 @@ class FireData:
         Returns:
             ZoneLayout: the files, window steps and settings.
         """
-        return zone_layout(self.config.zones_dir, find_fire_sources(self.root / "train"), self.config.ts_length)
+        return zone_layout(self.config.zones_dir, find_fire_sources(self.root / "train"), self.config.ts_length,
+                           self.config.ts_interval)
 
     def dataset(self, split, augment, tessera_stats=None, tessera_maps=None, normalization=None):
         """Build the FireDataset of one split with the run's settings.
@@ -279,6 +280,7 @@ class FireData:
         return FireDataset(
             split_dir=self.root / split,
             ts_length=self.config.ts_length,
+            ts_interval=self.config.ts_interval,
             stored_channels=N_STORED_CHANNELS,
             target_is_single_day=True,
             augment=augment,

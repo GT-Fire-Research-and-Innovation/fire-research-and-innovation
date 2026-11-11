@@ -229,7 +229,8 @@ class RunConfig:
         num_heads (int): attention heads per stage.
         feature_size (int): the model's base feature width.
         ts_length (int): input days per window.
-        ts_interval (int): days between window starts (recorded only).
+        ts_interval (int): days between window starts: daily archives are cut at it, window
+            archives were built with it (checked, not part of any name).
         run_number (int): the run number (recorded only).
         seed (int): the random seed.
         epochs (int): training passes over the data.
@@ -280,7 +281,7 @@ class RunConfig:
     num_heads: int = 3
     feature_size: int = 36
     ts_length: int = TS_LENGTH
-    ts_interval: int = TS_INTERVAL     # -it: how the windows were built; recorded only
+    ts_interval: int = TS_INTERVAL     # -it: daily archives are cut at it; window archives were built with it
     run_number: int = 1                # -r: recorded only [released]
     seed: int = SEED
     epochs: int = DEFAULT_EPOCHS

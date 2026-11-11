@@ -53,7 +53,7 @@ def test_zones_from_daily_archives_match_window_archives(tmp_path):
 
 
 def test_daily_roots_need_no_daily_stride(tmp_path):
-    """Zones refuse format-2 windows that skip days but read a daily root at -it 1 whatever it records."""
+    """Zones refuse format-2 windows that skip days but read a daily root at -it 1 and any -ts it holds."""
     from firepred.data.archive import read_fire_labels
     from firepred.data.windows_master import convert_daily
     from firepred.data.zones_master import require_daily_windows
@@ -69,9 +69,11 @@ def test_daily_roots_need_no_daily_stride(tmp_path):
 
     with pytest.raises(ValueError, match="-it 1"):
         require_daily_windows(v2, 6, 3)
-    require_daily_windows(tmp_path / "v3", 6, 3)  # daily: only the length is checked
-    with pytest.raises(ValueError, match="-ts"):
-        require_daily_windows(tmp_path / "v3", 7, 3)
+    require_daily_windows(tmp_path / "v3", 6, 3)  # daily: no window setting is fixed
+    require_daily_windows(tmp_path / "v3", 7, 3)
     labels, label_sel = read_fire_labels(tmp_path / "v3" / "train" / "p1.npz", 6)
     assert labels.shape[0] == 7 and label_sel == 0
     assert labels.tobytes() == targets[6:13].tobytes()
+    assert read_fire_labels(tmp_path / "v3" / "train" / "p1.npz", 7)[0].tobytes() == targets[7:13].tobytes()
+    with pytest.raises(ValueError, match="cannot give -ts 5"):  # converted from 6-day windows: no day-5 target
+        read_fire_labels(tmp_path / "v3" / "train" / "p1.npz", 5)

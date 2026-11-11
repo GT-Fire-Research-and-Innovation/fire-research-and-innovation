@@ -15,7 +15,6 @@ from pathlib import Path
 import numpy as np
 
 from firepred.config.dataset import (
-    DAILY_FORMAT_VERSION,
     DATA_DIR,
     FIRE_SEPARATION_KM,
     SEED_NIGHT_I4_KELVIN,
@@ -57,8 +56,9 @@ def require_daily_windows(data_root, length=TS_LENGTH, interval=TS_INTERVAL):
     Burn days are rebuilt from the targets, so a window must start every day
     (interval 1), and the window length says which day each target is. The data
     root's window_config.json, when there is one, must record the same settings.
-    Daily archives (format 3) store every day, so they are read at interval 1
-    whatever -it they record; only the length must match.
+    Daily archives (format 3) store every day, so they are cut at -ts with
+    interval 1 whatever they were converted with; an archive that lacks the days
+    for -ts refuses it when read.
 
     Args:
         data_root (str | Path): the data root.
@@ -69,9 +69,8 @@ def require_daily_windows(data_root, length=TS_LENGTH, interval=TS_INTERVAL):
         ValueError: on an interval other than 1, or settings window_config.json contradicts.
     """
     config = WindowConfig.read(data_root)
-    if config.values.get("archive_format_version") == DAILY_FORMAT_VERSION:
-        config.check_windows(length)
-        return
+    if config.is_daily:
+        return  # daily archives are cut at -ts with -it 1 when read, and refuse what they cannot give
     if interval != 1:
         raise ValueError(f"Zones need a window starting every day (-it 1); got -it {interval}")
     config.check_windows(length, interval)

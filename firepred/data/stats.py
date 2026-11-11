@@ -42,6 +42,7 @@ from pathlib import Path
 import numpy as np
 
 from firepred.config.dataset import (
+    DAILY_FORMAT_VERSION,
     N_STORED_CHANNELS,
     STORED_CHANNEL_NAMES,
     WINDOW_CONFIG_DATASET_KEY,
@@ -530,8 +531,19 @@ class WindowConfig:
         values = read_window_config_file(data_root)
         return cls(window_config_path(data_root), values or {}, values is not None)
 
+    @property
+    def is_daily(self):
+        """Whether the data root holds daily archives (format 3), which store days rather than windows."""
+        return self.values.get("archive_format_version") == DAILY_FORMAT_VERSION
+
     def check_windows(self, ts_length, ts_interval=None):
-        """Refuse a run whose -ts/-it differ from the recorded window settings (unrecorded ones are not checked)."""
+        """Refuse a run whose -ts/-it differ from the recorded window settings (unrecorded ones are not checked).
+
+        A daily data root fixes no window: its archives are cut at the run's
+        -ts/-it when read, and each one refuses settings it lacks the days for.
+        """
+        if self.is_daily:
+            return self
         for key, flag, asked in (("ts_length", "-ts", ts_length), ("ts_interval", "-it", ts_interval)):
             recorded = self.values.get(key)
             if asked is not None and recorded is not None and int(recorded) != int(asked):

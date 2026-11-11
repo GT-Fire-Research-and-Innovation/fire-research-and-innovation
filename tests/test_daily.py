@@ -201,6 +201,40 @@ def test_daily_data_root_trains_like_the_window_archives(tmp_path):
     assert unzip_data_root(v3, tmp_path / "npy") == v3  # nothing to unzip
 
 
+def test_daily_root_fixes_no_window(tmp_path):
+    """A daily root's window_config.json pins no -ts/-it; a format-2 root's still does."""
+    from firepred.data.stats import WindowConfig
+
+    v2, v3, _ = make_roots(tmp_path, {"train": [("p1", 9)]})
+    config = json.loads((v3 / "window_config.json").read_text())
+    assert "ts_length" not in config and "ts_interval" not in config
+    assert config["notes"]["converted_from_windows"] == {"ts_length": 6, "ts_interval": 1}
+    assert WindowConfig.read(v3).check_windows(10, 3).is_daily
+    with pytest.raises(ValueError, match="-ts 10 does not match"):
+        WindowConfig.read(v2).check_windows(10, 3)
+
+
+def test_training_cuts_daily_archives_at_the_runs_windows(tmp_path):
+    """FireDataset cuts a daily archive at its -ts/-it, the same windows open_fire gives; missing days stop it."""
+    torch = pytest.importorskip("torch")
+    from firepred.data.fire_dataset import FireDataset
+
+    _, v3, _ = make_roots(tmp_path, {"train": [("p1", 12), ("p2", 7)]})
+    daily = v3 / "train" / "p1.npz"
+    for length, interval in ((7, 1), (6, 2), (8, 3)):
+        dataset = FireDataset(v3 / "train", ts_length=length, ts_interval=interval, target_is_single_day=True)
+        with open_fire(daily, length, interval) as archive:
+            windows = int(archive["num_windows"])
+            first = torch.from_numpy(archive["data_000"])
+        assert [w for path, w in dataset.index if path == daily] == list(range(windows))
+        assert dataset[0]["data"].shape[1] == length and first.shape[1] == length
+    # p2 holds 7 input days and targets for days 6 and 7: one 7-day window (target day 7), two 6-day ones.
+    sevens = FireDataset(v3 / "train", ts_length=7, target_is_single_day=True).index
+    assert [w for path, w in sevens if path.name == "p2.npz"] == [0]
+    with pytest.raises(ValueError, match="cannot give -ts 5"):
+        FireDataset(v3 / "train", ts_length=5, target_is_single_day=True)  # converted from 6-day windows
+
+
 def test_convert_daily_resumes_and_refuses_daily_sources(tmp_path):
     """A second run skips converted fires; a daily root cannot be converted again."""
     from firepred.data.windows_master import convert_daily

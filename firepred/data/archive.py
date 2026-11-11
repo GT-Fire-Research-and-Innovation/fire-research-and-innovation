@@ -344,24 +344,46 @@ def open_fire(source, length=None, interval=None):
         ValueError: if length or interval is given for a format-2 archive or folder,
             whose windows are fixed when built.
     """
-    if Path(source).is_dir():
-        fire = _FireFolder(source)
-    else:
-        fire = open_npz(source)
-        if DAILY_MARKER in fire.files:
-            try:
-                return DailyArchive(fire, source, length, interval)
-            except Exception:
-                fire.close()
-                raise
-    if length is not None or interval is not None:
+    fire = open_windows(source, length, interval)
+    if not isinstance(fire, DailyArchive) and (length is not None or interval is not None):
         if isinstance(fire, NpzArchive):
             fire.close()
         raise ValueError(f"{source} stores fixed windows; only daily archives take other window settings")
     return fire
 
 
-def index_fires(sources):
+def open_windows(source, length=None, interval=None):
+    """Open a fire's windows as a run reads them: a daily archive cut at the run's -ts/-it.
+
+    A daily archive stores days, not windows, so it gives windows of any length
+    and stride whose days it holds; training cuts them at its own -ts/-it.
+    Format-2 archives and unzipped folders store fixed windows and open as
+    built, whatever is asked (their shapes are checked when read).
+
+    Args:
+        source (str | Path): a p<id>.npz archive or unzipped p<id>/ folder.
+        length (int | None): input days per window for a daily archive (None: its own).
+        interval (int | None): days between window starts for a daily archive (None: its own).
+
+    Returns:
+        NpzArchive | _FireFolder | DailyArchive: the open fire.
+
+    Raises:
+        ValueError: if a daily archive lacks a day or target those windows need.
+    """
+    if Path(source).is_dir():
+        return _FireFolder(source)
+    fire = open_npz(source)
+    if DAILY_MARKER in fire.files:
+        try:
+            return DailyArchive(fire, source, length, interval)
+        except Exception:
+            fire.close()
+            raise
+    return fire
+
+
+def index_fires(sources, length=None, interval=None):
     """List every window of every fire, checking each archive on the way.
 
     The result is FireDataset's index: entry i says which fire and which window
@@ -371,6 +393,8 @@ def index_fires(sources):
 
     Args:
         sources (list[Path]): fire archives or folders (find_fire_sources).
+        length (int | None): input days per window; daily archives are cut at it (None: their own).
+        interval (int | None): days between window starts for daily archives (None: their own).
 
     Returns:
         list[tuple[Path, int]]: (fire source, window number) for every window, in order.
@@ -380,7 +404,7 @@ def index_fires(sources):
     """
     index = []
     for npz_path in sources:
-        with open_fire(npz_path) as archive:
+        with open_windows(npz_path, length, interval) as archive:
             # Reject old archives rather than silently loading the whole
             # `data` member and defeating lazy decompression.
             if "num_windows" not in archive.files:
@@ -1271,9 +1295,7 @@ def open_daily_windows(source, length=None):
     Returns:
         NpzArchive | _FireFolder | DailyArchive: the open fire.
     """
-    if length is not None and Path(source).is_file() and is_daily_archive(source):
-        return open_fire(source, length, 1)
-    return open_fire(source)
+    return open_windows(source, length, None if length is None else 1)
 
 
 def read_fire_labels(source, length=None):

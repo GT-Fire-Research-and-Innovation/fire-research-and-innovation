@@ -49,7 +49,7 @@ from firepred.data.archive import (
     fire_name,
     index_fires,
     load_tessera_maps,
-    open_fire,
+    open_windows,
     read_tessera,
     read_zone_header,
     read_zone_window,
@@ -224,7 +224,7 @@ def preprocess(x, one_hot_matrix, degree_channels=DEGREE_CHANNELS, landcover_cha
 NORMALIZE_SKIP = (*DEGREE_CHANNELS, LANDCOVER_CHANNEL)
 
 
-def read_window(source, window_idx, stored_channels, ts_length, target_is_single_day):
+def read_window(source, window_idx, stored_channels, ts_length, target_is_single_day, ts_interval=None):
     """Read exactly one window and its target from a fire archive, and check their shapes.
 
     Only this window's two members are decompressed. The target becomes two
@@ -238,6 +238,8 @@ def read_window(source, window_idx, stored_channels, ts_length, target_is_single
         ts_length (int): input days per window.
         target_is_single_day (bool): the target is one (H, W) next-day map rather
             than a (T, H, W) sequence.
+        ts_interval (int | None): days between window starts; a daily archive is cut
+            at ts_length and this (None: its own interval).
 
     Returns:
         tuple[torch.Tensor, torch.Tensor]: (x (27, T, H, W) float32, y (2, H, W) long).
@@ -246,7 +248,7 @@ def read_window(source, window_idx, stored_channels, ts_length, target_is_single
         ValueError: if the stored input or target has an unexpected shape.
     """
     data_key, label_key = f"data_{window_idx:03d}", f"label_{window_idx:03d}"
-    with open_fire(source) as archive:
+    with open_windows(source, ts_length, ts_interval) as archive:
         data_array = archive[data_key]
         label_array = archive[label_key]
 
@@ -362,7 +364,7 @@ class ZoneLayout:
     settings: object
 
 
-def zone_layout(zones_dir, sources, ts_length):
+def zone_layout(zones_dir, sources, ts_length, ts_interval=None):
     """Pair every fire with its zone file and check that each file fits its archive.
 
     Every file must exist, predict the same day as the windows (its first target
@@ -373,6 +375,7 @@ def zone_layout(zones_dir, sources, ts_length):
         zones_dir (str | Path): the folder of zones/p<id>.npz files.
         sources (list[Path]): the split's fire archives.
         ts_length (int): input days per window.
+        ts_interval (int | None): days between window starts of daily archives (None: their own).
 
     Returns:
         ZoneLayout: the files, the window steps and the shared settings.
@@ -385,7 +388,7 @@ def zone_layout(zones_dir, sources, ts_length):
     for source in sources:
         name = fire_name(source)
         header = read_zone_header(files[name])
-        with open_fire(source) as archive:
+        with open_windows(source, ts_length, ts_interval) as archive:
             windows = int(np.asarray(archive["num_windows"]).item())
             stride = getattr(archive, "interval", 1)  # daily archives only; others are read as built
         if header.first_label_day != ts_length:
@@ -430,6 +433,7 @@ class FireDataset(Dataset):
         lazy_tessera=None,
         normalization=None,
         zones_dir=None,
+        ts_interval=None,
     ):
         """Find a split's fires, read their TESSERA maps if asked, and index every window.
 
@@ -458,6 +462,10 @@ class FireDataset(Dataset):
                 paper's NORMALIZATION_MEAN/STD.
             zones_dir (str | Path | None): folder of zones/p<id>.npz files; each item
                 then carries its window's zone maps (training split only).
+            ts_interval (int | None): days between window starts. Daily archives store
+                days, so they are cut into windows of ts_length every ts_interval days
+                (None: the interval they were converted with). Format-2 archives hold
+                fixed windows and ignore it.
 
         Raises:
             RuntimeError: if the split has no fires or windows, or a TESSERA or zone file is missing.
@@ -497,18 +505,19 @@ class FireDataset(Dataset):
             raise ValueError(f"normalization needs {stored_channels} means and stds, got "
                              f"{len(self.mean)} and {len(self.std)}")
         self.ts_length = ts_length
+        self.ts_interval = ts_interval
         self.target_is_single_day = target_is_single_day
         self.augment = augment
 
         # [ours] the global index: one (fire, window number) entry per window
         # across all fires (data/archive.index_fires), so PyTorch can shuffle
         # windows across fires.
-        self.index = index_fires(self.sources)
+        self.index = index_fires(self.sources, ts_length, ts_interval)
         if not self.index:
             raise RuntimeError(f"NPZ files in {self.split_dir} contain no temporal windows")
         self.one_hot_matrix = landcover_one_hot_matrix()
         # [ours] fire split zones: only headers now; each item reads its window's two maps.
-        self.zones = zone_layout(zones_dir, self.sources, ts_length) if zones_dir is not None else None
+        self.zones = zone_layout(zones_dir, self.sources, ts_length, ts_interval) if zones_dir is not None else None
 
     def windows_by_fire(self):
         """Group the dataset's windows by fire."""
@@ -536,7 +545,8 @@ class FireDataset(Dataset):
             and "zones": (2, H, W) int32 with zone files.
         """
         source, window_idx = self.index[idx]
-        x, y = read_window(source, window_idx, self.stored_channels, self.ts_length, self.target_is_single_day)
+        x, y = read_window(source, window_idx, self.stored_channels, self.ts_length, self.target_is_single_day,
+                           self.ts_interval)
         static = None
         if self.tessera_dir is not None:
             static = torch.from_numpy(self.static_tessera(fire_name(source)))

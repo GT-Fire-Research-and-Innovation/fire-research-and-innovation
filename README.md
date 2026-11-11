@@ -89,7 +89,12 @@ source, then keeps the source's `window_config.json` statistics (they describe i
 `stage` downloads a repo without data.zip one archive at a time, straight into its split folder.
 - One daily archive gives windows of any length and stride whose target days it holds.
   `open_fire(path, length, interval)` reads them; an archive converted from 6-1 windows serves
-  `-ts 6` and longer, at any `-it`. Training still uses the settings in `window_config.json`.
+  `-ts 6` and longer, at any `-it`. A daily root's `window_config.json` fixes no window: training
+  cuts each archive at the run's `-ts`/`-it` (`-it` defaults to 1), and an archive without the days
+  for them stops the run. The file keeps the source's settings under `notes.converted_from_windows`;
+  its pixel counts and normalization were measured on those windows and are used as they are at
+  other `-ts`/`-it` (each day weighted by how many source windows held it). Zone files are
+  built per `-ts`: `dataset zones -ts N` for training at `-ts N`.
 - Code from before format 3 stops on these files with "unsupported format version 3".
   Format-2 archives still read as before.
 - Zones work on daily archives unchanged, and the zone files are bit-identical to those built from the

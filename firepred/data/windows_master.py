@@ -1036,11 +1036,19 @@ class DailyConversionReport:
                 f"{len(self.present)} already there; {len(self.uploaded)} files uploaded")
 
 
+# Window settings a daily data root does not fix: training cuts its windows at the run's -ts/-it.
+DAILY_UNFIXED_SETTINGS = ("ts_length", "ts_interval")
+
+
 def daily_window_config(config, source, block_days, compresslevel):
     """Give a daily data root's window_config.json: the source's settings and statistics, format version 3.
 
-    Every window reads back bit-identical, so the source's pixel counts and
-    normalization still describe the data. The notes record the conversion.
+    A daily archive stores days, not windows, so the file records no window
+    length or interval: training cuts windows at its own -ts/-it (any whose days
+    an archive holds). The source's ts_length/ts_interval move to the notes. The
+    source's pixel counts and normalization were measured on its windows, which
+    read back bit-identical; they still describe the data at other -ts/-it, with
+    each day weighted by how many of those windows held it.
 
     Args:
         config (dict): the source's window_config.json.
@@ -1056,10 +1064,14 @@ def daily_window_config(config, source, block_days, compresslevel):
         "npz_compresslevel": compresslevel,
         "daily_block_days": block_days,
         "converted_from": source,
+        "converted_from_windows": {key: config[key] for key in DAILY_UNFIXED_SETTINGS if key in config},
         "daily_code_version": files.code_version(),
         "archive_format_version": "3 = one frame per day; windows are sliced when read (data/archive.py)",
+        "windows": "not fixed: training cuts windows at its -ts/-it from the days each archive holds; "
+                   "statistics were measured on the source's windows (converted_from_windows)",
     })
-    return {**config, "archive_format_version": DAILY_FORMAT_VERSION, "notes": notes}
+    settings = {key: value for key, value in config.items() if key not in DAILY_UNFIXED_SETTINGS}
+    return {**settings, "archive_format_version": DAILY_FORMAT_VERSION, "notes": notes}
 
 
 def daily_sources(token, window_repo, data_root, splits):

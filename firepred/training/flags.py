@@ -147,8 +147,9 @@ FLAGS = (
     Flag(("-nc",), "expected_channels", {"type": int, "help": "Model input channels after preprocessing: 43, or 172 "
                                                              "with --tessera. Derived when omitted; checked when given."}),
     Flag(("-ts",), "ts_length", {"type": int, "required": True, "help": "Time-series length"}),
-    Flag(("-it",), "ts_interval", {"type": int, "help": "Days between window starts the windows were built with "
-                                   "(optional; recorded only, not part of any name)"}),
+    Flag(("-it",), "ts_interval", {"type": int, "help": "Days between window starts (default 1; not part of any "
+                                   "name). Daily archives are cut every -it days; window archives were built with "
+                                   "it and are checked against window_config.json"}),
     Flag(("-test",), "test_only", {"dest": "run_test", "action": "store_true",
                                    "help": "Run test evaluation instead of training"}),
     Flag(("-seed",), "seed", {"type": int}),
