@@ -27,6 +27,7 @@ __pycache__/
 
 # Training outputs (python -m firepred.cli.train run from the repo root)
 /wandb/
+/logs/
 /evaluation_plot/
 /saved_models/
 

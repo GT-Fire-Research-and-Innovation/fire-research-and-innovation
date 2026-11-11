@@ -87,6 +87,10 @@ null
 false
 ],
 [
+"resume",
+null
+],
+[
 "load_epoch",
 null
 ],
@@ -609,6 +613,25 @@ false,
 "Allow full unpickling of the -test checkpoint (it can run code stored in the file). Needed only for checkpoints with TESSERA statistics on torch < 2.4; use only for checkpoints you or your runs created",
 null,
 0,
+"None",
+null,
+false
+]
+],
+[
+"tuple",
+[
+[
+"tuple",
+[
+"--resume"
+]
+],
+"resume",
+null,
+"NEW: a run-state file. Training continues from it when it exists and rewrites it after every epoch (weights, optimizer, schedule, kept checkpoints, random generators, W&B run id), so a job stopped by a time limit continues when the same command runs again. Refused if the run's settings differ",
+null,
+null,
 "None",
 null,
 false

@@ -210,6 +210,12 @@
         "cli"
       ],
       "reason": "daily archives: new dataset subcommand convert-daily; stage gets --src-repo for daily repos without data.zip"
+    },
+    {
+      "groups": [
+        "cli"
+      ],
+      "reason": "train: --resume (run state rewritten every epoch)"
     }
   ]
 }

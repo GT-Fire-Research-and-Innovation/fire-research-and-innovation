@@ -94,7 +94,7 @@ class Tracker:
                 labels[f"{prefix}_ce_loss"] = f"{split} Weighted Cross-Entropy Loss — Next-Day Fire Growth"
         return labels
 
-    def __init__(self, config, device, window_config=None):
+    def __init__(self, config, device, window_config=None, resume_id=None):
         """Remember the run's settings; nothing is sent to W&B yet.
 
         The chart names follow from the loss. W&B is imported on entering the block.
@@ -104,8 +104,10 @@ class Tracker:
             device (Device | torch.device): the training device.
             window_config (WindowConfig | None): the data root's window_config.json, whose
                 dataset and window settings go into the W&B config.
+            resume_id (str | None): a W&B run to continue (--resume), instead of a new one.
         """
         self.config = config
+        self.resume_id = resume_id
         self.device = Device.of(device)
         self.window_config = window_config
         self.labels = self.chart_labels(config.loss.name)
@@ -142,8 +144,10 @@ class Tracker:
         self.wandb = wandb
         wandb.login()
         # Runs that used official values in place of window_config.json are tagged, besides config.defaults_used.
+        # A resumed run (--resume) continues its W&B run, so its charts carry on from the last epoch.
+        resume = {"id": self.resume_id, "resume": "allow"} if self.resume_id else {}
         wandb.init(project=WANDB_PROJECT, entity=self.config.wandb_entity,
-                   tags=[DEFAULTS_TAG] if self.config.defaults_used else None)
+                   tags=[DEFAULTS_TAG] if self.config.defaults_used else None, **resume)
         if not self.config.test_only:
             epoch = self.labels["epoch"]
             wandb.define_metric(epoch)

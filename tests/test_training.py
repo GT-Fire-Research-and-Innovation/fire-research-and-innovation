@@ -127,7 +127,7 @@ def test_names_never_change():
 
 def test_command_line_round_trips_through_run_config():
     """argv_for(config) parses back to the same RunConfig, so notebooks can launch exactly a config."""
-    for extra in ([], ["--tessera", "--loss", "dice", "--lr-schedule", "cosine"],
+    for extra in ([], ["--tessera", "--loss", "dice", "--lr-schedule", "cosine"], ["--resume", "runs/a.state"],
                   ["-test", "--checkpoint", "x.pth", "--model-option", "depth=2", "-nc", "43", "--no-test-after-train"]):
         config = config_from_args(parse_args(BASE + extra))
         assert config_from_args(parse_args(argv_for(config))) == config
@@ -287,3 +287,57 @@ def test_loader_without_config_reads_but_refuses_to_check(tmp_path):
     assert CheckpointLoader("cpu").read(path) == {"use_tessera": False}
     with pytest.raises(ValueError, match="with a config"):
         CheckpointLoader("cpu").load(path)
+
+
+def test_resume_continues_like_an_uninterrupted_run(data_root, tmp_path, monkeypatch):
+    """--resume: a run stopped after epoch 1 and started again ends with the same weights, in the same W&B run."""
+    import fake_wandb
+    import tiny_model  # noqa: F401  registers "tiny3d"
+
+    from firepred.training import experiment
+    from firepred.training.checkpoints import RunState
+
+    monkeypatch.setitem(__import__("sys").modules, "wandb", fake_wandb)
+    monkeypatch.chdir(tmp_path)
+    started = []
+    real_init = fake_wandb.init
+    monkeypatch.setattr(fake_wandb, "init", lambda *a, **k: (started.append(k.get("id")), real_init(*a, **k))[1])
+    root, csv_path = data_root
+
+    def run(name, stop_at=None):
+        """Train 3 epochs with --resume <name>.state; stop_at raises at the start of that 0-based epoch."""
+        (tmp_path / name).mkdir(exist_ok=True)
+        monkeypatch.setenv("FAKE_WANDB_DIR", str(tmp_path / name))
+        config = RunConfig("tiny3d", batch_size=1, epochs=3, num_workers=0, data_root=root, test_csv=csv_path,
+                           plot_dir=tmp_path / "plots", test_after_train=False, resume=tmp_path / f"{name}.state")
+        real_epoch = experiment.Trainer.train_epoch
+
+        def train_epoch(trainer, loader, epoch):
+            """The real epoch, except the one where the job's time runs out."""
+            if epoch == stop_at:
+                raise TimeoutError("time limit")
+            return real_epoch(trainer, loader, epoch)
+
+        monkeypatch.setattr(experiment.Trainer, "train_epoch", train_epoch)
+        try:
+            return experiment.Experiment(config).run(), config
+        finally:
+            monkeypatch.setattr(experiment.Trainer, "train_epoch", real_epoch)
+
+    whole, config = run("whole")
+    with pytest.raises(TimeoutError):
+        run("parts", stop_at=1)
+    assert RunState(tmp_path / "parts.state").read("cpu", config)["epoch"] == 0  # epoch 1 of 3 was saved
+    parts, _ = run("parts")
+    assert started == [None, None, "fakerun1"]  # the second job continued the first job's W&B run
+
+    a = RunState(tmp_path / "whole.state").read("cpu", config)
+    b = RunState(tmp_path / "parts.state").read("cpu", replace(config, resume=tmp_path / "parts.state"))
+    assert a["epoch"] == b["epoch"] == 2
+    for key, tensor in a["trainer"]["model"].items():
+        assert torch.equal(tensor, b["trainer"]["model"][key]), key
+    assert [loss for loss, _ in a["kept_checkpoints"]] == [loss for loss, _ in b["kept_checkpoints"]]
+    assert whole.checkpoint.name == parts.checkpoint.name
+
+    with pytest.raises(ValueError, match="learning_rate"):
+        RunState(tmp_path / "parts.state").read("cpu", replace(config, learning_rate=0.5))

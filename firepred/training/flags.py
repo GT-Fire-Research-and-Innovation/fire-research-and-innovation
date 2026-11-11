@@ -175,6 +175,11 @@ FLAGS = (
         "action": "store_true", "help": "Allow full unpickling of the -test checkpoint (it can run code stored in the "
         "file). Needed only for checkpoints with TESSERA statistics on torch < 2.4; use only for checkpoints you or "
         "your runs created"}),
+    Flag(("--resume",), "resume", {
+        "help": "NEW: a run-state file. Training continues from it when it exists and rewrites it after every "
+        "epoch (weights, optimizer, schedule, kept checkpoints, random generators, W&B run id), so a job stopped "
+        "by a time limit continues when the same command runs again. Refused if the run's settings differ"},
+         default=None, to_config=path_or_omit),
     Flag(("--load-epoch",), "load_epoch", {"type": int, "help": "-test without --checkpoint: the epoch of the "
                                            "checkpoint to look for in the W&B run folders (default: any epoch; "
                                            "the newest matching file is used)"}),
