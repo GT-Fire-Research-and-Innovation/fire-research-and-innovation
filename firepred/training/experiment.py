@@ -14,7 +14,9 @@ back into an earlier step:
        statistics from window_config.json, or the paper's) and, with
        --ce-weight auto, the class weights from its pixel counts, in the
        RunConfig, before anything records them. When the file lacks them, the
-       official TS-SatFire values stand in and RunConfig.defaults_used says why
+       official TS-SatFire values stand in and RunConfig.defaults_used says why;
+       with --zones-dir, the zone files are checked against the training archives
+       and their settings recorded in the RunConfig too
     4. the Tracker (the W&B run), whose config also records the dataset and
        window settings from window_config.json
     5. the model (registry), wrapped in DataParallel
@@ -40,7 +42,7 @@ from firepred.data.archive import (
     load_tessera_maps,
     unzip_data_root,
 )
-from firepred.data.fire_dataset import FireDataset, make_dataloader, validate_dataset_output
+from firepred.data.fire_dataset import FireDataset, make_dataloader, validate_dataset_output, zone_layout
 from firepred.data.stats import MissingStatistics, WindowConfig
 from firepred.models.registry import build_model
 from firepred.training.accelerator import Device
@@ -245,11 +247,23 @@ class FireData:
         """
         return bool(find_fire_sources(self.root / "test"))
 
+    def zone_layout(self):
+        """Check the run's zone files against the training fires and give their layout.
+
+        Each training fire needs a zone file that fits its archive, and all of
+        them must share one set of settings. Only the training split has zones.
+
+        Returns:
+            ZoneLayout: the files, window steps and settings.
+        """
+        return zone_layout(self.config.zones_dir, find_fire_sources(self.root / "train"), self.config.ts_length)
+
     def dataset(self, split, augment, tessera_stats=None, tessera_maps=None, normalization=None):
         """Build the FireDataset of one split with the run's settings.
 
         Every split is built with the same settings. TESSERA statistics and
-        maps are passed only in TESSERA mode.
+        maps are passed only in TESSERA mode. Zone maps (--zones-dir) are read
+        for the training split only, so validation and test score whole windows.
 
         Args:
             split (str): "train", "val" or "test".
@@ -273,6 +287,7 @@ class FireData:
             tessera_maps=tessera_maps,
             cells_per_pixel=self.config.tessera_cells,
             normalization=normalization if normalization is not None else self.config.normalization_stats,
+            zones_dir=self.config.zones_dir if split == "train" else None,
         )
 
     def loader(self, dataset, shuffle, seed_offset):
@@ -530,6 +545,11 @@ class Experiment:
         if config.needs_normalization_stats or config.needs_label_counts:
             config = self.config = with_data_statistics(config, window_config, data.root / "train")
             data = FireData(config, data.root, data.tessera_dir)
+        if config.zones_dir is not None and not config.test_only:
+            # Checked now, so a missing or misfit zone file stops the run before W&B starts.
+            config = self.config = config.with_zone_settings(data.zone_layout().settings)
+            data = FireData(config, data.root, data.tessera_dir)
+            print(f"Fire split zones: {config.zones_dir} ({dict(config.zone_settings)['scale_km']:g} km)")
         if config.test_only:
             # Found before W&B starts, so a missing checkpoint leaves no empty run behind.
             checkpoint = config.checkpoint or find_test_checkpoint(config.test_checkpoint_pattern)

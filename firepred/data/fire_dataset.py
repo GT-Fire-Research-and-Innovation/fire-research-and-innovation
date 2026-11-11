@@ -16,8 +16,14 @@ embedding plus a validity mask, and batch_inputs repeats it across the T days on
 GPU. With k x k TESSERA cells per VIIRS pixel (k > 1) "static" is (129, 256 k, 256 k)
 float16 read from its file for every window (a k = 5 map is about 400 MiB, too large to
 keep per fire); the model's TESSERA stem compresses it to the VIIRS grid.
+
+With zone files (zones_dir, training split only) an item also carries "zones":
+(2, 256, 256) int32, the window's zones and target owners (data/fire_zones.py),
+flipped and rotated with the target. The loss splits the window into one sample per
+fire from them (training/objectives.fire_samples); the inputs never change.
 """
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -45,8 +51,11 @@ from firepred.data.archive import (
     load_tessera_maps,
     open_fire,
     read_tessera,
+    read_zone_header,
+    read_zone_window,
     static_map,
     tessera_paths,
+    zone_paths,
 )
 
 
@@ -276,12 +285,13 @@ def read_window(source, window_idx, stored_channels, ts_length, target_is_single
 
 
 def prepare_window(x, y, one_hot_matrix, static=None, train=False, rng=np.random,
-                   mean=NORMALIZATION_MEAN, std=NORMALIZATION_STD):
+                   mean=NORMALIZATION_MEAN, std=NORMALIZATION_STD, zones=None):
     """Turn a read window into model input: standardize, (training only) augment, encode.
 
     The steps run in the released order: normalize before augmentation, then
     the angles as numbers in -1..1 and one-hot land cover. Every step returns
-    new tensors, so x and y are unchanged.
+    new tensors, so x and y are unchanged. Zone maps ride along as extra target
+    channels, so every flip and rotation moves them exactly as it moves the target.
 
     Args:
         x (torch.Tensor): the stored window, (27, T, H, W).
@@ -292,20 +302,26 @@ def prepare_window(x, y, one_hot_matrix, static=None, train=False, rng=np.random
         rng (np.random.Generator | module): where augmentation draws come from.
         mean (Sequence[float]): per-channel means (default: the paper's).
         std (Sequence[float]): per-channel standard deviations (default: the paper's).
+        zones (torch.Tensor | None): the window's (zones, target owners), (2, H, W), or None.
 
     Returns:
         dict[str, torch.Tensor]: {"data": (43, T, H, W), "labels": (2, H, W)}, plus
-        "static": (129, H, W) when a TESSERA map is given.
+        "static": (129, H, W) when a TESSERA map is given and "zones": (2, H, W) int32
+        when zone maps are given.
     """
+    if zones is not None:
+        y = torch.cat((y, zones.long()))  # channels 2 and 3: zones and target owners
     x = normalize(x, mean, std, skip=NORMALIZE_SKIP)
     # [released] augment training examples but leave validation unchanged.
     if train:
         x, y, static = augment(x, y, static, list(DEGREE_CHANNELS), rng=rng)
     # Degrees -> -1..1 (observed wind [ours]; the others sine [released]), land cover -> one-hot.
     x = preprocess(x, one_hot_matrix, list(DEGREE_CHANNELS))
-    sample = {"data": x, "labels": y}
+    sample = {"data": x, "labels": y[:2]}
     if static is not None:
         sample["static"] = static
+    if zones is not None:
+        sample["zones"] = y[2:].int()
     return sample
 
 
@@ -325,6 +341,64 @@ def group_by_fire(index):
     for dataset_index, (archive_path, _) in enumerate(index):
         groups.setdefault(fire_name(archive_path).removeprefix("p"), []).append(dataset_index)
     return groups
+
+
+@dataclass(frozen=True)
+class ZoneLayout:
+    """Know where each fire's zone file is and which zone window belongs to each of its windows.
+
+    A zone file has a window for every day. A daily archive read at -it k
+    (format 3) has a window every k days, so its window w is zone window w x k;
+    other archives step 1.
+
+    Attributes:
+        files (dict[str, Path]): {"p<id>": zone file}.
+        strides (dict[str, int]): {"p<id>": zone windows per archive window}.
+        settings (SplitSettings): the thresholds every zone file was built with.
+    """
+
+    files: dict
+    strides: dict
+    settings: object
+
+
+def zone_layout(zones_dir, sources, ts_length):
+    """Pair every fire with its zone file and check that each file fits its archive.
+
+    Every file must exist, predict the same day as the windows (its first target
+    day is the window length), cover every window and share one set of
+    settings, so zones of two distances never mix. Only headers are read here.
+
+    Args:
+        zones_dir (str | Path): the folder of zones/p<id>.npz files.
+        sources (list[Path]): the split's fire archives.
+        ts_length (int): input days per window.
+
+    Returns:
+        ZoneLayout: the files, the window steps and the shared settings.
+
+    Raises:
+        RuntimeError: if a fire has no zone file.
+        ValueError: if a file does not fit its archive, or two files were built differently.
+    """
+    files, strides, settings = zone_paths(zones_dir, sources), {}, None
+    for source in sources:
+        name = fire_name(source)
+        header = read_zone_header(files[name])
+        with open_fire(source) as archive:
+            windows = int(np.asarray(archive["num_windows"]).item())
+            stride = getattr(archive, "interval", 1)  # daily archives only; others are read as built
+        if header.first_label_day != ts_length:
+            raise ValueError(f"{files[name]} was built for {header.first_label_day}-day windows, not -ts {ts_length}")
+        if (stride == 1 and header.num_windows != windows) or header.num_windows < (windows - 1) * stride + 1:
+            raise ValueError(f"{files[name]} has {header.num_windows} windows; {source} needs one for each of its "
+                             f"{windows} windows every {stride} days: rebuild the zone files from these archives")
+        if settings is not None and header.settings != settings:
+            raise ValueError(f"{files[name]} was built with scale_km {header.settings.scale_km}, other files with "
+                             f"{settings.scale_km}: use one zones folder per distance")
+        settings = header.settings
+        strides[name] = stride
+    return ZoneLayout(files, strides, settings)
 
 
 # ----- FireDataset ----- #
@@ -352,12 +426,14 @@ class FireDataset(Dataset):
         cells_per_pixel=TESSERA_CELLS_PER_PIXEL,
         lazy_tessera=None,
         normalization=None,
+        zones_dir=None,
     ):
         """Find a split's fires, read their TESSERA maps if asked, and index every window.
 
         All checks happen here, before training: the split must have fires, every
-        fire needs a TESSERA file in TESSERA mode, and every archive must be in the
-        current format. Windows themselves are read only when asked for.
+        fire needs a TESSERA file in TESSERA mode (and a fitting zone file with
+        zones_dir), and every archive must be in the current format. Windows
+        themselves are read only when asked for.
 
         Args:
             split_dir (str | Path): a split folder of p<id>.npz archives or p<id>/ folders.
@@ -377,10 +453,12 @@ class FireDataset(Dataset):
             normalization (tuple[Sequence[float], Sequence[float]] | None): the
                 (mean, std) every window is standardized with; None uses the
                 paper's NORMALIZATION_MEAN/STD.
+            zones_dir (str | Path | None): folder of zones/p<id>.npz files; each item
+                then carries its window's zone maps (training split only).
 
         Raises:
-            RuntimeError: if the split has no fires or windows, or a TESSERA file is missing.
-            ValueError: if tessera_dir is given without tessera_stats.
+            RuntimeError: if the split has no fires or windows, or a TESSERA or zone file is missing.
+            ValueError: if tessera_dir is given without tessera_stats, or a zone file does not fit.
         """
         # [ours] data and labels live together in version-2 archives, or in
         # unzipped p<id>/ folders of the same members.
@@ -426,6 +504,8 @@ class FireDataset(Dataset):
         if not self.index:
             raise RuntimeError(f"NPZ files in {self.split_dir} contain no temporal windows")
         self.one_hot_matrix = landcover_one_hot_matrix()
+        # [ours] fire split zones: only headers now; each item reads its window's two maps.
+        self.zones = zone_layout(zones_dir, self.sources, ts_length) if zones_dir is not None else None
 
     def windows_by_fire(self):
         """Group the dataset's windows by fire."""
@@ -449,19 +529,48 @@ class FireDataset(Dataset):
 
         Returns:
             dict[str, torch.Tensor]: {"data": (43, T, H, W), "labels": (2, H, W)}, plus
-            "static": (129, H, W), or (129, k H, k W) float16 when lazy, in TESSERA mode.
+            "static": (129, H, W), or (129, k H, k W) float16 when lazy, in TESSERA mode,
+            and "zones": (2, H, W) int32 with zone files.
         """
         source, window_idx = self.index[idx]
         x, y = read_window(source, window_idx, self.stored_channels, self.ts_length, self.target_is_single_day)
         static = None
         if self.tessera_dir is not None:
             static = torch.from_numpy(self.static_tessera(fire_name(source)))
-        sample = prepare_window(x, y, self.one_hot_matrix, static, self.augment, mean=self.mean, std=self.std)
+        zones = self.window_zones(source, window_idx, y) if self.zones is not None else None
+        sample = prepare_window(x, y, self.one_hot_matrix, static, self.augment, mean=self.mean, std=self.std,
+                                zones=zones)
         if self.lazy_tessera and "static" in sample:
             # float16 halves the host memory of a large map (the mask, 0 or 1, stays exact);
             # it is cast only after augmentation, which needs float32 on the CPU.
             sample["static"] = sample["static"].half()
         return sample
+
+    def window_zones(self, source, window_idx, y):
+        """Read one window's zone maps and check that they describe its target.
+
+        The new pixels the zone file assigns must be exactly the target's fire
+        pixels. Zone files built from other archives, or read at the wrong step,
+        therefore fail here instead of training on misplaced fires.
+
+        Args:
+            source (Path): the window's fire archive.
+            window_idx (int): the window's number inside the fire.
+            y (torch.Tensor): the window's two-channel target, (2, H, W).
+
+        Returns:
+            torch.Tensor: (2, H, W) int32, the zones and the target owners.
+
+        Raises:
+            ValueError: if the zone file's new pixels are not the target's.
+        """
+        name = fire_name(source)
+        zone_window = window_idx * self.zones.strides[name]
+        zones, owners = read_zone_window(self.zones.files[name], zone_window)
+        if not np.array_equal(owners != 0, y[1].numpy() > 0):
+            raise ValueError(f"{self.zones.files[name]} window {zone_window} does not match the target of {source} "
+                             f"window {window_idx}: rebuild the zone files from these archives")
+        return torch.from_numpy(np.stack((zones, owners)).astype(np.int32))
 
     def static_tessera(self, name):
         """Give one fire's normalized TESSERA map and validity mask; lazy (k > 1) maps are read from their file now."""

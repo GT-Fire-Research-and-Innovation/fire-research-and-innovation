@@ -210,6 +210,12 @@
         "cli"
       ],
       "reason": "fire-split-zones: new dataset subcommand zones; daily archives: new subcommand convert-daily, stage gets --src-repo for daily repos without data.zip"
+    },
+    {
+      "groups": [
+        "cli"
+      ],
+      "reason": "fire-split-zones: --zones-dir (train and check data) trains one sample per fire of each window from zone files"
     }
   ]
 }

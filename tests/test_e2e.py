@@ -229,6 +229,25 @@ def test_auto_ce_weight_run(e2e_root, tmp_path):
     assert all(math.isfinite(log[VAL_LOSS_DICECE]) for log in finished.val_logs())
 
 
+def test_zone_run_trains_per_fire_and_says_so(e2e_root, dicece_run, tmp_path):
+    """--zones-dir trains one sample per fire: its own names, recorded zones, a different loss, whole-window scores."""
+    from test_zone_training import label_zone_files
+
+    zones_dir = label_zone_files(e2e_root[0] / "train", tmp_path / "zones")
+    flags = base_flags() + data_flags(e2e_root) + [
+        "--loss", "dicece", "--zones-dir", str(zones_dir), "--no-test-after-train"]
+    finished = run(tmp_path / "run", flags)
+    recorded = finished.named("config.update")[0][1][0]
+    assert recorded["zones_dir"] == str(zones_dir) and recorded["zone_settings"]["scale_km"] == 2.25
+    assert finished.checkpoints and all("_zones_dicece" in path.name for path in finished.checkpoints)
+    assert finished.checkpoint()["zones"]["scale_km"] == 2.25
+    # The same seed and data, but per-fire targets: training differs, validation still scores whole windows.
+    train_loss = "Training Weighted Dice + Cross-Entropy Loss — Next-Day Fire Growth"
+    assert finished.train_logs()[0][train_loss] != dicece_run.train_logs()[0][train_loss]
+    for log in finished.train_logs() + finished.val_logs():
+        assert_finite_scores(log)
+
+
 def test_worker_cosine_run_without_final_test(e2e_root, tmp_path):
     """Two loader workers and a cosine schedule; --no-test-after-train skips the final test."""
     flags = base_flags() + data_flags(e2e_root) + [

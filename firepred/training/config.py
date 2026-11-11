@@ -18,7 +18,7 @@ change. A run with the paper's Dice+CE loss and TESSERA inputs, for example:
 """
 
 import glob
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
 from firepred.config.dataset import (
@@ -242,6 +242,11 @@ class RunConfig:
         tessera_min_coverage (float): TESSERA pixels below this coverage are masked.
         tessera_cells_per_pixel (int): TESSERA cells per VIIRS pixel side in the files;
             above 1 a learned stem compresses them and maps are read per window.
+        zones_dir (Path | None): zone files (data/fire_zones.py) to train one sample per fire
+            of each window from; None trains on whole windows. Validation and test score
+            whole windows either way.
+        zone_settings (tuple[tuple[str, object], ...]): the zone files' SplitSettings, filled in
+            (with_zone_settings) before W&B starts; recorded only.
         normalization (str): where the input statistics come from, "window-config" or "paper".
         normalization_stats (tuple[tuple[float, ...], tuple[float, ...]] | None): the
             (mean, std) the run standardizes with; filled in (with_normalization_stats)
@@ -287,6 +292,8 @@ class RunConfig:
     tessera_dir: Path = None
     tessera_min_coverage: float = TESSERA_MIN_COVERAGE
     tessera_cells_per_pixel: int = TESSERA_CELLS_PER_PIXEL
+    zones_dir: Path = None             # [ours] fire split zones: one training sample per fire
+    zone_settings: tuple = ()          # the zone files' SplitSettings, filled in before W&B starts
     normalization: str = NORMALIZE_FROM_WINDOW_CONFIG
     normalization_stats: tuple = None  # (mean, std), filled in before the data is built
     defaults_used: tuple = ()          # (what, why) per official value used in place of window_config.json
@@ -315,9 +322,12 @@ class RunConfig:
         names must be known, and -nc must match the data's channel count.
 
         Raises:
-            ValueError: on an unknown loss, schedule or normalization, a wrong -nc, or
-                fewer than one TESSERA cell per pixel.
+            ValueError: on an unknown loss, schedule or normalization, a wrong -nc,
+                fewer than one TESSERA cell per pixel, or zones on a TPU.
         """
+        if self.zones_dir is not None and self.device == "tpu":
+            raise ValueError("--zones-dir needs a GPU or the CPU: the number of fire samples changes from batch to "
+                             "batch, and PyTorch/XLA would compile a new graph for each")
         if self.loss is None:
             object.__setattr__(self, "loss", LossConfig(LossConfig.paper_loss(self.model)))
         if self.loss.name not in LOSSES:
@@ -474,6 +484,32 @@ class RunConfig:
         cells = self.tessera_cells
         return "_tessera" + (f"{cells}x{cells}" if cells > 1 else "")
 
+    @property
+    def zones_tag(self):
+        """Give the name part that marks runs trained per fire on zone files, "_zones" or "".
+
+        Their checkpoints and W&B runs never share a name with whole-window runs.
+        A -test run passes --zones-dir only to look for such a checkpoint.
+
+        Returns:
+            str: "" or "_zones".
+        """
+        return "" if self.zones_dir is None else "_zones"
+
+    def with_zone_settings(self, settings):
+        """Give a copy that records the settings the zone files were built with.
+
+        Like the input statistics, they are filled in once, before W&B starts. The
+        run's W&B config and every checkpoint then record the distance its zones used.
+
+        Args:
+            settings (SplitSettings): the zone files' settings.
+
+        Returns:
+            RunConfig: the settings with zone_settings filled in.
+        """
+        return replace(self, zone_settings=tuple(asdict(settings).items()))
+
     # ----- model ----- #
 
     @property
@@ -537,13 +573,14 @@ class RunConfig:
     def run_tag(self):
         """Give the suffix that ends checkpoint names.
 
-        It marks TESSERA runs, non-Dice losses and decayed schedules. A Dice run
-        with no extras keeps the released code's names.
+        It marks TESSERA runs, runs trained per fire on zones, non-Dice losses and
+        decayed schedules. A Dice run with no extras keeps the released code's names.
 
         Returns:
-            str: e.g. "_tessera_dicece_lr-plateau".
+            str: e.g. "_tessera_zones_dicece_lr-plateau".
         """
-        return self.tessera_tag + ("" if self.loss.name == "dice" else f"_{self.loss.name}") + self.schedule.tag
+        return (self.tessera_tag + self.zones_tag + ("" if self.loss.name == "dice" else f"_{self.loss.name}")
+                + self.schedule.tag)
 
     @property
     def run_name(self):
@@ -559,7 +596,7 @@ class RunConfig:
         return (
             f"{'test' if self.test_only else 'train'}_{self.mode}_{self.model}_"
             f"num_heads_{self.num_heads}_hidden_size_{self.feature_size}_"
-            f"batchsize_{self.batch_size}{self.tessera_tag}"
+            f"batchsize_{self.batch_size}{self.tessera_tag}{self.zones_tag}"
             f"{'' if self.loss.name == 'dice' else '_' + self.loss.name}"
             f"{self.schedule.tag}"
         )
@@ -638,6 +675,8 @@ class RunConfig:
             settings["normalization"] = {"source": self.normalization, "mean": list(mean), "std": list(std)}
         if self.extra_model_options:
             settings["model_options"] = dict(self.extra_model_options)
+        if self.zones_dir is not None:  # [ours] trained per fire: where the zones came from
+            settings["zones"] = {"zones_dir": str(self.zones_dir), **dict(self.zone_settings)}
         return settings
 
     def wandb_config(self, device_type=None):
@@ -685,6 +724,9 @@ class RunConfig:
             config["tessera_cells_per_pixel"] = self.tessera_cells
             config["tessera_dir"] = str(self.tessera_root)
             config["tessera_min_coverage"] = self.tessera_min_coverage
+        if self.zones_dir is not None:  # [ours] one training sample per fire of each window
+            config["zones_dir"] = str(self.zones_dir)
+            config["zone_settings"] = dict(self.zone_settings)
         if device_type is not None:
             config["device"] = "tpu" if device_type == "xla" else device_type
         if self.test_only:

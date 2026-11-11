@@ -168,6 +168,13 @@ FLAGS = (
         "(default, NEW): the training split's per-channel mean/std in <data-root>/window_config.json "
         "(python -m firepred.cli.dataset compute-normalization). paper: the released code's fixed numbers. "
         "Either way <data-root>/window_config.json must exist; -test uses the checkpoint's numbers"}),
+    Flag(("--zones-dir",), "zones_dir", {
+        "help": "NEW, not in the paper: train on fire split zones. A folder of zones/p<id>.npz files (python -m "
+        "firepred.cli.dataset zones) for the training fires: each training window becomes one sample per fire, "
+        "whose target is that fire's new pixels and whose loss skips the other fires' zones and new pixels no "
+        "fire reaches. The model still runs once per window; validation and test score whole windows. Names "
+        "gain _zones; with -test it only names the checkpoint to look for. GPU or CPU only"},
+         default=None, to_config=path_or_omit),
     Flag(("--unetr-version",), "unetr_version", {"choices": ("v0", "v1")}),
     Flag(("--checkpoint",), "checkpoint", {"help": "Checkpoint path for -test (default: the newest checkpoint of "
                                            "this configuration in ./wandb/*/files or saved_models/)"}),

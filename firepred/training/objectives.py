@@ -7,14 +7,23 @@ Loss: TrainingLoss(LossConfig), whose forward gives (total, {part name: value})
 so the parts can be logged. Each part is already multiplied by its lambda, so
 the parts add up to the total.
 
+Fire split zones [ours]: given a batch's zone maps, the loss splits every window
+into one sample per fire (fire_samples, the batch twin of data/fire_zones.fire_sample).
+Each sample's target is that fire's new pixels, and its loss skips the other fires'
+zones and every new pixel that is not its own. The model runs once per window,
+since a window's samples share their inputs. Without zones the loss is MONAI's,
+unchanged.
+
 Scores: a Scorer turns logits into masks (sigmoid, then threshold 0.5) and
 scores them. All per-sample scores treat "empty prediction and empty target"
 as a perfect 1, matching the released code's sklearn scores (zero_division=1).
 """
 
+import copy
 from dataclasses import dataclass, field
 
 import torch
+import torch.nn.functional as F
 from monai.data import decollate_batch
 from monai.losses.dice import DiceCELoss, DiceLoss
 from monai.transforms import Activations, AsDiscrete, Compose
@@ -24,6 +33,40 @@ from firepred.config.training import PREDICTION_THRESHOLD
 
 
 # ----- Loss ----- #
+
+
+def fire_samples(zones):
+    """Split every window of a batch into one training sample per fire: its window, target and loss mask.
+
+    This is data/fire_zones.fire_sample for a whole batch on the device. A
+    fire's target is its own new pixels; its mask leaves out the other fires'
+    zones and every new pixel that is not its own (other fires' growth and new
+    ignitions no fire reaches). A window without fires is one sample with no
+    target whose mask leaves out its new ignitions.
+
+    Args:
+        zones (torch.Tensor): (B, 2, H, W) integers: channel 0 the fire owning each
+            area (0: none), channel 1 the fire of each new target pixel (-1: none, 0: not new).
+
+    Returns:
+        tuple[torch.Tensor, torch.Tensor, torch.Tensor]: (window of each sample (S,),
+        one-hot targets (S, 2, H, W) float, loss masks (S, 1, H, W) float), S samples.
+    """
+    area, owners = zones[:, 0], zones[:, 1]
+    rows, fires = [], []
+    for row in range(area.shape[0]):
+        ids = torch.unique(area[row])
+        ids = ids[ids > 0]
+        if ids.numel() == 0:
+            ids = ids.new_zeros(1)  # no fire: one sample that learns "nothing burns here"
+        rows.append(torch.full_like(ids, row))
+        fires.append(ids)
+    rows = torch.cat(rows).long()
+    fires = torch.cat(fires)[:, None, None]
+    area, owners = area[rows], owners[rows]
+    target = (owners == fires) & (fires > 0)
+    skipped = ((area > 0) & (area != fires)) | ((owners != 0) & (owners != fires))
+    return rows, torch.stack((~target, target), dim=1).float(), (~skipped).unsqueeze(1).float()
 
 
 class TrainingLoss(nn.Module):
@@ -68,26 +111,60 @@ class TrainingLoss(nn.Module):
             )
         else:
             raise ValueError(f"Unsupported loss: {config.name}")
+        # [ours] The same Dice on masked probabilities (fire split zones): a copy with every
+        # MONAI setting and the class weight, minus its sigmoid, which runs before the mask.
+        self.masked_dice = copy.deepcopy(self.dice if config.name == "dice" else self.dicece.dice)
+        self.masked_dice.sigmoid = False
 
-    def forward(self, outputs, labels):
+    def forward(self, outputs, labels, zones=None):
         """Compute the loss and its parts for one batch.
 
         The total is what training minimizes. The parts are detached copies for
         the charts, each multiplied by its lambda, e.g. {"dice_loss": ...,
-        "ce_loss": ...}; they add up to the total.
+        "ce_loss": ...}; they add up to the total. With zones the windows are
+        split into one sample per fire first (fire_samples) and the labels are
+        replaced by the samples' own targets.
 
         Args:
             outputs (torch.Tensor): logits of shape (B, 2, H, W).
             labels (torch.Tensor): one-hot targets of shape (B, 2, H, W).
+            zones (torch.Tensor | None): (B, 2, H, W) zones and target owners, or None.
 
         Returns:
             tuple[torch.Tensor, dict[str, torch.Tensor]]: (total loss, parts).
         """
+        if zones is not None:
+            rows, targets, mask = fire_samples(zones)
+            return self.masked(outputs[rows], targets, mask)
         if self.name == "dice":
             return self.dice(outputs, labels), {}
         # The same sum DiceCELoss.forward computes, split into its two parts.
         dice = self.dicece.lambda_dice * self.dicece.dice(outputs, labels)
         ce = self.dicece.lambda_ce * self.dicece.ce(outputs, labels)
+        return dice + ce, {"dice_loss": dice.detach(), "ce_loss": ce.detach()}
+
+    def masked(self, outputs, labels, mask):
+        """Compute the loss and its parts over the pixels a mask keeps.
+
+        Dice is MONAI's on the sigmoid probabilities and targets with left-out
+        pixels set to 0, so they add nothing to either sum. Cross entropy is the
+        mean over kept pixels. With a mask of ones both equal the unmasked loss.
+
+        Args:
+            outputs (torch.Tensor): logits of shape (S, 2, H, W).
+            labels (torch.Tensor): one-hot targets of shape (S, 2, H, W).
+            mask (torch.Tensor): (S, 1, H, W), 1 where the loss counts and 0 elsewhere.
+
+        Returns:
+            tuple[torch.Tensor, dict[str, torch.Tensor]]: (total loss, parts).
+        """
+        dice = self.masked_dice(torch.sigmoid(outputs) * mask, labels * mask)
+        if self.name == "dice":
+            return dice, {}
+        # Soft targets of 0 at left-out pixels give them no cross entropy; MONAI's mean divides by every pixel.
+        pixels = F.cross_entropy(outputs, labels * mask, weight=self.dicece.cross_entropy.weight, reduction="none")
+        dice = self.dicece.lambda_dice * dice
+        ce = self.dicece.lambda_ce * pixels.sum() / mask.sum().clamp_min(1.0)
         return dice + ce, {"dice_loss": dice.detach(), "ce_loss": ce.detach()}
 
 

@@ -123,16 +123,18 @@ class Trainer:
         """
         return self.optimizer.param_groups[0]["lr"]
 
-    def step(self, inputs, labels):
+    def step(self, inputs, labels, zones=None):
         """Take one training step: forward, loss, backward and an Adam update.
 
         The model is put in train mode first. The logits are returned so the
-        caller can score them.
+        caller can score them. With zones the loss trains one sample per fire of
+        each window (objectives.fire_samples) from a single forward pass.
 
         Args:
             inputs (torch.Tensor | tuple[torch.Tensor, torch.Tensor]): input of shape
                 (B, C, T, H, W), or (data, static) for a model with a TESSERA stem.
             labels (torch.Tensor): one-hot targets of shape (B, 2, H, W).
+            zones (torch.Tensor | None): (B, 2, H, W) zones and target owners, or None.
 
         Returns:
             tuple[torch.Tensor, torch.Tensor, dict]: (logits, loss, loss parts).
@@ -141,7 +143,7 @@ class Trainer:
         self.optimizer.zero_grad(set_to_none=True)
         # Per-day logits averaged over the days -> (B, 2, H, W), then the loss.
         outputs = forward_model(self.model, inputs)
-        loss, parts = self.criterion(outputs, labels)
+        loss, parts = self.criterion(outputs, labels, zones)
         self.device.mark_step()  # TPU only: run the forward graph once, before the scores read it.
         # The scaler only matters for mixed precision on GPU.
         self.scaler.scale(loss).backward()
@@ -156,7 +158,9 @@ class Trainer:
         Every batch takes one step, and fire and background F1 and IoU and the
         false-positive and false-negative counts are computed on its predictions
         for the charts. Losses are weighted by batch size, so the results are
-        per-window means. A loss that becomes infinite stops the run.
+        per-window means. A loss that becomes infinite stops the run. With zone
+        maps in the batch the loss is per fire, while the scores still compare
+        whole windows with their whole targets, as validation does.
 
         Args:
             loader (torch.utils.data.DataLoader): the training windows.
@@ -176,7 +180,8 @@ class Trainer:
         for batch_idx, batch in enumerate(bar):
             inputs = batch_inputs(batch, self.device.torch_device)
             labels = batch["labels"].float().to(self.device.torch_device, non_blocking=True)
-            outputs, loss, parts = self.step(inputs, labels)
+            zones = batch["zones"].to(self.device.torch_device, non_blocking=True) if "zones" in batch else None
+            outputs, loss, parts = self.step(inputs, labels, zones)
             # Training scores, for logging only (no gradients, no effect on learning).
             with torch.no_grad():
                 predictions = self.scorer.predictions(outputs.detach())

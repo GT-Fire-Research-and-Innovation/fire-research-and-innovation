@@ -1438,3 +1438,58 @@ def zone_paths(zones_dir, fire_sources):
     if missing:
         raise RuntimeError(f"{len(missing)} fires have no zone file in {zones_dir}: {missing[:10]}")
     return {name: zones_dir / f"{name}.npz" for name in names}
+
+
+@dataclass(frozen=True)
+class ZoneHeader:
+    """Hold what a zone file says about itself, without its per-window maps.
+
+    Training reads the headers of every zone file before the first window, to
+    check that each file fits its archive and that all were built alike. The
+    maps themselves are read one window at a time (read_zone_window).
+
+    Attributes:
+        num_windows (int): windows in the file, one per day.
+        first_label_day (int): the day of window 0's target (the window length).
+        label_sel (int): the label rule of the targets the zones came from.
+        settings (SplitSettings): the thresholds the zones were built with.
+    """
+
+    num_windows: int
+    first_label_day: int
+    label_sel: int
+    settings: SplitSettings
+
+
+def read_zone_header(path):
+    """Read a zone file's scalars and settings, leaving its per-window maps unread.
+
+    Only the small members are decompressed, so checking every fire's file
+    before training takes a moment. A file of another format version is refused.
+
+    Args:
+        path (str | Path): a zones/p<id>.npz file.
+
+    Returns:
+        ZoneHeader: the file's window count, first target day, label rule and settings.
+
+    Raises:
+        RuntimeError: on another format version.
+    """
+    with open_npz(path) as archive:
+        version = int(np.asarray(archive["format_version"]).item())
+        if version != ZONE_FORMAT_VERSION:
+            raise RuntimeError(f"{path} has zone format version {version}; expected {ZONE_FORMAT_VERSION}")
+        return ZoneHeader(
+            num_windows=int(np.asarray(archive["num_windows"]).item()),
+            first_label_day=int(np.asarray(archive["first_label_day"]).item()),
+            label_sel=int(np.asarray(archive["label_sel"]).item()),
+            settings=SplitSettings(**{field.name: archive[f"setting_{field.name}"].item()
+                                      for field in fields(SplitSettings)}),
+        )
+
+
+def read_zone_window(path, window):
+    """Read one window's zone maps: (zones, target owners), each (256, 256) int16."""
+    with open_npz(path) as archive:
+        return archive[f"zones_{window:03d}"], archive[f"target_owners_{window:03d}"]

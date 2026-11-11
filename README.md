@@ -110,7 +110,24 @@ Dice + CE class weights default to `--ce-weight auto`: 1.0 and the training spli
 background-to-fire pixel ratio from `window_config.json` (`check labels` recounts the same number
 from the labels). Without usable counts the run falls back to the paper's `1.0 446.7836` and
 records that in W&B (`defaults_used`); two numbers set the weights by hand. Dice + CE is MONAI's
-`DiceCELoss`, as in the paper: the class weight scales both the Dice and the CE term. Add a model with
+`DiceCELoss`, as in the paper: the class weight scales both the Dice and the CE term.
+
+**Fire split training (new, not in the paper):** `--zones-dir ./data/zones` trains on the zone files of
+`dataset zones`. Each training window becomes one sample per fire: its target is that fire's new
+pixels, and its loss skips the other fires' zones and new ignitions no fire reaches (14.7% of the
+6-1 target pixels at 2.25 km). A window without fires is one sample that learns "nothing burns". The
+samples of a window share their inputs, so the model still runs once per window and an epoch costs
+about the same; the loss splits the window (`objectives.fire_samples`). Dice is averaged per sample,
+so a small fire counts as much as a large one. Validation, checkpoint choice and test still score
+whole windows, so the numbers compare with whole-window runs. Names gain `_zones`, and W&B and every
+checkpoint record the zone settings. Every zone file must match its archive (same windows, same new
+pixels), or training stops. GPU or CPU only: on a TPU the sample count per batch would recompile.
+```
+python -m firepred.cli.check data --data-root ./data --zones-dir ./data/zones --train-step
+python -m firepred.cli.train -m swinunetr3d -mode pred -b 8 -lr 0.001 -nh 3 -ed 36 -ts 6 -it 1 --data-root ./data \
+    --zones-dir ./data/zones
+```
+Add a model with
 `python -m firepred.cli.new_model NAME` (see docs/ARCHITECTURE.md). This repository
 covers the paper's prediction task only.
 

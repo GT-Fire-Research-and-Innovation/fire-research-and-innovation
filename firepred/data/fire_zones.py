@@ -16,7 +16,9 @@ the same way at inference:
 
 A training sample is one fire in one window (fire_sample): its target is that
 fire's new pixels, and its loss skips the other fires' zones and every new
-pixel that is not its own. The inputs are never changed.
+pixel that is not its own. The inputs are never changed, so training
+(--zones-dir) runs the model once per window and splits it into its fires in the
+loss (training/objectives.fire_samples, the same rule for a batch).
 """
 
 import numpy as np

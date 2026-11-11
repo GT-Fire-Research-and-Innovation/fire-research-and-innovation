@@ -62,6 +62,7 @@ def check_config(args):
         data_root=getattr(args, "data_root", RunConfig.data_root),
         tessera=args.tessera,
         tessera_cells_per_pixel=args.tessera_cells_per_pixel,
+        zones_dir=getattr(args, "zones_dir", None),
         normalization=args.normalization,
         loss=LossConfig(args.loss, ce_weight_value(args.ce_weight), args.lambda_dice, args.lambda_ce),
         extra_model_options=tuple(dict(args.model_option or ()).items()),
@@ -113,7 +114,7 @@ def report_peak_memory(device):
     return peaks
 
 
-def training_step(config, model, inputs, labels, device):
+def training_step(config, model, inputs, labels, device, zones=None):
     """Take one training step with the trainer's own loss, optimizer and scaler.
 
     Using the real Trainer means a step that passes here will also pass in
@@ -126,6 +127,7 @@ def training_step(config, model, inputs, labels, device):
             (B, C, T, H, W), or (data, static) for a model with a TESSERA stem.
         labels (torch.Tensor): one-hot targets of shape (B, 2, H, W).
         device (torch.device): where it runs.
+        zones (torch.Tensor | None): (B, 2, H, W) zone maps for a per-fire loss, or None.
 
     Returns:
         tuple[torch.Tensor, torch.Tensor, dict]: (logits, loss, loss parts).
@@ -133,7 +135,7 @@ def training_step(config, model, inputs, labels, device):
     Raises:
         RuntimeError: if the loss is not finite.
     """
-    logits, loss, parts = Trainer(config, model, device).step(inputs, labels)
+    logits, loss, parts = Trainer(config, model, device).step(inputs, labels, zones)
     if not torch.isfinite(loss):
         raise RuntimeError("Non-finite loss in the training step.")
     return logits, loss, parts
@@ -255,7 +257,8 @@ def check_data(args):
     reset_peak_memory(device)
     inputs = batch_inputs(batch, device)
     labels = batch["labels"].float().to(device)
-    logits, loss, parts = training_step(config, model, inputs, labels, device)
+    zones = batch["zones"].to(device) if "zones" in batch else None
+    logits, loss, parts = training_step(config, model, inputs, labels, device, zones)
     assert logits.shape == labels.shape, (tuple(logits.shape), tuple(labels.shape))
     report_peak_memory(device)
     print("One training step passed; loss:", loss.item(), {k: v.item() for k, v in parts.items()})
@@ -369,6 +372,8 @@ def parse_args(argv=None):
     data.add_argument("-ts", "--ts", dest="ts", type=int, default=TS_LENGTH)
     data.add_argument("--tessera", action="store_true")
     data.add_argument("--train-step", action="store_true", help="Also take one training step on the batch")
+    data.add_argument("--zones-dir", type=Path, default=None,
+                      help="Zone files: the training batch carries zone maps and the step trains one sample per fire")
 
     timing = commands.add_parser("timing", help="Average time to load one training window")
     timing.add_argument("--data-root", type=Path, required=True)
