@@ -222,6 +222,9 @@ def test_auto_ce_weight_run(e2e_root, tmp_path):
     recorded = finished.named("config.update")[0][1][0]
     assert recorded["ce_weight"] == expected
     assert recorded["ce_weight_counts"] == [counts.background, counts.fire]
+    # The data root's window_config.json (synthetic: it names no dataset) and the code version.
+    assert recorded["window_config"]["found"] and recorded["window_config"]["ts_length"] == 6
+    assert "dataset" in recorded and recorded["device"] == "cpu" and "code_version" in recorded
     assert finished.checkpoint()["loss_config"]["ce_weight"] == expected
     assert all(math.isfinite(log[VAL_LOSS_DICECE]) for log in finished.val_logs())
 

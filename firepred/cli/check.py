@@ -63,8 +63,7 @@ def check_config(args):
         tessera=args.tessera,
         tessera_cells_per_pixel=args.tessera_cells_per_pixel,
         normalization=args.normalization,
-        loss=LossConfig(args.loss, ce_weight_value(args.ce_weight), args.lambda_dice, args.lambda_ce,
-                        args.lambda_focal, args.focal_gamma, args.focal_alpha),
+        loss=LossConfig(args.loss, ce_weight_value(args.ce_weight), args.lambda_dice, args.lambda_ce),
         extra_model_options=tuple(dict(args.model_option or ()).items()),
         batch_size=args.batch,
     )
@@ -311,8 +310,8 @@ def check_labels(args):
 # Model and loss flags shared by `model` and `data`: the training flags themselves
 # (training/flags.py), with defaults where training requires a value.
 CHECK_FLAGS = ("model", "num_heads", "feature_size", "learning_rate", "loss.name", "loss.ce_weight",
-               "loss.lambda_dice", "loss.lambda_ce", "loss.lambda_focal", "loss.focal_gamma", "loss.focal_alpha",
-               "extra_model_options", "device", "seed", "tessera_cells_per_pixel", "normalization")
+               "loss.lambda_dice", "loss.lambda_ce", "extra_model_options", "device", "seed",
+               "tessera_cells_per_pixel", "normalization")
 
 
 def add_model_arguments(parser):

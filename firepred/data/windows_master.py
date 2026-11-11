@@ -45,6 +45,7 @@ from firepred.config.dataset import (
     WORK_DIR,
     ZIP_FOLDERS,
     window_repo_for,
+    with_dataset,
 )
 from firepred.data import files, hub, tessera_master
 from firepred.data.archive import find_fire_sources, write_fire_archive
@@ -646,7 +647,7 @@ def data_root_window_config(data_root, window_repo, token=None):
     """Read the data root's window_config.json, fetching the repo's copy when there is none.
 
     Data unpacked from an older data.zip has no copy yet. The repo's file records
-    the same window settings.
+    the same window settings, and the copy names that repo as its dataset.
 
     Args:
         data_root (Path): the data root.
@@ -667,14 +668,16 @@ def data_root_window_config(data_root, window_repo, token=None):
         raise RuntimeError(f"Neither {data_root} nor {window_repo} has a {WINDOW_CONFIG_FILE}; "
                            "build the repo with `process` (it records the window settings)")
     print(f"{data_root} had no {WINDOW_CONFIG_FILE}; using {window_repo}'s")
-    return config
+    return with_dataset(config, window_repo)
 
 
 def save_window_config(data_root, config, upload, window_repo, token):
     """Write the data root's window_config.json and, when asked, the window repo's.
 
     The repo's file is replaced only if it records the same window settings.
-    Statistics therefore never land beside windows of another shape.
+    Statistics therefore never land beside windows of another shape. An upload
+    names the window repo as the dataset in both copies, so repos built before
+    the dataset was recorded gain it here.
 
     Args:
         data_root (Path): the data root.
@@ -689,6 +692,8 @@ def save_window_config(data_root, config, upload, window_repo, token):
     Raises:
         ValueError: if the repo's file records other window settings.
     """
+    if upload:
+        config = with_dataset(config, window_repo)
     path = write_window_config_file(data_root, config)
     if not upload:
         return path, None
@@ -794,10 +799,11 @@ def download_windows(
 
     Each archive goes to the train/val/test folder its fire belongs to (from the
     ROI CSVs); archives already on disk are kept. The repo's window_config.json
-    is copied to <data_root>/window_config.json, keeping statistics computed
-    there earlier that the repo's copy lacks. In TESSERA mode, fires without
-    prior-year TESSERA are left out and the TESSERA files are downloaded too.
-    Use a separate data root per mode, so the two never mix.
+    is copied to <data_root>/window_config.json, naming the repo as its dataset
+    and keeping statistics computed there earlier that the repo's copy lacks.
+    In TESSERA mode, fires without prior-year TESSERA are left out and the
+    TESSERA files are downloaded too. Use a separate data root per mode, so the
+    two never mix.
 
     Args:
         token (str | None): a Hugging Face token.
@@ -827,7 +833,8 @@ def download_windows(
     if window_config is None:
         print(f"WARNING: {window_repo} has no {WINDOW_CONFIG_FILE}; training needs one in {data_root}")
     else:
-        write_window_config_file(data_root, keep_statistics(window_config, read_window_config_file(data_root)))
+        local = keep_statistics(window_config, read_window_config_file(data_root))
+        write_window_config_file(data_root, with_dataset(local, window_repo))
 
     downloaded, present, skipped = [], [], []
     for name in hub.list_repo_files(window_repo, token):

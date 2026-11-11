@@ -135,18 +135,6 @@ false
 1.0
 ],
 [
-"lambda_focal",
-1.0
-],
-[
-"focal_gamma",
-2.0
-],
-[
-"focal_alpha",
-0.25
-],
-[
 "lr_schedule",
 "none"
 ],
@@ -771,13 +759,12 @@ false
 ],
 "loss",
 null,
-"dice: released TS-SatFire code. dicece: the paper's prediction loss, MONAI's DiceCELoss with --ce-weight on both terms, lambdas 1:1 (use with -lr 0.001). dicefocal (NEW, not in the paper): --lambda-dice x Dice + --lambda-focal x focal loss on the fire channel, no CE. Default: the paper's choice per model, dice for attunet and dicece otherwise",
+"dice: released TS-SatFire code. dicece: the paper's prediction loss, MONAI's DiceCELoss with --ce-weight on both terms, lambdas 1:1 (use with -lr 0.001). Default: the paper's choice per model, dice for attunet and dicece otherwise",
 [
 "tuple",
 [
 "dice",
-"dicece",
-"dicefocal"
+"dicece"
 ]
 ],
 null,
@@ -858,63 +845,6 @@ null,
 null,
 null,
 "float",
-null,
-false
-]
-],
-[
-"tuple",
-[
-[
-"tuple",
-[
-"--lambda-focal"
-]
-],
-"lambda_focal",
-1.0,
-"dicefocal only: weight of the focal term (--lambda-dice weighs the Dice term)",
-null,
-null,
-"float",
-null,
-false
-]
-],
-[
-"tuple",
-[
-[
-"tuple",
-[
-"--focal-gamma"
-]
-],
-"focal_gamma",
-2.0,
-"dicefocal only: focusing exponent; 0 makes the focal term plain binary cross entropy",
-null,
-null,
-"float",
-null,
-false
-]
-],
-[
-"tuple",
-[
-[
-"tuple",
-[
-"--focal-alpha"
-]
-],
-"focal_alpha",
-0.25,
-"dicefocal only: weight of fire pixels in the focal term, background gets 1 - alpha (default 0.25, Lin et al.'s); 'none' turns it off",
-null,
-null,
-"focal_alpha_value",
 null,
 false
 ]
@@ -3546,7 +3476,7 @@ false
 ],
 "m",
 "swinunetr3d",
-"Registered model: attunet, swinunetr3d, swinunetr3d_tessera, swinunetr3d_tessera_tpool, swinunetr3d_tpool, unet3d, unetr3d",
+"Registered model: attunet, convlstm, swinunetr3d, swinunetr3d_tessera, swinunetr3d_tessera_tpool, swinunetr3d_tpool, unet3d, unetr3d",
 null,
 null,
 "None",
@@ -3622,13 +3552,12 @@ false
 ],
 "loss",
 "dicece",
-"dice: released TS-SatFire code. dicece: the paper's prediction loss, MONAI's DiceCELoss with --ce-weight on both terms, lambdas 1:1 (use with -lr 0.001). dicefocal (NEW, not in the paper): --lambda-dice x Dice + --lambda-focal x focal loss on the fire channel, no CE. Default: the paper's choice per model, dice for attunet and dicece otherwise",
+"dice: released TS-SatFire code. dicece: the paper's prediction loss, MONAI's DiceCELoss with --ce-weight on both terms, lambdas 1:1 (use with -lr 0.001). Default: the paper's choice per model, dice for attunet and dicece otherwise",
 [
 "tuple",
 [
 "dice",
-"dicece",
-"dicefocal"
+"dicece"
 ]
 ],
 null,
@@ -3690,63 +3619,6 @@ null,
 null,
 null,
 "float",
-null,
-false
-]
-],
-[
-"tuple",
-[
-[
-"tuple",
-[
-"--lambda-focal"
-]
-],
-"lambda_focal",
-1.0,
-"dicefocal only: weight of the focal term (--lambda-dice weighs the Dice term)",
-null,
-null,
-"float",
-null,
-false
-]
-],
-[
-"tuple",
-[
-[
-"tuple",
-[
-"--focal-gamma"
-]
-],
-"focal_gamma",
-2.0,
-"dicefocal only: focusing exponent; 0 makes the focal term plain binary cross entropy",
-null,
-null,
-"float",
-null,
-false
-]
-],
-[
-"tuple",
-[
-[
-"tuple",
-[
-"--focal-alpha"
-]
-],
-"focal_alpha",
-0.25,
-"dicefocal only: weight of fire pixels in the focal term, background gets 1 - alpha (default 0.25, Lin et al.'s); 'none' turns it off",
-null,
-null,
-"focal_alpha_value",
 null,
 false
 ]
@@ -3980,7 +3852,7 @@ false
 ],
 "m",
 "swinunetr3d",
-"Registered model: attunet, swinunetr3d, swinunetr3d_tessera, swinunetr3d_tessera_tpool, swinunetr3d_tpool, unet3d, unetr3d",
+"Registered model: attunet, convlstm, swinunetr3d, swinunetr3d_tessera, swinunetr3d_tessera_tpool, swinunetr3d_tpool, unet3d, unetr3d",
 null,
 null,
 "None",
@@ -4056,13 +3928,12 @@ false
 ],
 "loss",
 "dicece",
-"dice: released TS-SatFire code. dicece: the paper's prediction loss, MONAI's DiceCELoss with --ce-weight on both terms, lambdas 1:1 (use with -lr 0.001). dicefocal (NEW, not in the paper): --lambda-dice x Dice + --lambda-focal x focal loss on the fire channel, no CE. Default: the paper's choice per model, dice for attunet and dicece otherwise",
+"dice: released TS-SatFire code. dicece: the paper's prediction loss, MONAI's DiceCELoss with --ce-weight on both terms, lambdas 1:1 (use with -lr 0.001). Default: the paper's choice per model, dice for attunet and dicece otherwise",
 [
 "tuple",
 [
 "dice",
-"dicece",
-"dicefocal"
+"dicece"
 ]
 ],
 null,
@@ -4124,63 +3995,6 @@ null,
 null,
 null,
 "float",
-null,
-false
-]
-],
-[
-"tuple",
-[
-[
-"tuple",
-[
-"--lambda-focal"
-]
-],
-"lambda_focal",
-1.0,
-"dicefocal only: weight of the focal term (--lambda-dice weighs the Dice term)",
-null,
-null,
-"float",
-null,
-false
-]
-],
-[
-"tuple",
-[
-[
-"tuple",
-[
-"--focal-gamma"
-]
-],
-"focal_gamma",
-2.0,
-"dicefocal only: focusing exponent; 0 makes the focal term plain binary cross entropy",
-null,
-null,
-"float",
-null,
-false
-]
-],
-[
-"tuple",
-[
-[
-"tuple",
-[
-"--focal-alpha"
-]
-],
-"focal_alpha",
-0.25,
-"dicefocal only: weight of fire pixels in the focal term, background gets 1 - alpha (default 0.25, Lin et al.'s); 'none' turns it off",
-null,
-null,
-"focal_alpha_value",
 null,
 false
 ]

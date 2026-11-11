@@ -41,7 +41,7 @@ def test_window_repo_names_match_the_hugging_face_repos():
 def test_training_defaults_are_the_papers():
     """The default class weights and loss names are the paper's."""
     assert training.PAPER_CE_WEIGHT == (1.0, 446.7836)
-    assert training.LOSSES == ("dice", "dicece", "dicefocal")
+    assert training.LOSSES == ("dice", "dicece")
 
 
 def test_default_loss_is_still_the_papers():

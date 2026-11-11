@@ -92,15 +92,6 @@ def test_dicece_is_monai_dicece_with_the_class_weight_on_both_terms():
     assert parts["dice_loss"].item() > 0.5 > 0.5 * loss("dice")(logits, labels)[0].item()
 
 
-def test_dicefocal_parts_are_lambda_weighted():
-    """Dice+focal charts lambda x each term, so its parts add up to the total."""
-    logits = torch.randn(2, 2, 8, 8)
-    labels = masks(torch.rand(8, 8) > 0.9).expand(2, -1, -1, -1)
-    total, parts = loss("dicefocal", lambda_dice=0.5, lambda_focal=2.5)(logits, labels)
-    assert torch.isclose(parts["dice_loss"], 0.5 * loss("dice")(logits, labels)[0])
-    assert torch.isclose(total, parts["dice_loss"] + parts["focal_loss"])
-
-
 def test_background_iou_scores_the_background_channel():
     """background_iou is TP / (TP + FP + FN) on the background channel."""
     target = masks([[1, 0], [0, 0]])
@@ -136,14 +127,10 @@ def test_names_never_change():
 
 def test_command_line_round_trips_through_run_config():
     """argv_for(config) parses back to the same RunConfig, so notebooks can launch exactly a config."""
-    for extra in ([], ["--tessera", "--loss", "dicefocal", "--focal-alpha", "0.4", "--lr-schedule", "cosine"],
-                  ["--loss", "dicefocal", "--focal-alpha", "none"],
+    for extra in ([], ["--tessera", "--loss", "dice", "--lr-schedule", "cosine"],
                   ["-test", "--checkpoint", "x.pth", "--model-option", "depth=2", "-nc", "43", "--no-test-after-train"]):
         config = config_from_args(parse_args(BASE + extra))
         assert config_from_args(parse_args(argv_for(config))) == config
-    # Focal alpha defaults to 0.25; "none" turns it off and survives argv_for.
-    assert config_from_args(parse_args(BASE + ["--loss", "dicefocal"])).loss.focal_alpha == 0.25
-    assert config_from_args(parse_args(BASE + ["--focal-alpha", "none"])).loss.focal_alpha is None
     # Without --ce-weight the class weights are "auto" (window_config.json), and stay so through argv_for.
     default = config_from_args(parse_args(BASE))
     assert default.loss.ce_weight == "auto" and argv_for(default)[argv_for(default).index("--ce-weight") + 1] == "auto"
@@ -171,7 +158,7 @@ def test_wandb_chart_names_are_stable():
     assert "train_ce_loss" not in Tracker.chart_labels("dice")
     assert labels["val_fire_false_positives"] == "Validation False Positives — Next-Day Fire Growth (pixels per window)"
     assert labels["train_fire_false_negatives"] == "Training False Negatives — Next-Day Fire Growth (pixels per window)"
-    for loss_name in ("dice", "dicefocal"):
+    for loss_name in ("dice", "dicece"):
         assert {"periodic_test_false_positives", "periodic_test_false_negatives"} <= set(Tracker.chart_labels(loss_name))
 
 
@@ -202,36 +189,14 @@ def test_checkpoints_load_without_running_pickled_code(tmp_path):
         read_checkpoint(hostile)
 
 
-def test_dicefocal_is_weighted_dice_plus_weighted_focal():
-    """dicefocal = lambda_dice x Dice + lambda_focal x focal on the fire channel, no cross entropy."""
-    from monai.losses import FocalLoss
-
-    torch.manual_seed(3)
-    logits = torch.randn(2, 2, 8, 8, requires_grad=True)
-    labels = masks(torch.rand(8, 8) > 0.9).expand(2, -1, -1, -1)
-    criterion = loss("dicefocal", lambda_dice=0.5, lambda_focal=2.5, focal_gamma=2.0, focal_alpha=0.25)
-    total, parts = criterion(logits, labels)
-    assert set(parts) == {"dice_loss", "focal_loss"}  # no cross entropy
-    dice, _ = loss("dice")(logits, labels)
-    focal = FocalLoss(include_background=False, gamma=2.0, alpha=0.25)(logits, labels)  # fire channel only
-    assert torch.isclose(total, 0.5 * dice + 2.5 * focal)
-    total.backward()
-    assert torch.isfinite(logits.grad).all()
-    names = ("dice", "dicece", "dicefocal")
+def test_only_dice_and_dicece_are_losses():
+    """dice and dicece build; any other name (e.g. the removed dicefocal) is refused."""
+    names = ("dice", "dicece")
     assert [loss(n, ce_weight=PAPER_CE_WEIGHT).name for n in names] == list(names)
-
-
-def test_dicefocal_names_and_charts():
-    """dicefocal has its own tag, loss record and charts (its Dice chart is lambda x Dice)."""
-    assert RunConfig("swinunetr3d", loss=LossConfig("dicefocal")).run_tag == "_dicefocal"
-    record = LossConfig("dicefocal", (1.0, 446.7836), 0.5, 1.0, 2.5, 2.0, None).record()
-    assert record == {"loss": "dicefocal", "lambda_dice": 0.5, "lambda_focal": 2.5, "focal_gamma": 2.0, "focal_alpha": None}
-    assert "lambda_focal" not in LossConfig("dicece").record()
-    labels = Tracker.chart_labels("dicefocal")
-    assert labels["train_loss"] == "Training Dice + Focal Loss — Next-Day Fire Growth"
-    assert labels["val_dice_loss"] == "Validation Dice Loss (x lambda_dice) — Next-Day Fire Growth"
-    assert labels["val_focal_loss"] == "Validation Focal Loss (x lambda_focal) — Next-Day Fire Growth"
-    assert "train_ce_loss" not in labels
+    with pytest.raises(ValueError, match="Unsupported loss"):
+        loss("dicefocal")
+    with pytest.raises(SystemExit):
+        parse_args(BASE + ["--loss", "dicefocal"])
 
 
 def test_checkpoint_store_keeps_the_best(tmp_path):
@@ -298,6 +263,21 @@ def test_swinunetr3d_variants_share_its_checks(tmp_path):
             CheckpointLoader("cpu", config).load(path)
     assert not RunConfig("unet3d").is_swinunetr3d and "swin_temporal_downsample" not in RunConfig("unet3d").wandb_config()
     assert CheckpointLoader("cpu", RunConfig("unet3d")).load(path)["swin_temporal_downsample"] is True
+
+
+def test_wandb_config_records_the_run_settings():
+    """The W&B config lists the model shape, data and testing settings; model- and mode-specific keys only apply."""
+    logged = RunConfig("unetr3d", num_heads=4, feature_size=48, seed=7, num_workers=2).wandb_config(device_type="cuda")
+    assert {key: logged[key] for key in ("num_heads", "feature_size", "ts_length", "ts_interval", "seed")} == {
+        "num_heads": 4, "feature_size": 48, "ts_length": 6, "ts_interval": 1, "seed": 7}
+    assert logged["num_workers"] == 2 and logged["test_csv"] == "us_fire_2021_out_new.csv"
+    assert logged["device"] == "cuda" and logged["unetr_version"] == "v1"
+    assert "checkpoint" not in logged and "tessera_dir" not in logged
+    assert RunConfig("tiny3d").wandb_config(device_type="xla")["device"] == "tpu"
+    assert "device" not in RunConfig("tiny3d").wandb_config() and "unetr_version" not in RunConfig("tiny3d").wandb_config()
+    tested = RunConfig("tiny3d", tessera=True, test_only=True, load_epoch=12, data_root=Path("d")).wandb_config()
+    assert tested["checkpoint"] is None and tested["load_epoch"] == 12
+    assert tested["tessera_dir"] == str(Path("d") / "tessera") and tested["tessera_min_coverage"] == 0.5
 
 
 def test_loader_without_config_reads_but_refuses_to_check(tmp_path):

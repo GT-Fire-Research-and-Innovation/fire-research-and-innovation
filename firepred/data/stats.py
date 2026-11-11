@@ -4,8 +4,9 @@ Level 1 (data). `dataset count-pixels` and `compute-normalization` (data/windows
 write them; training/experiment.py and cli/check.py read them before anything else.
 
 Every data root holds <data-root>/window_config.json, a copy of its window repo's
-settings (data/hub.py) that download, data.zip and the TESSERA view carry along. Two
-statistics blocks are added to it:
+settings (data/hub.py) that download, data.zip and the TESSERA view carry along. It
+names that repo as its "dataset", which training logs to W&B (WindowConfig.record).
+Two statistics blocks are added to it:
 
     pixel_counts    per split: background, fire and other target pixels. Next-day growth
                     covers well under 1 % of pixels, so --ce-weight auto weighs fire up by
@@ -40,7 +41,13 @@ from pathlib import Path
 
 import numpy as np
 
-from firepred.config.dataset import N_STORED_CHANNELS, STORED_CHANNEL_NAMES, WINDOW_CONFIG_FILE
+from firepred.config.dataset import (
+    N_STORED_CHANNELS,
+    STORED_CHANNEL_NAMES,
+    WINDOW_CONFIG_DATASET_KEY,
+    WINDOW_CONFIG_FILE,
+    dataset_url,
+)
 from firepred.data.archive import find_fire_sources, fire_name, open_fire
 
 
@@ -436,8 +443,9 @@ def write_window_config_file(data_root, config):
 
 
 def window_settings_of(config):
-    """Give a window config without its statistics and notes: the settings two copies must share."""
-    return {key: value for key, value in config.items() if key not in (*STATISTICS, "notes")}
+    """Give a window config without its statistics, notes and dataset name: the settings two copies must share."""
+    return {key: value for key, value in config.items()
+            if key not in (*STATISTICS, "notes", WINDOW_CONFIG_DATASET_KEY)}
 
 
 def keep_statistics(config, previous):
@@ -529,6 +537,28 @@ class WindowConfig:
             if asked is not None and recorded is not None and int(recorded) != int(asked):
                 raise ValueError(f"{flag} {asked} does not match the data: {self.path} records {key} = {recorded}")
         return self
+
+    def record(self):
+        """Describe the run's data for the W&B config: the dataset, its link and the window settings.
+
+        The dataset is the window repo the file names; download, process and
+        statistics uploads write it, so only files from before that name none
+        (None). The statistics blocks are listed by name only, since the run logs
+        the numbers it uses itself. windows_code_version is the commit that built
+        the windows.
+
+        Returns:
+            dict: {"dataset", "dataset_url", "window_config": {path, found, settings...}}.
+        """
+        dataset = self.values.get(WINDOW_CONFIG_DATASET_KEY)
+        details = {"path": str(self.path), "found": self.found}
+        if self.found:
+            notes = self.values.get("notes")
+            details.update(window_settings_of(self.values))
+            details["statistics"] = [key for key in STATISTICS if key in self.values]
+            details["windows_code_version"] = notes.get("code_version") if isinstance(notes, dict) else None
+        return {"dataset": dataset, "dataset_url": dataset_url(dataset) if dataset else None,
+                "window_config": details}
 
     def block(self, key):
         """Give one statistics block, or raise MissingStatistics naming the command that writes it.

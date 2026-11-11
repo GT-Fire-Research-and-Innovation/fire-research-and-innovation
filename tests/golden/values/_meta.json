@@ -181,6 +181,29 @@
         "hub"
       ],
       "reason": "window_config.json records firepred_grid (FirePred resampled onto the VIIRS grid when the grids differ)"
+    },
+    {
+      "groups": [
+        "hub"
+      ],
+      "reason": "window_config.json names its window repo as \"dataset\" (first key); training logs it to W&B with its Hugging Face link"
+    },
+    {
+      "groups": [
+        "cli",
+        "config",
+        "names",
+        "objectives"
+      ],
+      "reason": "dicefocal removed: --loss offers dice and dicece only; --lambda-focal, --focal-gamma, --focal-alpha and the FOCAL_*/LAMBDA_FOCAL constants are gone; the names case for cosine drops --loss dicefocal. cli also picks up convlstm in the check model list (stale since the convlstm merge)."
+    },
+    {
+      "groups": [
+        "transforms",
+        "dataset",
+        "training"
+      ],
+      "reason": "wind_fix: observed wind direction (channel 12) is encoded as degrees / 180 - 1 (the whole compass on -1..1) instead of sin(degrees); still 43 channels."
     }
   ]
 }

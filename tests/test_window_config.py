@@ -38,6 +38,7 @@ def test_new_repo_records_every_setting(hub):
     settings = data_hub.window_settings(6, 1, train_val_label_sel=1, use_roi_label_sel=False)
     data_hub.ensure_window_config(REPO, settings)
     config = stored(hub)
+    assert next(iter(config)) == "dataset" and config["dataset"] == REPO
     assert config["train_val_label_sel"] == 1 and config["test_label_sel"] == 1
     assert config["ts_length"] == 6 and config["crop_size"] == 256 and config["stored_channels"] == 27
     assert "NIFC" in config["notes"]["label_sel"]["0"] and config["notes"]["npz_compresslevel"] == 6

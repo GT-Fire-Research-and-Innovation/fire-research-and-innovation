@@ -19,8 +19,7 @@ PREDICTION_THRESHOLD = 0.5
 # ----- Loss ----- #
 
 # dice: sigmoid Dice loss [released]. dicece: 1:1 Dice + cross entropy [paper].
-# dicefocal: sigmoid Dice plus a focal term on the fire channel [ours].
-LOSSES = ("dice", "dicece", "dicefocal")
+LOSSES = ("dice", "dicece")
 # "a 1:1 mixture of Dice and CE loss", CE weight [1.0, 446.7836]. [paper]
 # The default CE weight is counted from the training labels in window_config.json
 # (--ce-weight auto) [ours]; this is the fallback when the file has no usable counts.
@@ -28,12 +27,6 @@ LOSSES = ("dice", "dicece", "dicefocal")
 PAPER_CE_WEIGHT = (1.0, 446.7836)
 LAMBDA_DICE = 1.0
 LAMBDA_CE = 1.0
-# Focal term of dicefocal: sigmoid focal loss (Lin et al. 2017) on the fire
-# channel; gamma down-weights easy pixels, alpha weighs fire pixels and 1 - alpha
-# background (None = off). Defaults are Lin et al.'s gamma 2 and alpha 0.25. [ours]
-LAMBDA_FOCAL = 1.0
-FOCAL_GAMMA = 2.0
-FOCAL_ALPHA = 0.25
 
 # ----- Optimizer and learning-rate schedule ----- #
 

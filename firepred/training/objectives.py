@@ -16,7 +16,6 @@ from dataclasses import dataclass, field
 
 import torch
 from monai.data import decollate_batch
-from monai.losses import FocalLoss
 from monai.losses.dice import DiceCELoss, DiceLoss
 from monai.transforms import Activations, AsDiscrete, Compose
 from torch import nn
@@ -30,9 +29,9 @@ from firepred.config.training import PREDICTION_THRESHOLD
 class TrainingLoss(nn.Module):
     """The training loss for two-channel (background, fire) logits, with its logged parts.
 
-    Three losses are available: Dice [released], Dice plus cross entropy
-    [paper], and Dice plus focal loss on the fire channel [ours]. Calling it
-    gives the total to minimize and its parts, which are charted separately.
+    Two losses are available: Dice [released] and Dice plus cross entropy
+    [paper]. Calling it gives the total to minimize and its parts, which are
+    charted separately.
     """
 
     def __init__(self, config):
@@ -42,7 +41,7 @@ class TrainingLoss(nn.Module):
         builds it: MONAI's DiceCELoss with the class weight and lambdas 1:1. The
         class weight scales both terms, the sigmoid Dice per channel and the
         softmax cross entropy, so the fire Dice term dominates the total
-        (docs/KNOWN_ISSUES.md #2). Dice+focal builds its two terms itself.
+        (docs/KNOWN_ISSUES.md #2).
 
         Args:
             config (LossConfig): which loss, with its weights.
@@ -67,13 +66,6 @@ class TrainingLoss(nn.Module):
                 lambda_dice=config.lambda_dice,
                 lambda_ce=config.lambda_ce,
             )
-        elif config.name == "dicefocal":
-            self.dice = DiceLoss(include_background=True, reduction="mean", sigmoid=True)
-            self.focal = FocalLoss(
-                include_background=False, gamma=config.focal_gamma, alpha=config.focal_alpha, reduction="mean"
-            )
-            self.lambda_dice = config.lambda_dice
-            self.lambda_focal = config.lambda_focal
         else:
             raise ValueError(f"Unsupported loss: {config.name}")
 
@@ -93,14 +85,10 @@ class TrainingLoss(nn.Module):
         """
         if self.name == "dice":
             return self.dice(outputs, labels), {}
-        if self.name == "dicece":
-            # The same sum DiceCELoss.forward computes, split into its two parts.
-            dice = self.dicece.lambda_dice * self.dicece.dice(outputs, labels)
-            ce = self.dicece.lambda_ce * self.dicece.ce(outputs, labels)
-            return dice + ce, {"dice_loss": dice.detach(), "ce_loss": ce.detach()}
-        dice = self.lambda_dice * self.dice(outputs, labels)
-        focal = self.lambda_focal * self.focal(outputs, labels)
-        return dice + focal, {"dice_loss": dice.detach(), "focal_loss": focal.detach()}
+        # The same sum DiceCELoss.forward computes, split into its two parts.
+        dice = self.dicece.lambda_dice * self.dicece.dice(outputs, labels)
+        ce = self.dicece.lambda_ce * self.dicece.ce(outputs, labels)
+        return dice + ce, {"dice_loss": dice.detach(), "ce_loss": ce.detach()}
 
 
 # ----- Scores ----- #

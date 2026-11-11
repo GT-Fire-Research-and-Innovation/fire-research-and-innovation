@@ -487,10 +487,7 @@ def objective_values(ctx):
     target_fire[2] = False
     labels = torch.stack((~target_fire, target_fire), dim=1).float()
     out = {}
-    for loss_args in (
-        ("dice",), ("dicece",), ("dicece", (1.0, 457.1), 0.7, 1.3),
-        ("dicefocal",), ("dicefocal", (1.0, 446.7836), 1.0, 1.0, 2.0, 1.5, 0.25),
-    ):
+    for loss_args in (("dice",), ("dicece",), ("dicece", (1.0, 457.1), 0.7, 1.3)):
         config = LossConfig(*loss_args)
         if config.is_auto:  # default "auto" is counted from data at run start; score the paper's weights here
             config = replace(config, ce_weight=PAPER_CE_WEIGHT)
@@ -517,7 +514,7 @@ def objective_values(ctx):
             lr_schedule.step(val_loss)
             rates.append(optimizer.param_groups[0]["lr"])
         out[f"lr.{schedule}"] = (type(lr_schedule.scheduler).__name__, rates)
-    for loss in ("dice", "dicece", "dicefocal"):
+    for loss in ("dice", "dicece"):
         out[f"chart_labels.{loss}"] = Tracker.chart_labels(loss)
     return out
 
@@ -525,7 +522,7 @@ def objective_values(ctx):
 NAME_ARGVS = [
     [],
     ["--loss", "dice"],
-    ["--loss", "dicefocal", "--lr-schedule", "cosine"],
+    ["--lr-schedule", "cosine"],
     ["--tessera", "--lr-schedule", "plateau"],
     ["-m", "attunet"],
     ["-m", "attunet", "--loss", "dicece", "-test", "--load-epoch", "12"],

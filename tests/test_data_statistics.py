@@ -184,10 +184,37 @@ def test_missing_local_file_comes_from_the_repo_and_uploads_check_settings(data_
     assert report.uploaded_to == "owner/windows-6-1"
     remote = json.loads((fake_hub._repo("owner/windows-6-1") / "window_config.json").read_text())
     assert remote[PIXEL_COUNTS]["train"] == reference(root)[PIXEL_COUNTS]["train"]
+    # The repo's file predates the dataset name; the upload adds it to both copies.
+    assert remote["dataset"] == reference(target)["dataset"] == "owner/windows-6-1"
 
     other = view(root, tmp_path / "other", {"ts_length": 10, "ts_interval": 1})
     with pytest.raises(ValueError, match="other window settings"):
         windows_master.count_pixels(other, splits=("train",), window_repo="owner/windows-6-1", upload=True)
+
+
+def test_window_config_names_its_dataset_for_wandb(data_root, tmp_path):
+    """The dataset name is provenance: never compared between copies, and logged to W&B with its link."""
+    from firepred.config.dataset import with_dataset
+    from firepred.data.stats import window_settings_of
+
+    root, _ = data_root
+    named = with_dataset({"dataset": "old/repo", "ts_length": 6}, "owner/windows-6-1")
+    assert list(named) == ["dataset", "ts_length"] and named["dataset"] == "owner/windows-6-1"
+    assert window_settings_of(named) == window_settings_of({"ts_length": 6}) == {"ts_length": 6}
+
+    contents = with_dataset(dict(reference(root), notes={"code_version": "abc123"}), "owner/windows-6-1")
+    record = WindowConfig.read(view(root, tmp_path / "named", contents)).record()
+    assert record["dataset"] == "owner/windows-6-1"
+    assert record["dataset_url"] == "https://huggingface.co/datasets/owner/windows-6-1"
+    details = record["window_config"]
+    assert details["found"] and details["ts_length"] == 6 and details["windows_code_version"] == "abc123"
+    assert details["statistics"] == [PIXEL_COUNTS, NORMALIZATION] and "dataset" not in details
+
+    unnamed = WindowConfig.read(view(root, tmp_path / "unnamed", reference(root))).record()
+    assert unnamed["dataset"] is None and unnamed["dataset_url"] is None and unnamed["window_config"]["found"]
+    missing = WindowConfig.read(view(root, tmp_path / "missing")).record()
+    assert missing["dataset"] is None and missing["window_config"] == {
+        "path": str(tmp_path / "missing" / "window_config.json"), "found": False}
 
 
 # ----- training reads the file first ----- #
