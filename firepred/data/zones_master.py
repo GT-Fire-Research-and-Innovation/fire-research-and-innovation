@@ -9,6 +9,7 @@ separation distance in minutes. Like the other masters, it prints its progress.
     python -m firepred.cli.dataset zones --data-root ./data [--scale-km 2.25]
 """
 
+from dataclasses import fields
 from pathlib import Path
 
 import numpy as np
@@ -79,9 +80,9 @@ def require_daily_windows(data_root, length=TS_LENGTH, interval=TS_INTERVAL):
 def require_same_settings(path, settings):
     """Refuse to add zones to a zones folder whose existing file was built with other settings.
 
-    Zone files built with different separation distances must never mix, just
-    as window repos never mix window settings. Another distance belongs in
-    another zones folder.
+    Zone files built with different settings (separation distance, or a window
+    length that caps memory_days differently) must never mix, just as window
+    repos never mix window settings. Other settings belong in another zones folder.
 
     Args:
         path (Path): an existing zone file.
@@ -92,8 +93,10 @@ def require_same_settings(path, settings):
     """
     existing = read_zone_file(path).settings
     if existing != settings:
-        raise ValueError(f"{path} was built with scale_km {existing.scale_km}, not {settings.scale_km}. "
-                         "Pass --overwrite, or another --zones-root for this distance.")
+        changed = ", ".join(f"{field.name} {getattr(existing, field.name)} (now {getattr(settings, field.name)})"
+                            for field in fields(settings) if getattr(existing, field.name) != getattr(settings, field.name))
+        raise ValueError(f"{path} was built with other settings: {changed}. "
+                         "Pass --overwrite, or another --zones-root for these settings.")
 
 
 def describe_zone_file(name, zones):
@@ -145,7 +148,7 @@ def build_zones(data_root=DATA_DIR, zones_root=None, splits=SPLITS, scale_km=FIR
     data_root = Path(data_root)
     zones_root = Path(zones_root) if zones_root else data_root / ZONE_DIR
     require_daily_windows(data_root, length, interval)
-    settings = split_settings(scale_km)
+    settings = split_settings(scale_km, length)
     zones_root.mkdir(parents=True, exist_ok=True)
     print(f"Zones at {settings.scale_km:g} km: link {settings.link_pixels:g} px, "
           f"memory {settings.memory_days} days -> {zones_root}")

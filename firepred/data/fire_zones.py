@@ -5,7 +5,10 @@ Level 1 (data). Pure functions: no files, no printing.
 Window w uses input days w .. w + T - 1 and predicts day w + T, where T is the
 window length (the history's first_label_day). Its zones come from the owner
 map at the end of its last input day, so they use no later day and are built
-the same way at inference:
+the same way at inference. Tracking remembers at most T days (split_settings
+caps memory_days at the window length), so the pixels that set a window's zones
+all burned within its own input days; which fire each one belongs to still
+follows that fire from day 0:
 
     zones          a pixel within link distance of a fire's recent pixels belongs to
                    the nearest such fire; every other pixel is 0
@@ -132,7 +135,14 @@ def zone_file(tracks, history, settings):
 
     Returns:
         ZoneFile: zones, target owners, fires and settings.
+
+    Raises:
+        ValueError: if the settings remember more days than a window holds
+            (split_settings caps them at its window_days).
     """
+    if settings.memory_days > history.first_label_day:
+        raise ValueError(f"Settings remember {settings.memory_days} days, more than the {history.first_label_day} "
+                         f"input days of a window: use split_settings(scale_km, window_days={history.first_label_day})")
     windows = range(window_count(history))
     empty = np.zeros((0, *history.burn_day.shape), dtype=np.int16)
     zones = [window_zones(tracks, history, window, settings) for window in windows]

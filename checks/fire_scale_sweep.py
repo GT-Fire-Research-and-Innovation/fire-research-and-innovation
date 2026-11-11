@@ -180,7 +180,7 @@ def stability_score(history, settings, rng):
     return float(np.mean(scores))
 
 
-def scale_report(histories, scale_km, perturb=False, seed=0):
+def scale_report(histories, scale_km, perturb=False, seed=0, length=TS_LENGTH):
     """Track every archive at one separation distance and sum what was found.
 
     Args:
@@ -188,11 +188,12 @@ def scale_report(histories, scale_km, perturb=False, seed=0):
         scale_km (float): the separation distance.
         perturb (bool): also measure stability (four tracking runs per archive instead of one).
         seed (int): random seed for the damage.
+        length (int): input days per window, the most days tracking remembers.
 
     Returns:
         ScaleReport: the counts.
     """
-    settings = split_settings(scale_km)
+    settings = split_settings(scale_km, length)
     rng = np.random.default_rng(seed)
     fires = new_fires = splits = merges = flip_flops = owned_new = unowned_new = 0
     stability = []
@@ -216,9 +217,9 @@ def scale_report(histories, scale_km, perturb=False, seed=0):
                        float(np.mean(stability)) if stability else float("nan"))
 
 
-def sweep_scales(histories, scales_km, perturb=False, seed=0):
+def sweep_scales(histories, scales_km, perturb=False, seed=0, length=TS_LENGTH):
     """Run scale_report for every distance, smallest first."""
-    return [scale_report(histories, scale_km, perturb, seed) for scale_km in sorted(scales_km)]
+    return [scale_report(histories, scale_km, perturb, seed, length) for scale_km in sorted(scales_km)]
 
 
 def format_sweep(reports):
@@ -251,7 +252,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     histories = load_histories(args.data_root, tuple(args.splits), args.length)
     print(f"{len(histories)} archives from {args.data_root} ({', '.join(args.splits)})")
-    print(format_sweep(sweep_scales(histories, args.scales, args.perturb, args.seed)))
+    print(format_sweep(sweep_scales(histories, args.scales, args.perturb, args.seed, args.length)))
 
 
 if __name__ == "__main__":

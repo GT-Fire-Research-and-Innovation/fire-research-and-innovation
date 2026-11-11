@@ -21,9 +21,11 @@ Tracking is a fold over days, state = advance_one_day(state, ...). Each day:
 
 Every threshold comes from one distance (split_settings): gaps shorter than it
 are noise to bridge (speckle, clouds, broken front lines), longer gaps
-separate fires. A merge keeps the older fire, a pixel equally close to two
-fires goes to the lower id, and groups are numbered by their first pixel in
-row-major order, so the same input always gives the same fires.
+separate fires. Day counts are capped at the window length, so tracking never
+remembers a pixel older than one window's input days: a window's zones come
+only from days its inputs hold. A merge keeps the older fire, a pixel equally
+close to two fires goes to the lower id, and groups are numbered by their first
+pixel in row-major order, so the same input always gives the same fires.
 """
 
 import math
@@ -127,34 +129,42 @@ class FireTracks:
 # ----- Settings and history ----- #
 
 
-def split_settings(scale_km=FIRE_SEPARATION_KM):
-    """Derive every tracking threshold from one separation distance.
+def split_settings(scale_km=FIRE_SEPARATION_KM, window_days=TS_LENGTH):
+    """Derive every tracking threshold from one separation distance, within one window's days.
 
     Smaller distances split more and clean less; larger ones clean more and
     split less. Distances become 375 m pixels, and the slow and fast spread
-    rates turn them into days.
+    rates turn them into days. Those day counts are capped at window_days, the
+    input days of a window, so no window's zones depend on days before its
+    inputs: at 2.25 km the 11 days of memory become 6 for 6-day windows.
 
     Args:
         scale_km (float): the separation distance in km.
+        window_days (int): input days per window (TS_LENGTH, -ts), the most days tracking looks back.
 
     Returns:
         SplitSettings: the thresholds.
 
     Raises:
-        ValueError: if scale_km is not positive.
+        ValueError: if scale_km or window_days is not positive.
     """
     if scale_km <= 0:
         raise ValueError(f"scale_km must be positive, got {scale_km}")
+    if int(window_days) != window_days or window_days < 1:
+        raise ValueError(f"window_days must be a positive whole number of days, got {window_days}")
+    window_days = int(window_days)
     # Rounded first, so 6.0000000001 pixels stays 6 when rounded up below.
     pixels = round(scale_km / VIIRS_PIXEL_KM, 6)
+    memory_days = min(window_days, max(1, math.floor(scale_km / SLOW_SPREAD_KM_PER_DAY + 0.5)))  # half up
     return SplitSettings(
         scale_km=float(scale_km),
         link_pixels=pixels,
         merge_pixels=pixels / 2,
-        memory_days=max(1, math.floor(scale_km / SLOW_SPREAD_KM_PER_DAY + 0.5)),  # rounded half up
-        split_days=max(1, math.ceil(round(scale_km / FAST_SPREAD_KM_PER_DAY, 6))),
+        memory_days=memory_days,
+        # The front is the newest part of the memory, and growth is counted inside it.
+        split_days=min(memory_days, max(1, math.ceil(round(scale_km / FAST_SPREAD_KM_PER_DAY, 6)))),
         min_pixels=max(1, math.ceil(pixels)),
-        min_growth_days=MIN_GROWTH_DAYS,
+        min_growth_days=min(memory_days, MIN_GROWTH_DAYS),
     )
 
 

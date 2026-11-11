@@ -325,7 +325,9 @@ VIIRS_PIXEL_KM = 0.375
 # Spread rates that turn the separation distance into days. Slow (0.2 km/day,
 # FIRED 2.3 km / 11 days and FEDS 1 km / 5 days agree) sets how long a quiet
 # fire is remembered; fast (1 km/day, FEDS forest buffer, Paugam 2026) sets how
-# many recent days count as a fire's front when testing for a split.
+# many recent days count as a fire's front when testing for a split. Both are
+# capped at the window length (TS_LENGTH, -ts): a window's zones come only from
+# its own input days, so at 2.25 km the 11 days of memory become 6. [ours]
 SLOW_SPREAD_KM_PER_DAY = 0.2
 FAST_SPREAD_KM_PER_DAY = 1.0
 # Days a new fire must grow on (and a split must hold) before it counts.

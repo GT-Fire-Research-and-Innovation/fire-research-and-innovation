@@ -163,7 +163,7 @@ def test_zone_files_that_do_not_fit_are_refused(tmp_path):
         FireDataset(root / "train", ts_length=6, target_is_single_day=True, zones_dir=zones)
     build_zones(root, zones_root=tmp_path / "zones-3km", splits=("train",), scale_km=3.0)
     (tmp_path / "zones-3km" / "p1.npz").replace(zones / "p1.npz")  # p1 at another distance than p2
-    with pytest.raises(ValueError, match="one zones folder per distance"):
+    with pytest.raises(ValueError, match=r"scale_km 2.25 \(others 3.0\).*one zones folder per setting"):
         FireDataset(root / "train", ts_length=6, target_is_single_day=True, zones_dir=zones)
     (tmp_path / "p1.npz").replace(zones / "p1.npz")
     (zones / "p1.npz").rename(tmp_path / "swap.npz")

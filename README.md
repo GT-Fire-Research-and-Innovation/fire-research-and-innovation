@@ -61,7 +61,10 @@ python checks/fire_scale_sweep.py --data-root ./data --perturb            # choo
 `zones` splits each archive's targets into separate fires (new ignitions far away, fronts
 that break in two, fires that meet) and writes `<data-root>/zones/p<id>.npz` beside the
 archives, which stay unchanged. One distance, `--scale-km` (default 2.25), sets every
-threshold: gaps shorter than it are noise to bridge, longer gaps separate fires.
+threshold: gaps shorter than it are noise to bridge, longer gaps separate fires. Tracking
+remembers at most one window's input days (`-ts`, 6): the 11 days of memory at 2.25 km are
+capped at 6, so a window's zones come only from days its inputs hold. Zone files record these
+settings; ones built before the cap must be rebuilt with `--overwrite`.
 Training reads `<data-root>/window_config.json` first and will not start without it.
 `download` copies it from the window repo; `upload-zip` packs it into data.zip; `--upload`
 on either statistics command also writes it back to the window repo. `rebuild-zip` does all of
@@ -115,7 +118,9 @@ records that in W&B (`defaults_used`); two numbers set the weights by hand. Dice
 **Fire split training (new, not in the paper):** `--zones-dir ./data/zones` trains on the zone files of
 `dataset zones`. Each training window becomes one sample per fire: its target is that fire's new
 pixels, and its loss skips the other fires' zones and new ignitions no fire reaches (14.7% of the
-6-1 target pixels at 2.25 km). A window without fires is one sample that learns "nothing burns". The
+6-1 target pixels at 2.25 km, measured before memory was capped at 6 days; `checks/fire_scale_sweep.py`
+gives the current share). A fire is a sample of a window only if it burned within that window's input
+days. A window without fires is one sample that learns "nothing burns". The
 samples of a window share their inputs, so the model still runs once per window and an epoch costs
 about the same; the loss splits the window (`objectives.fire_samples`). Dice is averaged per sample,
 so a small fire counts as much as a large one. Validation, checkpoint choice and test still score

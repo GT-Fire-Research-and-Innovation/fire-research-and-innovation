@@ -23,7 +23,7 @@ flipped and rotated with the target. The loss splits the window into one sample 
 fire from them (training/objectives.fire_samples); the inputs never change.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 
 import numpy as np
@@ -394,8 +394,11 @@ def zone_layout(zones_dir, sources, ts_length):
             raise ValueError(f"{files[name]} has {header.num_windows} windows; {source} needs one for each of its "
                              f"{windows} windows every {stride} days: rebuild the zone files from these archives")
         if settings is not None and header.settings != settings:
-            raise ValueError(f"{files[name]} was built with scale_km {header.settings.scale_km}, other files with "
-                             f"{settings.scale_km}: use one zones folder per distance")
+            changed = ", ".join(f"{field.name} {getattr(header.settings, field.name)} (others {getattr(settings, field.name)})"
+                                for field in fields(settings)
+                                if getattr(header.settings, field.name) != getattr(settings, field.name))
+            raise ValueError(f"{files[name]} was built with other settings than the other zone files: {changed}. "
+                             "Use one zones folder per setting")
         settings = header.settings
         strides[name] = stride
     return ZoneLayout(files, strides, settings)
