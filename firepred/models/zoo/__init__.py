@@ -7,5 +7,6 @@ available as `-m <name>`.
     swinunetr3d_tessera.py        + TESSERA as multi-scale FiLM context [ours]
     swinunetr3d_tessera_tpool.py  both of the above [ours]
     unet3d.py, attunet.py, unetr3d.py   the paper's baselines
+    res18unet.py                  ResNet-18 U-Net over the days stacked as channels [ours]
     _template.py                  the starting point for `python -m firepred.cli.new_model NAME`
 """
