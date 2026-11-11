@@ -9,7 +9,15 @@ import numpy as np
 import pytest
 
 from firepred.data.archive import read_zone_file, write_fire_archive, write_zone_file
-from firepred.data.fire_tracks import BurnHistory, link_clusters, split_settings, track_fire
+from firepred.data.fire_tracks import (
+    BurnHistory,
+    FireTracks,
+    burn_history,
+    link_clusters,
+    nearest_owner,
+    split_settings,
+    track_fire,
+)
 from firepred.data.fire_zones import fire_sample, window_target_owners, window_zones, zone_file
 from firepred.data.zones_master import build_zones
 
@@ -65,6 +73,29 @@ def test_link_clusters_is_exact_single_linkage():
     groups = link_clusters(mask, 6.0)
     assert groups[2, 2] == groups[2, 8] == 1
     assert groups[12, 2] != groups[13, 8]
+
+
+def test_equal_distance_goes_to_lower_id():
+    """A pixel exactly between two fires goes to the lower id, whichever fire's pixel comes first."""
+    owner = np.zeros((SIZE, SIZE), dtype=np.int32)
+    owner[10, 10], owner[10, 14] = 2, 1     # fire 2 comes first in row-major order
+    assert nearest_owner(owner, np.ones_like(owner, dtype=bool))[10, 12] == 1
+
+    days = empty_days()
+    days[10, 10] = days[10, 14] = FIRST_LABEL_DAY
+    owners = np.zeros((FIRST_LABEL_DAY + 2, SIZE, SIZE), dtype=np.int32)
+    owners[FIRST_LABEL_DAY:, 10, 10], owners[FIRST_LABEL_DAY:, 10, 14] = 2, 1
+    history = history_of(days, last_day=FIRST_LABEL_DAY + 1)
+    zones = window_zones(FireTracks(owners, ()), history, 1, SETTINGS)  # last input day = FIRST_LABEL_DAY
+    assert zones[10, 12] == 1 and zones[12, 12] == 1 and zones[10, 11] == 2
+
+
+def test_overlapping_targets_are_refused():
+    """Targets that repeat a pixel are not newly burned pixels, so their burn days would be wrong."""
+    labels = np.zeros((2, SIZE, SIZE), dtype=bool)
+    labels[:, 5, 5] = True
+    with pytest.raises(ValueError):
+        burn_history(labels, np.zeros((FIRST_LABEL_DAY, SIZE, SIZE), dtype=np.float32))
 
 
 # ----- Tracking scenarios ----- #

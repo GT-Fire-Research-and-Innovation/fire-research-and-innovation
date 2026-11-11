@@ -1384,7 +1384,11 @@ def write_zone_file(save_path, zone_file, compresslevel=NPZ_COMPRESSLEVEL):
     write_npz(save_path, payload, compresslevel=compresslevel)
 
     saved = read_zone_file(save_path)
-    if len(saved.zones) != len(zone_file.zones) or saved.events != tuple(zone_file.events):
+    same = (len(saved.zones) == len(zone_file.zones) and saved.events == tuple(zone_file.events)
+            and saved.settings == zone_file.settings
+            and all(np.array_equal(a, b) for a, b in zip(saved.zones, zone_file.zones))
+            and all(np.array_equal(a, b) for a, b in zip(saved.target_owners, zone_file.target_owners)))
+    if not same:
         raise RuntimeError(f"Zone file did not read back correctly: {save_path}")
     return Path(save_path)
 

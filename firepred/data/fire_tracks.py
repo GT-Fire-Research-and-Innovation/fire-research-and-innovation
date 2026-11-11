@@ -21,8 +21,9 @@ Tracking is a fold over days, state = advance_one_day(state, ...). Each day:
 
 Every threshold comes from one distance (split_settings): gaps shorter than it
 are noise to bridge (speckle, clouds, broken front lines), longer gaps
-separate fires. Ties go to the older fire, then the lower id, then the first
-pixel in row-major order, so the same input always gives the same fires.
+separate fires. A merge keeps the older fire, a pixel equally close to two
+fires goes to the lower id, and groups are numbered by their first pixel in
+row-major order, so the same input always gives the same fires.
 """
 
 import math
@@ -174,8 +175,13 @@ def burn_history(labels, night_heat, label_sel=-1, first_label_day=TS_LENGTH, se
 
     Returns:
         BurnHistory: burn and seed days.
+
+    Raises:
+        ValueError: if two targets share a pixel (they would not be newly burned pixels only).
     """
     labels = np.asarray(labels, dtype=bool)
+    if (labels.sum(axis=0) > 1).any():
+        raise ValueError("Targets share pixels: fire tracking needs targets of newly burned pixels only")
     burn_day = np.full(labels.shape[1:], -1, dtype=np.int16)
     for window, target in enumerate(labels):
         burn_day[target & (burn_day < 0)] = first_label_day + window
@@ -247,7 +253,8 @@ def nearest_owner(owner, mask):
     """Give every pixel of a mask the id of the closest owned pixel inside that mask.
 
     Only owners inside the mask compete, so a pixel is never handed to a fire
-    outside its own group. Pixels outside the mask, and masks with no owner, get 0.
+    outside its own group. A pixel equally close to two fires goes to the lower
+    id. Pixels outside the mask, and masks with no owner, get 0.
 
     Args:
         owner (np.ndarray): (H, W) int, fire ids with 0 for none.
@@ -257,12 +264,14 @@ def nearest_owner(owner, mask):
         np.ndarray: (H, W) of owner's dtype.
     """
     result = np.zeros(owner.shape, dtype=owner.dtype)
-    owned = np.argwhere(mask & (owner > 0))
-    if len(owned) == 0:
+    fire_ids = np.unique(owner[mask & (owner > 0)])
+    if len(fire_ids) == 0:
         return result
     queries = np.argwhere(mask)
-    _, closest = cKDTree(owned).query(queries)
-    result[queries[:, 0], queries[:, 1]] = owner[owned[closest, 0], owned[closest, 1]]
+    distances = [cKDTree(np.argwhere(mask & (owner == fire_id))).query(queries)[0] for fire_id in fire_ids]
+    # One distance per fire, so a tie never depends on the k-d tree's inner order: argmin keeps
+    # the first of equal distances, and fire_ids is sorted, so the lower id wins.
+    result[queries[:, 0], queries[:, 1]] = fire_ids[np.argmin(distances, axis=0)]
     return result
 
 

@@ -61,8 +61,8 @@ def window_zones(tracks, history, window, settings):
     """Map which fire owns each area of a window, from its input days only.
 
     Every pixel within link distance of a fire's recent pixels belongs to the
-    nearest fire, so fires never share a pixel. Pixels farther than that from
-    every fire are 0.
+    nearest fire (the lower id on a tie), so fires never share a pixel. Pixels
+    farther than that from every fire are 0.
 
     Args:
         tracks (FireTracks): the archive's tracks.
@@ -75,11 +75,14 @@ def window_zones(tracks, history, window, settings):
     """
     fires = recent_fire_pixels(tracks, history, last_input_day(history, window), settings)
     zones = np.zeros(fires.shape, dtype=np.int16)
-    if not fires.any():
+    fire_ids = np.unique(fires[fires > 0])
+    if len(fire_ids) == 0:
         return zones
-    distance, (rows, cols) = distance_transform_edt(fires == 0, return_indices=True)
-    within_reach = distance <= settings.link_pixels
-    zones[within_reach] = fires[rows[within_reach], cols[within_reach]]
+    # One distance map per fire: argmin keeps the first of equal distances, and fire_ids is
+    # sorted, so a tie goes to the lower id rather than to the transform's inner order.
+    distances = np.stack([distance_transform_edt(fires != fire_id) for fire_id in fire_ids])
+    within_reach = distances.min(axis=0) <= settings.link_pixels
+    zones[within_reach] = fire_ids[distances.argmin(axis=0)[within_reach]]
     return zones
 
 
