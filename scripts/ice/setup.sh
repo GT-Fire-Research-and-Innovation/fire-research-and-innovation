@@ -5,7 +5,8 @@
 #   bash scripts/ice/setup.sh
 # It builds the Python environment in ~/scratch, then runs the Hugging Face and W&B logins
 # (paste your tokens into the terminal prompts only, never into a chat or a file in the repo).
-# Safe to run again: an existing environment is reused and only updated.
+# Safe to run again: an existing environment is reused and only updated. Rerun it whenever a library
+# is missing (ModuleNotFoundError): it checks every import and installs what is missing.
 #
 # Python (3.9 or newer):
 #   default              a venv from ICE's own python3 (Python 3.9 on ICE's RHEL 9)
@@ -21,6 +22,7 @@
 # Optional tests: sbatch scripts/ice/test.sbatch (a CPU job; setup only checks library imports).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
+FIREPRED_SETUP=1                       # env.sh: the environment may not exist yet
 source scripts/ice/env.sh
 STACK="${STACK:-paper}"
 
@@ -44,22 +46,62 @@ PY="$FIREPRED_ENV/bin/python"
 echo "Python: $("$PY" -V 2>&1) in $FIREPRED_ENV"
 "$PY" -m pip install --upgrade pip
 
-# The GPU wheels run on ICE's H100/H200/A100/V100 nodes; the login node has no GPU, which is fine for installing.
+# torch comes from PyTorch's own index. Its GPU wheels run on ICE's NVIDIA nodes; the login node has no
+# GPU, which is fine for installing.
 case "$STACK" in
-  paper)
-    "$PY" -m pip install --upgrade --index-url "${TORCH_INDEX:-https://download.pytorch.org/whl/cu121}" \
-      torch==2.3.1 torchvision==0.18.1
-    PINS=("numpy<2" monai==1.3.2) ;;
-  latest)
-    "$PY" -m pip install --upgrade --index-url "${TORCH_INDEX:-https://download.pytorch.org/whl/cu126}" torch torchvision
-    PINS=(numpy monai) ;;
+  paper)  TORCH=(torch==2.3.1 torchvision==0.18.1); PINS=("numpy<2" monai==1.3.2)
+          TORCH_URL="${TORCH_INDEX:-https://download.pytorch.org/whl/cu121}" ;;
+  latest) TORCH=(torch torchvision); PINS=(numpy monai)
+          TORCH_URL="${TORCH_INDEX:-https://download.pytorch.org/whl/cu126}" ;;
   *) echo "!! STACK must be paper or latest, not '$STACK'"; exit 1 ;;
 esac
-# backports.zstd reads the Zstandard archives before Python 3.14; its last release for Python 3.9 is 1.3.0.
-"$PY" -m pip install --upgrade "${PINS[@]}" scipy pandas matplotlib tqdm huggingface_hub rasterio pyproj \
-  einops wandb pytest 'backports.zstd; python_version<"3.14"'
-"$PY" -c "import sys, torch, monai, numpy, scipy; print('python', sys.version.split()[0], '| torch', torch.__version__,
-'| monai', monai.__version__, '| numpy', numpy.__version__, '| scipy', scipy.__version__)"
+# Everything else firepred imports. pip picks the newest release for this Python; on ICE's Python 3.9
+# that is numpy 1.26, scipy 1.13, pandas 2.3, matplotlib 3.9, rasterio 1.4, pyproj 3.6.1 and
+# backports.zstd 1.3.0. backports.zstd reads the Zstandard archives before Python 3.14.
+PACKAGES=(scipy pandas matplotlib tqdm huggingface_hub rasterio pyproj einops wandb pytest)
+"$PY" -c 'import sys; sys.exit(sys.version_info >= (3, 14))' && PACKAGES+=(backports.zstd)
+MODULES=(torch torchvision monai numpy "${PACKAGES[@]}")   # import names, which are also the pip names
+
+# One package that fails must not leave the others uninstalled: a failed install is only reported here,
+# and the check below installs whatever is still missing.
+"$PY" -m pip install --upgrade --index-url "$TORCH_URL" "${TORCH[@]}" || echo "!! torch did not install"
+"$PY" -m pip install --upgrade "${PINS[@]}" "${PACKAGES[@]}" || echo "!! some packages did not install"
+
+# missing MODULE...: the modules this Python cannot import, one per line (each reason goes to stderr).
+missing() {
+  "$PY" - "$@" <<'EOF'
+import importlib
+import sys
+for name in sys.argv[1:]:
+    try:
+        importlib.import_module(name)
+    except Exception as error:
+        print(name)
+        print(f"   cannot import {name}: {type(error).__name__}: {error}", file=sys.stderr)
+EOF
+}
+for name in $(missing "${MODULES[@]}"); do
+  echo "Installing $name again on its own"
+  case "$name" in
+    torch|torchvision) "$PY" -m pip install --index-url "$TORCH_URL" "${TORCH[@]}" || true ;;
+    *) "$PY" -m pip install "${PINS[@]}" "$name" || true ;;
+  esac
+done
+MISSING=$(missing "${MODULES[@]}")
+if [ -n "$MISSING" ]; then
+  echo "!! Still missing in $FIREPRED_ENV:" $MISSING
+  echo "   The pip errors above say why. Fix that, then rerun bash scripts/ice/setup.sh (it keeps what is installed)."
+  exit 1
+fi
+# firepred's own command lines must start too, which also shows the code runs on this Python.
+"$PY" -m firepred.cli.dataset --help >/dev/null && "$PY" -m firepred.cli.train --help >/dev/null \
+  || { echo "!! firepred does not start in $FIREPRED_ENV (error above)"; exit 1; }
+"$PY" - "${MODULES[@]}" <<'EOF'
+import sys
+from importlib import metadata
+versions = [f"{name} {metadata.version(name.replace('.', '_'))}" for name in sys.argv[1:]]   # 3.9 needs "_"
+print("All imports work. python", sys.version.split()[0], "|", " | ".join(versions))
+EOF
 
 # The processed window repos are gated: log in once (older huggingface_hub has only huggingface-cli).
 if command -v hf >/dev/null; then hf auth whoami >/dev/null 2>&1 || hf auth login
