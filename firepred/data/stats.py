@@ -539,8 +539,20 @@ class WindowConfig:
     def check_windows(self, ts_length, ts_interval=None):
         """Refuse a run whose -ts/-it differ from the recorded window settings (unrecorded ones are not checked).
 
-        A daily data root fixes no window: its archives are cut at the run's
-        -ts/-it when read, and each one refuses settings it lacks the days for.
+        A window data root stores windows of one length and interval, so a run
+        must ask for the same ones. A daily data root fixes no window: its
+        archives are cut at the run's -ts/-it when read, and each one refuses
+        settings it lacks the days for.
+
+        Args:
+            ts_length (int): the run's -ts.
+            ts_interval (int | None): the run's -it, or None when not given.
+
+        Returns:
+            WindowConfig: this config, for chaining.
+
+        Raises:
+            ValueError: if a recorded setting differs from the run's.
         """
         if self.is_daily:
             return self

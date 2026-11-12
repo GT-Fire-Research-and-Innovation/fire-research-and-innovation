@@ -20,7 +20,7 @@ from scratch in [docs/swinunetr3d/](docs/swinunetr3d/).
     ├── tests/                    # pytest: unit tests, golden/ (same-output values), end-to-end runs
     ├── checks/                   # dataset checks and experiment diagnostics (start with count_windows.py)
     ├── tools/                    # trace_shapes.py: real tensor shapes through SwinUNETR-3D
-    ├── scripts/ice/              # GT PACE ICE: setup, Slurm jobs for data and training, status
+    ├── scripts/ice/              # GT PACE ICE: setup, partitions, Slurm jobs for data, training and tests, QUICKSTART
     ├── docs/                     # ARCHITECTURE, KNOWN_ISSUES, swinunetr3d/ explainer
     ├── roi/                      # fire metadata CSVs (ids, dates, locations, label rule)
     └── figures/                  # dataset figures from the paper
@@ -42,8 +42,9 @@ Prepare the environment
 ```
 conda env create -f environment.yml
 ```
-Window and TESSERA archives are Zstandard-compressed. On Python < 3.14 (Kaggle, Colab) also run
-`pip install backports.zstd` before reading or building data.
+Window and TESSERA archives are Zstandard-compressed. On Python < 3.14 (Kaggle, Colab, PACE ICE) also run
+`pip install backports.zstd` before reading or building data. The code runs on Python 3.9 and newer;
+on 3.9 pip installs backports.zstd 1.3.0, its last release for 3.9.
 
 The Kaggle/Colab notebooks run this local checkout, not a GitHub clone: `python tools/pack_code.py`
 writes `dist/firepred-code.zip` (uncommitted changes included, with a `code_version.json` saying which
@@ -151,21 +152,30 @@ ends with the same weights as a run that was never stopped. A file from a run wi
 ## GT PACE ICE
 
 `scripts/ice/` runs everything from a terminal on PACE ICE: `ssh <gt-username>@login-ice.pace.gatech.edu`
-(GT VPN when off campus), or in a browser ICE OnDemand > Clusters > ICE Shell Access. The jobs use the
-College of Computing's `coc-gpu` partition (one GPU per job) and `ice-cpu`, both under the `coc-ice`
-QOS, with a 16 h limit per job. `plan.sh` checks the partitions with `sinfo` before submitting; see yours
-with `sinfo -s` and `sacctmgr show assoc user=$USER format=account,partition,qos%40`, and pass
-`PARTITION=... CPU_PARTITION=... QOS=...` (or `sbatch -p ... --qos ...`) if they differ (College of
-Engineering: `PARTITION=coe-gpu QOS=coe-ice`). Everything large lives in
-`~/scratch` (the home directory is small: `pace-quota`).
+(GT VPN when off campus), or in a browser ICE OnDemand > Clusters > ICE Shell Access. By default the jobs
+use the College of Computing's `coc-gpu` partition (one GPU per job) and `ice-cpu`, both under the
+`coc-ice` QOS, with a 16 h limit per job. `bash scripts/ice/partitions.sh` shows which partitions accept
+your jobs and under which QOS; choose others with `PARTITION=` (one or a comma list such as
+`coc-gpu,ice-gpu,pace-gpu`, whichever has a free GPU first), `QOS=`, `CPU_PARTITION=`, `CPU_QOS=`,
+`ACCOUNT=` and `GPU_TYPE=` (e.g. `h100`). `plan.sh` checks each listed partition with
+`sbatch --test-only` and leaves out one that refuses the jobs (College of Engineering:
+`PARTITION=coe-gpu QOS=coe-ice`). The environment is a venv from ICE's own Python 3.9 by default, with
+the paper's torch 2.3.1 and MONAI 1.3.2; `setup.sh` explains the other choices. Everything large lives
+in `~/scratch` (the home directory is small: `pace-quota`). Commands for partitions, nodes, GPUs, jobs
+and quotas: [scripts/ice/QUICKSTART.md](scripts/ice/QUICKSTART.md).
 ```
 git clone -b fire-split-zones https://github.com/GT-Fire-Research-and-Innovation/fire-research-and-innovation.git
 cd fire-research-and-innovation
 bash scripts/ice/setup.sh                       # once: Python env in ~/scratch/envs/firepred, HF + W&B logins
-NAME=swin_daily bash scripts/ice/plan.sh        # data (first time) -> GPU smoke test -> 3 chained 16 h jobs
+bash scripts/ice/partitions.sh                  # where your jobs are accepted (partitions, QOS, GPUs, free nodes)
+NAME=swin_daily bash scripts/ice/plan.sh        # data (first time) -> 3 chained 16 h jobs
 NAME=swin_zones ZONES=1 bash scripts/ice/plan.sh   # the same run trained one sample per fire (zone files)
 bash scripts/ice/status.sh                      # jobs, run states, last epoch of the latest logs
 ```
+`setup.sh` only checks library imports; it does not run pytest. Tests are optional:
+`NAME=swin_daily SMOKE=1 bash scripts/ice/plan.sh` adds a GPU smoke test before training,
+and `sbatch scripts/ice/test.sbatch` runs the full CPU test suite (`SLOW=1` includes slow tests).
+
 - `data.sbatch` converts `ts-satfire-processed-6-1` into a daily root at `~/scratch/firepred/data-daily`
   (`DAILY_REPO=...` downloads an existing daily repo instead; `DEST_REPO=...` also uploads the conversion)
   and builds its zone files for `-ts 6` (`TS=`, `SCALE_KM=` for others).

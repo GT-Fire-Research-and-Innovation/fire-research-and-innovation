@@ -222,6 +222,12 @@
         "cli"
       ],
       "reason": "train: --resume (run state rewritten every epoch)"
+    },
+    {
+      "groups": [
+        "cli"
+      ],
+      "reason": "cli: check help lists res18unet (stale since the Res18 merge); --test-after-train help is the same on every Python (BooleanFlagAction)"
     }
   ]
 }

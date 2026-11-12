@@ -4,6 +4,7 @@
 #   DAILY_REPO=SamuelWu318/ts-satfire-daily sbatch scripts/ice/data.sbatch   # or download daily archives
 #   DEST_REPO=SamuelWu318/ts-satfire-daily sbatch scripts/ice/data.sbatch    # convert and also upload them
 #   SCALE_KM=3 ZONES_ROOT=... TS=6 also apply. Rerunning skips fires already converted and zone files built.
+#   Elsewhere: sbatch -p <cpu partition> --qos=<qos> scripts/ice/data.sbatch (plan.sh passes CPU_PARTITION, CPU_QOS).
 #SBATCH -J fp-data
 #SBATCH -p ice-cpu
 #SBATCH --qos=coc-ice

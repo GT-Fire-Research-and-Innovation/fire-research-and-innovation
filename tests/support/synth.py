@@ -5,10 +5,18 @@ the code under test, so both trees read byte-identical files.
 """
 
 import json
-import zipfile
+import sys
 from pathlib import Path
 
 import numpy as np
+
+# 3.14's zipfile (Python >= 3.14, or the backports.zstd copy before) writes the same bytes on every
+# Python. Older standard libraries (3.9 among them) record "version needed" 20 instead of 45 for
+# ZIP64 members in the central directory, which would change the golden roi zip_listing CRCs.
+if sys.version_info >= (3, 14):
+    import zipfile
+else:
+    from backports.zstd import zipfile
 
 SIZE = 256
 STORED_CHANNELS = 27
