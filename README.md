@@ -115,13 +115,13 @@ ends with the same weights as a run that was never stopped. A file from a run wi
 
 `scripts/ice/` runs everything from a terminal on PACE ICE: `ssh <gt-username>@login-ice.pace.gatech.edu`
 (GT VPN when off campus), or in a browser ICE OnDemand > Clusters > ICE Shell Access. By default the jobs
-use the College of Computing's `coc-gpu` partition (one GPU per job) and `ice-cpu`, both under the
-`coc-ice` QOS, with a 16 h limit per job. `bash scripts/ice/partitions.sh` shows which partitions accept
+use the `ice-gpu` partition (one GPU per job) and `ice-cpu`, both under your Slurm default QOS, with a
+16 h limit per job. `bash scripts/ice/partitions.sh` shows which partitions accept
 your jobs and under which QOS; choose others with `PARTITION=` (one or a comma list such as
-`coc-gpu,ice-gpu,pace-gpu`, whichever has a free GPU first), `QOS=`, `CPU_PARTITION=`, `CPU_QOS=`,
+`ice-gpu,coe-gpu`, whichever has a free GPU first), `QOS=`, `CPU_PARTITION=`, `CPU_QOS=`,
 `ACCOUNT=` and `GPU_TYPE=` (e.g. `h100`). `plan.sh` checks each listed partition with
-`sbatch --test-only` and leaves out one that refuses the jobs (College of Engineering:
-`PARTITION=coe-gpu QOS=coe-ice`). The environment is a venv from ICE's own Python 3.9 by default, with
+`sbatch --test-only` and leaves out one that refuses the jobs (College of
+Engineering H100/H200 nodes: `PARTITION=coe-gpu`). The environment is a venv from ICE's own Python 3.9 by default, with
 the paper's torch 2.3.1 and MONAI 1.3.2; `setup.sh` explains the other choices. Everything large lives
 in `~/scratch` (the home directory is small: `pace-quota`). Full guide (quickstart, running, testing,
 partitions, jobs and quotas): [scripts/ice/README.md](scripts/ice/README.md).

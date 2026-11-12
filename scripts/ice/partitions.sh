@@ -2,9 +2,9 @@
 # What can you run on PACE ICE? Lists partitions with their GPUs, free nodes and time limit, and checks
 # whether Slurm would accept a job from you on each (sbatch --test-only: nothing is submitted).
 #   bash scripts/ice/partitions.sh                              # every partition
-#   bash scripts/ice/partitions.sh coc-gpu ice-gpu pace-gpu     # only these
+#   bash scripts/ice/partitions.sh ice-gpu coe-gpu ice-cpu      # only these
 #   QOS=coe-ice ACCOUNT=... GPU_TYPE=h100 bash scripts/ice/partitions.sh coe-gpu
-# A partition is tried with QOS (coc-ice), then with your default QOS, then with each other QOS of your
+# A partition is tried with QOS (when set), then with your default QOS, then with each other QOS of your
 # Slurm associations; the QOS column names the first one accepted, to pass as QOS=... to plan.sh.
 # Then: PARTITION=<gpu partitions, comma-separated> QOS=... CPU_PARTITION=... CPU_QOS=... bash scripts/ice/plan.sh
 set -uo pipefail
@@ -26,7 +26,7 @@ for part in "${PARTS[@]}"; do
   gpus=$(sinfo -h -p "$part" -o '%G' 2>/dev/null | tr ',' '\n' | grep '^gpu' | sed 's/(.*//' | sort -u | tr '\n' ' ')
   kind=cpu; [ -n "$gpus" ] && kind=gpu
   access=no; used="-"; reason=""
-  for qos in "$QOS" "" $USER_QOS; do
+  for qos in ${QOS:+"$QOS"} "" $USER_QOS; do
     if slurm_accepts "$part" "$qos" "$kind"; then access=yes; used=${qos:-default}; break; fi
     [ -z "$reason" ] && reason=$SLURM_REASON
   done

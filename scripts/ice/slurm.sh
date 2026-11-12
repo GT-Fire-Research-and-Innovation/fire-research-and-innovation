@@ -1,11 +1,11 @@
 # Slurm settings and checks shared by the PACE ICE scripts. Sourced by plan.sh, partitions.sh and
 # submit-time helpers, never run on its own. Override any of these by exporting it first:
 #
-#   PARTITION      GPU partition(s) for training and the smoke test        (coc-gpu)
-#                  one name, or a comma list such as coc-gpu,ice-gpu,pace-gpu: Slurm then starts
+#   PARTITION      GPU partition(s) for training and the smoke test        (ice-gpu)
+#                  one name, or a comma list such as ice-gpu,coe-gpu: Slurm then starts
 #                  each job on whichever listed partition can run it first
 #   CPU_PARTITION  CPU partition(s) for the data and test jobs              (ice-cpu)
-#   QOS            quality of service of the GPU jobs                       (coc-ice)
+#   QOS            quality of service of the GPU jobs, e.g. coc-ice         (your Slurm default)
 #   CPU_QOS        quality of service of the CPU jobs                       ($QOS)
 #   ACCOUNT        Slurm account (sbatch -A); empty uses your default        (empty)
 #   GPU_TYPE       one GPU model, e.g. h100, h200, a100 (bash scripts/ice/partitions.sh lists them);
@@ -15,9 +15,9 @@
 # CPU_QOS supports the same values; when unset it follows QOS.
 # Which of these you may use: bash scripts/ice/partitions.sh
 
-PARTITION="${PARTITION:-coc-gpu}"
+PARTITION="${PARTITION:-ice-gpu}"
 CPU_PARTITION="${CPU_PARTITION:-ice-cpu}"
-QOS="${QOS-coc-ice}"
+QOS="${QOS:-}"
 CPU_QOS="${CPU_QOS-$QOS}"
 [ "$QOS" = default ] && QOS=""
 [ "$CPU_QOS" = default ] && CPU_QOS=""
