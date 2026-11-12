@@ -67,4 +67,4 @@ else huggingface-cli whoami >/dev/null 2>&1 || huggingface-cli login; fi
 wandb login                                          # entity gt-fri, project AFBAPred
 mkdir -p logs
 echo "Ready. Next: bash scripts/ice/partitions.sh (where you can run), then NAME=swin_daily bash scripts/ice/plan.sh"
-echo "Optional tests: sbatch scripts/ice/test.sbatch  (see scripts/ice/QUICKSTART.md)"
+echo "Optional tests: sbatch scripts/ice/test.sbatch  (see scripts/ice/README.md)"

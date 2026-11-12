@@ -20,7 +20,7 @@ from scratch in [docs/swinunetr3d/](docs/swinunetr3d/).
     ├── tests/                    # pytest: unit tests, golden/ (same-output values), end-to-end runs
     ├── checks/                   # dataset checks and experiment diagnostics (start with count_windows.py)
     ├── tools/                    # trace_shapes.py: real tensor shapes through SwinUNETR-3D
-    ├── scripts/ice/              # GT PACE ICE: setup, partitions, Slurm jobs for data, training and tests, QUICKSTART
+    ├── scripts/ice/              # GT PACE ICE: setup, partitions, Slurm jobs for data, training and tests, README guide
     ├── docs/                     # ARCHITECTURE, KNOWN_ISSUES, swinunetr3d/ explainer
     ├── roi/                      # fire metadata CSVs (ids, dates, locations, label rule)
     └── figures/                  # dataset figures from the paper
@@ -123,8 +123,8 @@ your jobs and under which QOS; choose others with `PARTITION=` (one or a comma l
 `sbatch --test-only` and leaves out one that refuses the jobs (College of Engineering:
 `PARTITION=coe-gpu QOS=coe-ice`). The environment is a venv from ICE's own Python 3.9 by default, with
 the paper's torch 2.3.1 and MONAI 1.3.2; `setup.sh` explains the other choices. Everything large lives
-in `~/scratch` (the home directory is small: `pace-quota`). Commands for partitions, nodes, GPUs, jobs
-and quotas: [scripts/ice/QUICKSTART.md](scripts/ice/QUICKSTART.md).
+in `~/scratch` (the home directory is small: `pace-quota`). Full guide (quickstart, running, testing,
+partitions, jobs and quotas): [scripts/ice/README.md](scripts/ice/README.md).
 ```
 git clone -b daily-store https://github.com/GT-Fire-Research-and-Innovation/fire-research-and-innovation.git
 cd fire-research-and-innovation
