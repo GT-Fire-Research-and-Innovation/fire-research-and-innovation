@@ -124,6 +124,9 @@ class Trainer:
     def state_dict(self):
         """Give everything that changes while training, for a RunState (--resume).
 
+        The model, optimizer, gradient scaler and schedule each give their own
+        state_dict. Together they are what an interrupted run needs to continue.
+
         Returns:
             dict: model, optimizer, gradient scaler and schedule states.
         """
@@ -132,6 +135,9 @@ class Trainer:
 
     def load_state_dict(self, state):
         """Put back a state_dict() result, so training continues where it stopped.
+
+        Each part is loaded into the object that wrote it. The trainer must be
+        built with the same settings as the run that saved the state.
 
         Args:
             state (dict): state_dict()'s result.

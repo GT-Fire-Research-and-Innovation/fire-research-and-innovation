@@ -5,10 +5,11 @@ Level 1 (data). numpy and the zipfile below only, so it loads on any training ma
 .npz files [ours]: window and TESSERA archives compress every .npy member with Zstandard
 (zip method 93) at NPZ_COMPRESSLEVEL. On a quantized float32 field, level 6 decompressed
 about 1.8x faster than zlib level 1 and packed 16% tighter, for 14% slower writing; on
-noisy float32 the sizes match. Python 3.14 reads such zips natively (PEP 784); 3.10-3.13
-use the zipfile of the backports.zstd package, a copy of 3.14's. np.load cannot open them
-before 3.14 ("That compression method is not supported"), so every archive is read
-through open_npz, which answers archive["name"] and archive.files like np.load's NpzFile.
+noisy float32 the sizes match. Python 3.14 reads such zips natively (PEP 784); 3.9-3.13
+use the zipfile of the backports.zstd package, a copy of 3.14's (1.3.0 is its last release
+for 3.9). np.load cannot open them before 3.14 ("That compression method is not
+supported"), so every archive is read through open_npz, which answers archive["name"]
+and archive.files like np.load's NpzFile.
 Older zlib archives read the same way, since each member records its own method.
 
 Window archives [ours, format version 2], one per fire:

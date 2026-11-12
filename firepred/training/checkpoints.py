@@ -126,6 +126,9 @@ class CheckpointStore:
     def restore(self, kept):
         """Take back the checkpoints an earlier part of this run kept (RunState); missing files are dropped.
 
+        A resumed run keeps ranking against the checkpoints it already saved.
+        If more remain than the store keeps, the worst ones are deleted.
+
         Args:
             kept (list[list]): [validation loss, file] pairs from state().
 
@@ -258,7 +261,10 @@ class CheckpointLoader:
                 """
                 return reconstruct(*args, **kwargs)
 
+            # torch matches an allowed function by __module__ + "." + __qualname__; the
+            # nested definition's qualname ("...<locals>._reconstruct") would never match.
             _reconstruct.__module__ = module_name
+            _reconstruct.__qualname__ = "_reconstruct"
             return _reconstruct
 
         allowed = [np.ndarray, np.dtype]
@@ -406,6 +412,9 @@ class RunState:
     def write(self, epoch, trainer, store, run_id, generator=None):
         """Save the state after a finished epoch, replacing the previous one only once fully written.
 
+        The state is first written to a .partial file and then renamed over the
+        old one. A job stopped mid-write therefore still leaves the last complete state.
+
         Args:
             epoch (int): the 0-based epoch just finished.
             trainer (Trainer): its model, optimizer, scaler and schedule.
@@ -440,6 +449,9 @@ class RunState:
     def read(self, device, config):
         """Load the state and refuse it if it belongs to another run.
 
+        The state is compared with this run's settings (RESUME_SETTINGS). Any
+        difference stops the run instead of mixing two runs in one state file.
+
         Args:
             device (Device | torch.device | str): where its tensors go.
             config (RunConfig): this run's settings.
@@ -464,6 +476,10 @@ class RunState:
     @staticmethod
     def restore(state, trainer, store, generator=None):
         """Put a read state back: weights, optimizer, scaler, schedule, kept checkpoints and random generators.
+
+        With every random generator restored, the rest of the run draws the
+        same numbers as an uninterrupted run. Training then continues after the
+        last finished epoch.
 
         Args:
             state (dict): read()'s result.
