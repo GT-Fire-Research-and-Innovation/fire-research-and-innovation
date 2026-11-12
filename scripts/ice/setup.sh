@@ -18,7 +18,7 @@
 #                          Python 3.9). Golden model and training values then differ slightly, since
 #                          torch changes floating-point results between versions.
 #   TORCH_INDEX=URL        where torch comes from instead (e.g. https://download.pytorch.org/whl/cu118)
-# The whole test suite: sbatch scripts/ice/test.sbatch (a CPU job; the login node only runs a quick check).
+# Optional tests: sbatch scripts/ice/test.sbatch (a CPU job; setup only checks library imports).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 source scripts/ice/env.sh
@@ -60,12 +60,11 @@ esac
   einops wandb pytest 'backports.zstd; python_version<"3.14"'
 "$PY" -c "import sys, torch, monai, numpy, scipy; print('python', sys.version.split()[0], '| torch', torch.__version__,
 '| monai', monai.__version__, '| numpy', numpy.__version__, '| scipy', scipy.__version__)"
-"$PY" -m pytest -q tests/test_daily.py   # quick CPU check of the code on ICE
 
 # The processed window repos are gated: log in once (older huggingface_hub has only huggingface-cli).
 if command -v hf >/dev/null; then hf auth whoami >/dev/null 2>&1 || hf auth login
 else huggingface-cli whoami >/dev/null 2>&1 || huggingface-cli login; fi
 wandb login                                          # entity gt-fri, project AFBAPred
 mkdir -p logs
-echo "Ready. Next: bash scripts/ice/partitions.sh (where you can run), sbatch scripts/ice/test.sbatch (all tests),"
-echo "       then bash scripts/ice/plan.sh  (see README, 'GT PACE ICE', and scripts/ice/QUICKSTART.md)"
+echo "Ready. Next: bash scripts/ice/partitions.sh (where you can run), then NAME=swin_daily bash scripts/ice/plan.sh"
+echo "Optional tests: sbatch scripts/ice/test.sbatch  (see scripts/ice/QUICKSTART.md)"

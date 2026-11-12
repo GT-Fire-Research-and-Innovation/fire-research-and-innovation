@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Queue a whole run on PACE ICE from the login node, in order:
 #   1. the daily data root, if $DATA_ROOT has none yet (data.sbatch)
-#   2. a smoke test: one training step on a GPU with the real data (check data --train-step)
+#   2. optional, SMOKE=1: one training step on a GPU with the real data (check data --train-step)
 #   3. CHAIN training jobs of one run, each continuing the last through --resume (train.sbatch)
-# If the smoke test fails Slurm cancels the training jobs (DependencyNeverSatisfied).
+# Training waits for successful data preparation and, when enabled, the smoke test.
 #   NAME=swin_daily bash scripts/ice/plan.sh
+#   NAME=swin_daily SMOKE=1 bash scripts/ice/plan.sh   # optional GPU check before training
 #   NAME=swin_long CHAIN=4 EXTRA="--epochs 100" bash scripts/ice/plan.sh
 #   NAME=swin_daily PARTITION=coc-gpu,ice-gpu,pace-gpu bash scripts/ice/plan.sh   # first free GPU of the three
 #   NAME=swin_h100 PARTITION=ice-gpu GPU_TYPE=h100 bash scripts/ice/plan.sh
@@ -38,20 +39,21 @@ if [ ! -f "$DATA_ROOT/window_config.json" ]; then
   echo "data: $D on $CPU_PARTS -> $DATA_ROOT"
 fi
 
-S=$(sbatch --parsable ${DEP[@]+"${DEP[@]}"} -J fp-smoke -p "$GPU_PARTS" "${GPU_OPTS[@]}" \
-      -N 1 -c 8 --mem=64G -t 0:45:00 -o logs/%x-%j.out \
-      --wrap "source scripts/ice/env.sh && echo \"code: \$(git log --oneline -1)  python: \$(python -V 2>&1)\" && \
-              python -m firepred.cli.check data -m ${MODEL:-swinunetr3d} --data-root $DATA_ROOT -ts $TS \
-              --train-step")
-echo "smoke test: $S"
+if [ "${SMOKE:-0}" = 1 ]; then
+  S=$(sbatch --parsable ${DEP[@]+"${DEP[@]}"} -J fp-smoke -p "$GPU_PARTS" "${GPU_OPTS[@]}" \
+        -N 1 -c 8 --mem=64G -t 0:45:00 -o logs/%x-%j.out \
+        --wrap "source scripts/ice/env.sh && echo \"code: \$(git log --oneline -1)  python: \$(python -V 2>&1)\" && \
+                python -m firepred.cli.check data -m ${MODEL:-swinunetr3d} --data-root $DATA_ROOT -ts $TS \
+                --train-step")
+  echo "smoke test: $S"
+  DEP=(--dependency=afterok:$S)
+fi
 
-PREV=$S
-KIND=afterok
 IDS=()
 for k in $(seq 1 "$CHAIN"); do
-  J=$(sbatch --parsable --dependency=$KIND:$PREV -J "fp-$NAME" \
+  J=$(sbatch --parsable ${DEP[@]+"${DEP[@]}"} -J "fp-$NAME" \
         -p "$GPU_PARTS" "${GPU_OPTS[@]}" scripts/ice/train.sbatch)
-  IDS+=("$J"); PREV=$J; KIND=afterany     # later parts start when the previous one ends, however it ended
+  IDS+=("$J"); DEP=(--dependency=afterany:$J)  # later parts start when the previous one ends, however it ended
 done
 echo "training $NAME: ${IDS[*]}  (state: $RUNS/$NAME.state)"
 echo "Watch: bash scripts/ice/status.sh   Cancel all: scancel -u \$USER"

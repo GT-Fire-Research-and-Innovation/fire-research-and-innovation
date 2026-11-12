@@ -130,10 +130,13 @@ git clone -b daily-store https://github.com/GT-Fire-Research-and-Innovation/fire
 cd fire-research-and-innovation
 bash scripts/ice/setup.sh                       # once: Python env in ~/scratch/envs/firepred, HF + W&B logins
 bash scripts/ice/partitions.sh                  # where your jobs are accepted (partitions, QOS, GPUs, free nodes)
-sbatch scripts/ice/test.sbatch                  # the whole test suite on a CPU node (SLOW=1: also the slow runs)
-NAME=swin_daily bash scripts/ice/plan.sh        # data (first time) -> GPU smoke test -> 3 chained 16 h jobs
+NAME=swin_daily bash scripts/ice/plan.sh        # data (first time) -> 3 chained 16 h jobs
 bash scripts/ice/status.sh                      # jobs, run states, last epoch of the latest logs
 ```
+`setup.sh` only checks library imports; it does not run pytest. Tests are optional:
+`NAME=swin_daily SMOKE=1 bash scripts/ice/plan.sh` adds a GPU smoke test before training,
+and `sbatch scripts/ice/test.sbatch` runs the full CPU test suite (`SLOW=1` includes slow tests).
+
 - `data.sbatch` converts `ts-satfire-processed-6-1` into a daily root at `~/scratch/firepred/data-daily`
   (`DAILY_REPO=...` downloads an existing daily repo instead; `DEST_REPO=...` also uploads the conversion).
 - `train.sbatch` trains one run with `--resume ~/scratch/firepred/runs/$NAME.state`, so each job of a

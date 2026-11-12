@@ -61,12 +61,13 @@ out, with Slurm's reason printed.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `PARTITION` | `coc-gpu` | GPU partition(s) for training and the smoke test; a comma list runs each job on whichever listed partition has a free GPU first |
+| `PARTITION` | `coc-gpu` | GPU partition(s) for training and the optional smoke test; a comma list runs each job on whichever listed partition has a free GPU first |
 | `QOS` | `coc-ice` | QOS of the GPU jobs |
 | `CPU_PARTITION` | `ice-cpu` | partition(s) of the data job |
 | `CPU_QOS` | same as `QOS` | QOS of the data job |
 | `ACCOUNT` | your default | `sbatch -A` |
 | `GPU_TYPE` | any | one GPU model, e.g. `h100`, `h200`, `a100` |
+| `SMOKE` | `0` | set to `1` to queue a GPU smoke test before training |
 
 ```bash
 NAME=swin_daily bash scripts/ice/plan.sh                                      # coc-gpu, coc-ice
@@ -135,14 +136,16 @@ exit                             # give the node back
 
 `setup.sh` builds the environment in `~/scratch/envs/firepred`. By default it is a venv from ICE's
 own `python3` (Python 3.9) with the paper's torch 2.3.1 and MONAI 1.3.2, which the golden tests were
-captured with.
+captured with. Setup checks library imports and does not run pytest. Training plans skip the
+separate GPU smoke test by default, so training can start as soon as its data is ready.
 
 ```bash
 bash scripts/ice/setup.sh                        # venv from python3, paper library versions
 PYTHON=/path/to/python3.12 bash scripts/ice/setup.sh
 CONDA_PYTHON=3.12 bash scripts/ice/setup.sh      # conda environment from ICE's mamba/anaconda3 module
 STACK=latest bash scripts/ice/setup.sh           # newest torch and MONAI for that Python
-sbatch scripts/ice/test.sbatch                   # the whole test suite on a CPU node
+NAME=swin_daily SMOKE=1 bash scripts/ice/plan.sh  # optional GPU smoke test before training
+sbatch scripts/ice/test.sbatch                   # optional: the whole test suite on a CPU node
 SLOW=1 sbatch scripts/ice/test.sbatch            # also the slow end-to-end runs
 ```
 
