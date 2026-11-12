@@ -35,5 +35,6 @@ for part in "${PARTS[@]}"; do
 done
 echo
 echo "NODES A/I/O/T: allocated / idle / other (down, drained) / total nodes. GPUS: model:count per node."
+echo "QOS=default (or CPU_QOS=default) means omit --qos and use your Slurm default, not a QOS named default."
 echo "GPU_TYPE=<model> (e.g. h100) asks for one model; PARTITION=a,b,c takes the first free one of several."
 echo "Busy now: squeue -p <partition> -t PENDING | wc -l   Your jobs: squeue -u \$USER"

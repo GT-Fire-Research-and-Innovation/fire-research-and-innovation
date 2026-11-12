@@ -1,5 +1,5 @@
 #!/bin/bash
-# GT PACE ICE: one training run on one GPU, by default of the coc-gpu partition (coc-ice QOS).
+# GT PACE ICE: one training run on one GPU, by default of the coc-gpu partition (your Slurm default QOS).
 # The run state ($RUNS/$NAME.state, --resume) is rewritten every epoch, so after the 16 h limit the
 # same command continues where it stopped; plan.sh chains such jobs. A finished run leaves
 # $RUNS/$NAME.done and later jobs of the chain exit at once.
@@ -11,11 +11,11 @@
 #   (a comma list starts on the first partition with a free GPU; bash scripts/ice/partitions.sh shows yours).
 #SBATCH -J fp-train
 #SBATCH -p coc-gpu
-#SBATCH --qos=coc-ice
 #SBATCH --gres=gpu:1
 #SBATCH -N 1 --cpus-per-task=8 --mem=64G
 #SBATCH -t 16:00:00
 #SBATCH -o logs/%x-%j.out
+# Direct sbatch submissions use your Slurm default QOS; pass --qos=<name> for a named QOS.
 set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"
 source scripts/ice/env.sh

@@ -6,10 +6,10 @@
 #   PYTEST_ARGS="tests/test_golden.py -x" sbatch scripts/ice/test.sbatch
 #SBATCH -J fp-test
 #SBATCH -p ice-cpu
-#SBATCH --qos=coc-ice
 #SBATCH -N 1 --cpus-per-task=8 --mem=32G
 #SBATCH -t 4:00:00
 #SBATCH -o logs/%x-%j.out
+# Direct sbatch submissions use your Slurm default QOS; pass --qos=<name> for a named QOS.
 set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"
 source scripts/ice/env.sh
