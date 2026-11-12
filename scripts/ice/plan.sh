@@ -25,16 +25,16 @@ export NAME TS DATA_ROOT FIRE_WORK FIREPRED_ENV
 
 # A partition that refuses the jobs stops here, on the login node, instead of failing later in the queue.
 GPU_PARTS=$(usable_partitions "$PARTITION" gpu)
-[ -n "$GPU_PARTS" ] || { echo "!! no GPU partition of '$PARTITION' accepts jobs under QOS $QOS." \
+[ -n "$GPU_PARTS" ] || { echo "!! no GPU partition of '$PARTITION' accepts jobs under QOS ${QOS:-default}." \
   "See bash scripts/ice/partitions.sh, then set PARTITION=... QOS=..."; exit 1; }
 echo "GPU jobs: -p $GPU_PARTS ${GPU_OPTS[*]}"
 
 DEP=()
 if [ ! -f "$DATA_ROOT/window_config.json" ]; then
   CPU_PARTS=$(usable_partitions "$CPU_PARTITION" cpu)
-  [ -n "$CPU_PARTS" ] || { echo "!! no CPU partition of '$CPU_PARTITION' accepts jobs under QOS $CPU_QOS." \
+  [ -n "$CPU_PARTS" ] || { echo "!! no CPU partition of '$CPU_PARTITION' accepts jobs under QOS ${CPU_QOS:-default}." \
     "See bash scripts/ice/partitions.sh, then set CPU_PARTITION=... CPU_QOS=..."; exit 1; }
-  D=$(sbatch --parsable -p "$CPU_PARTS" "${CPU_OPTS[@]}" scripts/ice/data.sbatch)
+  D=$(sbatch --parsable -p "$CPU_PARTS" ${CPU_OPTS[@]+"${CPU_OPTS[@]}"} scripts/ice/data.sbatch)
   DEP=(--dependency=afterok:$D)
   echo "data: $D on $CPU_PARTS -> $DATA_ROOT"
 fi

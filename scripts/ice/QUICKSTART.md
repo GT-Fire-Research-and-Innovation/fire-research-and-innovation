@@ -23,6 +23,10 @@ GPU_TYPE=h100 bash scripts/ice/partitions.sh coc-gpu ice-gpu   # can I get an H1
 ```
 
 The QOS column names the quality of service that worked, which is what you pass as `QOS=...`.
+When it says `default`, use `QOS=default`: the plan omits `--qos` so Slurm selects
+your default QOS. `CPU_QOS=default` does the same for data jobs. An empty value
+also selects the Slurm default. Direct `sbatch` submissions omit QOS unless you
+explicitly pass `--qos=<name>`.
 The same facts from plain Slurm:
 
 | Question | Command |

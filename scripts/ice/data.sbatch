@@ -7,10 +7,10 @@
 #   Elsewhere: sbatch -p <cpu partition> --qos=<qos> scripts/ice/data.sbatch (plan.sh passes CPU_PARTITION, CPU_QOS).
 #SBATCH -J fp-data
 #SBATCH -p ice-cpu
-#SBATCH --qos=coc-ice
 #SBATCH -N 1 --cpus-per-task=8 --mem=64G
 #SBATCH -t 16:00:00
 #SBATCH -o logs/%x-%j.out
+# Direct sbatch submissions use your Slurm default QOS; pass --qos=<name> for a named QOS.
 set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"
 source scripts/ice/env.sh

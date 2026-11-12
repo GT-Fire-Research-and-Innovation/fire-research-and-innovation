@@ -44,7 +44,7 @@ The plan prepares missing data and queues training jobs that continue the same r
 | Optional GPU smoke test | `SMOKE=1` | Off |
 | GPU partitions | `PARTITION=coc-gpu,ice-gpu` | `coc-gpu`; use the first available compatible partition |
 | GPU type | `GPU_TYPE=h100` | Any available GPU type |
-| GPU QOS | `QOS=coc-ice` | `coc-ice` |
+| GPU QOS | `QOS=coc-ice` | `coc-ice`; `QOS=default` (or empty) uses your Slurm default |
 | CPU partitions / QOS | `CPU_PARTITION=ice-cpu CPU_QOS=coc-ice` | `ice-cpu`; CPU QOS defaults to `QOS` |
 | Slurm account | `ACCOUNT=my-account` | Your default account |
 
@@ -76,6 +76,24 @@ For all supported training flags:
 source scripts/ice/env.sh
 python -m firepred.cli.train --help
 ```
+
+## Using your Slurm default QOS
+
+If `partitions.sh` reports `ACCESS yes` and `QOS default`, use `QOS=default`.
+This label means no explicit QOS was needed; the plan omits `--qos` rather than
+requesting a QOS literally named `default`. An empty `QOS` has the same meaning.
+`CPU_QOS` follows `QOS` when unset; it also accepts `default` or an empty value.
+
+```bash
+NAME=swin_daily PARTITION=ice-gpu CPU_PARTITION=ice-cpu \
+QOS=default CPU_QOS=default bash scripts/ice/plan.sh
+```
+
+Keep your other model, data, and training settings in the same command.
+Direct `sbatch` submissions use your Slurm default QOS too; pass
+`--qos=<name>` on the `sbatch` command line when you need a named QOS.
+The `QOS` and `CPU_QOS` variables are interpreted by `plan.sh`, not by direct
+`sbatch scripts/ice/*.sbatch` commands.
 
 ## Choosing a dataset repo
 

@@ -11,19 +11,25 @@
 #   GPU_TYPE       one GPU model, e.g. h100, h200, a100 (bash scripts/ice/partitions.sh lists them);
 #                  empty takes any GPU                                       (empty)
 #
+# QOS=default (or QOS='') uses your Slurm default without passing --qos.
+# CPU_QOS supports the same values; when unset it follows QOS.
 # Which of these you may use: bash scripts/ice/partitions.sh
 
 PARTITION="${PARTITION:-coc-gpu}"
 CPU_PARTITION="${CPU_PARTITION:-ice-cpu}"
-QOS="${QOS:-coc-ice}"
-CPU_QOS="${CPU_QOS:-$QOS}"
+QOS="${QOS-coc-ice}"
+CPU_QOS="${CPU_QOS-$QOS}"
+[ "$QOS" = default ] && QOS=""
+[ "$CPU_QOS" = default ] && CPU_QOS=""
 ACCOUNT="${ACCOUNT:-}"
 GPU_TYPE="${GPU_TYPE:-}"
 GRES="gpu:${GPU_TYPE:+$GPU_TYPE:}1"
 
 # sbatch options the GPU and the CPU jobs get besides their partition.
-GPU_OPTS=(--qos="$QOS" --gres="$GRES")
-CPU_OPTS=(--qos="$CPU_QOS")
+GPU_OPTS=(--gres="$GRES")
+CPU_OPTS=()
+[ -n "$QOS" ] && GPU_OPTS+=(--qos="$QOS")
+[ -n "$CPU_QOS" ] && CPU_OPTS+=(--qos="$CPU_QOS")
 if [ -n "$ACCOUNT" ]; then GPU_OPTS+=(-A "$ACCOUNT"); CPU_OPTS+=(-A "$ACCOUNT"); fi
 
 # slurm_accepts PART QOS KIND: does Slurm accept a 10-minute job of KIND (gpu or cpu) on PART under QOS
@@ -31,7 +37,7 @@ if [ -n "$ACCOUNT" ]; then GPU_OPTS+=(-A "$ACCOUNT"); CPU_OPTS+=(-A "$ACCOUNT");
 # submitting anything. Returns 0 if accepted; SLURM_REASON then holds the estimated start, else the error.
 slurm_accepts() {
   local part=$1 qos=$2 kind=$3 args=(-p "$part" -t 0:10:00 -N 1 -c 1 --mem=1G)
-  [ -n "$qos" ] && args+=(--qos="$qos")
+  [ -n "$qos" ] && [ "$qos" != default ] && args+=(--qos="$qos")
   [ -n "$ACCOUNT" ] && args+=(-A "$ACCOUNT")
   [ "$kind" = gpu ] && args+=(--gres="$GRES")
   local out status=0
@@ -51,7 +57,7 @@ usable_partitions() {
     if slurm_accepts "$part" "$qos" "$kind"; then
       keep="${keep:+$keep,}$part"
     else
-      echo "!! $part refuses $kind jobs under QOS $qos: $SLURM_REASON" >&2
+      echo "!! $part refuses $kind jobs under QOS ${qos:-default}: $SLURM_REASON" >&2
     fi
   done
   echo "$keep"
