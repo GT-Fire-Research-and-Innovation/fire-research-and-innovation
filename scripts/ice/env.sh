@@ -19,3 +19,9 @@ export PIP_CACHE_DIR="${PIP_CACHE_DIR:-$HOME/scratch/.cache/pip}"
 export WANDB_DIR="${WANDB_DIR:-$FIRE_WORK}"              # runs and checkpoints: $WANDB_DIR/wandb/<run>/files
 export PYTHONUNBUFFERED=1                                # log lines appear as they happen
 mkdir -p "$FIRE_WORK" "$RUNS"
+
+# Without the environment, `python` would be ICE's own Python 3.9, which lacks pandas, torch and the rest.
+if [ ! -x "$FIREPRED_ENV/bin/python" ] && [ -z "${FIREPRED_SETUP:-}" ]; then
+  echo "!! No Python environment at $FIREPRED_ENV: run  bash scripts/ice/setup.sh" >&2
+  return 1
+fi
