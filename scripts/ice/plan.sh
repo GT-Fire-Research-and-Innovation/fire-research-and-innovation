@@ -7,7 +7,7 @@
 #   NAME=swin_daily bash scripts/ice/plan.sh
 #   NAME=swin_daily SMOKE=1 bash scripts/ice/plan.sh   # optional GPU check before training
 #   NAME=swin_zones ZONES=1 CHAIN=4 bash scripts/ice/plan.sh
-#   NAME=swin_daily PARTITION=coc-gpu,ice-gpu,pace-gpu bash scripts/ice/plan.sh   # first free GPU of the three
+#   NAME=swin_daily PARTITION=ice-gpu,coe-gpu bash scripts/ice/plan.sh   # first free GPU of the two
 #   NAME=swin_h100 PARTITION=ice-gpu GPU_TYPE=h100 bash scripts/ice/plan.sh
 # Everything train.sbatch reads (MODEL, BATCH, LR, TS, IT, ZONES, EXTRA, ...) passes through.
 # Where jobs run: PARTITION, CPU_PARTITION, QOS, CPU_QOS, ACCOUNT, GPU_TYPE (scripts/ice/slurm.sh); every listed

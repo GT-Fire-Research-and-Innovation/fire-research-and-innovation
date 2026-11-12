@@ -107,64 +107,64 @@ An existing environment is reused, so delete it first to switch:
 ### Step 4: check which partitions accept your jobs
 
 ```bash
-bash scripts/ice/partitions.sh coc-gpu ice-gpu pace-gpu ice-cpu
+bash scripts/ice/partitions.sh ice-gpu coe-gpu ice-cpu
 ```
 
-Read the `ACCESS` and `QOS` columns. The scripts default to GPU partition `coc-gpu`, CPU partition
-`ice-cpu` and QOS `coc-ice`.
+Read the `ACCESS` and `QOS` columns. The scripts default to GPU partition `ice-gpu`, CPU partition
+`ice-cpu` and your Slurm default QOS. Commands in this guide pass no `--qos`, so they use that default too.
 
 <details>
-<summary><code>coc-gpu</code> and <code>ice-cpu</code> say <code>yes</code> with QOS <code>coc-ice</code></summary>
+<summary><code>ice-gpu</code> and <code>ice-cpu</code> say <code>yes</code> with QOS <code>default</code></summary>
 
 Nothing to set. Every command in this guide works as written.
 
 </details>
 
 <details>
-<summary>They say <code>no</code>, or show another QOS</summary>
+<summary>A row says <code>no</code>, or shows a named QOS such as <code>coc-ice</code></summary>
 
-Pick a GPU row and a CPU row that say `yes`, and pass their names and QOS to every `plan.sh`
-command. For example, when `ice-gpu` and `ice-cpu` say `yes` with QOS `default`:
+`ice-gpu` says `no` but `coe-gpu` says `yes`: use `coe-gpu` instead.
 
 ```bash
-NAME=swin_daily PARTITION=ice-gpu CPU_PARTITION=ice-cpu QOS=default CPU_QOS=default bash scripts/ice/plan.sh
+NAME=swin_daily PARTITION=coe-gpu bash scripts/ice/plan.sh
 ```
 
-In hand-written `sbatch` commands in this guide, replace `-p coc-gpu --qos=coc-ice` with
-`-p ice-gpu`, and leave out `--qos` when the QOS is `default`. Run `bash scripts/ice/partitions.sh`
-with no arguments to see every partition.
+A row says `yes` only under a named QOS: pass it as `QOS`. Set `CPU_QOS=default` when the CPU row
+says `default`, because `CPU_QOS` otherwise copies `QOS`.
+
+```bash
+NAME=swin_daily QOS=coc-ice CPU_QOS=default bash scripts/ice/plan.sh
+```
+
+In hand-written `sbatch` and `salloc` commands in this guide, swap `-p ice-gpu` for the partition that
+works, and add `--qos=<name>` only when that partition needs a named QOS. Run
+`bash scripts/ice/partitions.sh` with no arguments to see every partition.
 
 </details>
 
 ### Step 5: download a dataset
 
-Training reads a local folder, the data root. Download one now with a CPU job. Open the option you
-want. Each command can be run again after a failure or time limit: files already downloaded are kept.
+Training reads a local folder, the data root. Run one of the commands below from the repository root.
+Files already downloaded are kept, so run the same command again if it stops.
+
+A long download can outlast your login session. To run it on a compute node instead, start with
+this, then run the same commands and `exit` when done:
+
+```bash
+salloc -p ice-cpu -c 8 --mem=64G -t 4:00:00
+hostname                     # a compute node; if it shows a login node, run: srun --pty bash
+```
 
 <details>
 <summary><b>Daily dataset, no TESSERA</b> (recommended to start)</summary>
 
 ```bash
-sbatch -J fp-download -p ice-cpu --qos=coc-ice -c 8 --mem=64G -t 16:00:00 -o logs/%x-%j.out \
-  --wrap 'source scripts/ice/env.sh && python -m firepred.cli.dataset \
-    --window-repo SamuelWu318/ts-satfire-daily --work-dir "$FIRE_WORK/tmp" \
-    download -ts 6 -it 1 --data-root "$HOME/scratch/firepred/data-daily"'
-```
-
-Or by hand on an interactive CPU node:
-
-```bash
-salloc -p ice-cpu --qos=coc-ice -c 8 --mem=64G -t 4:00:00
-hostname                     # a compute node; if it shows a login node, run: srun --pty bash
 source scripts/ice/env.sh
 
 python -m firepred.cli.dataset \
   --window-repo SamuelWu318/ts-satfire-daily \
-  --work-dir "$FIRE_WORK/tmp" \
   download -ts 6 -it 1 \
   --data-root "$HOME/scratch/firepred/data-daily"
-
-exit
 ```
 
 Train on it with `DATA_ROOT="$HOME/scratch/firepred/data-daily"`, which is also the default.
@@ -175,17 +175,6 @@ Train on it with `DATA_ROOT="$HOME/scratch/firepred/data-daily"`, which is also 
 <summary><b>Daily dataset with TESSERA embeddings</b></summary>
 
 ```bash
-sbatch -J fp-download-tessera -p ice-cpu --qos=coc-ice -c 8 --mem=64G -t 16:00:00 -o logs/%x-%j.out \
-  --wrap 'source scripts/ice/env.sh && python -m firepred.cli.dataset \
-    --window-repo SamuelWu318/ts-satfire-daily --tessera-repo SamuelWu318/ts-tesserafire \
-    download -ts 6 -it 1 --tessera --data-root "$HOME/scratch/firepred/data-daily-tessera"'
-```
-
-Or by hand on an interactive CPU node:
-
-```bash
-salloc -p ice-cpu --qos=coc-ice -c 8 --mem=64G -t 4:00:00
-hostname                     # a compute node; if it shows a login node, run: srun --pty bash
 source scripts/ice/env.sh
 
 python -m firepred.cli.dataset \
@@ -193,8 +182,6 @@ python -m firepred.cli.dataset \
   --tessera-repo SamuelWu318/ts-tesserafire \
   download -ts 6 -it 1 --tessera \
   --data-root "$HOME/scratch/firepred/data-daily-tessera"
-
-exit
 ```
 
 Fires without prior-year TESSERA are left out, so keep this in its own data root. Embeddings land in
@@ -207,14 +194,18 @@ Fires without prior-year TESSERA are left out, so keep this in its own data root
 <summary><b>Convert the processed 6-day windows into a daily dataset</b> (slow; only if the daily repo is unavailable)</summary>
 
 ```bash
-sbatch -J fp-convert -p ice-cpu --qos=coc-ice -c 8 --mem=64G -t 16:00:00 -o logs/%x-%j.out \
-  --wrap 'source scripts/ice/env.sh && python -m firepred.cli.dataset \
-    --window-repo SamuelWu318/ts-satfire-processed-6-1 --work-dir "$FIRE_WORK/tmp" \
-    convert-daily -ts 6 -it 1 --dest-root "$HOME/scratch/firepred/data-daily-converted"'
+source scripts/ice/env.sh
+mkdir -p "$HOME/scratch/firepred/tmp"
+
+python -m firepred.cli.dataset \
+  --window-repo SamuelWu318/ts-satfire-processed-6-1 \
+  --work-dir "$HOME/scratch/firepred/tmp" \
+  convert-daily -ts 6 -it 1 \
+  --dest-root "$HOME/scratch/firepred/data-daily-converted"
 ```
 
-It downloads one fire at a time, converts it and checks it reads back identical. Fires already
-converted are skipped when you run it again.
+It downloads one fire at a time into `--work-dir`, converts it and checks it reads back identical.
+Fires already converted are skipped when you run it again.
 
 </details>
 
@@ -224,29 +215,16 @@ converted are skipped when you run it again.
 Your token needs write access to the target repo.
 
 ```bash
-sbatch -J fp-convert -p ice-cpu --qos=coc-ice -c 8 --mem=64G -t 16:00:00 -o logs/%x-%j.out \
-  --wrap 'source scripts/ice/env.sh && python -m firepred.cli.dataset \
-    --window-repo SamuelWu318/ts-satfire-processed-6-1 --work-dir "$FIRE_WORK/tmp" \
-    convert-daily -ts 6 -it 1 --dest-root "$HOME/scratch/firepred/data-daily-converted" \
-    --dest-repo <your-hf-user>/ts-satfire-daily'
+source scripts/ice/env.sh
+mkdir -p "$HOME/scratch/firepred/tmp"
+
+python -m firepred.cli.dataset \
+  --window-repo SamuelWu318/ts-satfire-processed-6-1 \
+  --work-dir "$HOME/scratch/firepred/tmp" \
+  convert-daily -ts 6 -it 1 \
+  --dest-root "$HOME/scratch/firepred/data-daily-converted" \
+  --dest-repo <your-hf-user>/ts-satfire-daily
 ```
-
-</details>
-
-<details>
-<summary><b>Skip this step and let the first training run download the data</b></summary>
-
-`plan.sh` queues the download itself when the data root has no `window_config.json`. Training waits
-for it:
-
-```bash
-NAME=swin_daily DAILY_REPO=SamuelWu318/ts-satfire-daily \
-DATA_ROOT="$HOME/scratch/firepred/data-daily" bash scripts/ice/plan.sh
-```
-
-Without `DAILY_REPO`, `plan.sh` converts the processed 6-day windows instead, which is slower.
-This data job also builds zone files for `ZONES=1` training.
-`plan.sh` does not download TESSERA embeddings.
 
 </details>
 
@@ -254,8 +232,6 @@ This data job also builds zone files for `ZONES=1` training.
 <summary>Check that a download finished</summary>
 
 ```bash
-squeue -u $USER                                   # is the job still running?
-tail -5 logs/fp-download-<jobid>.out              # last lines of its log
 D="$HOME/scratch/firepred/data-daily"
 ls "$D"                                           # train  val  test  window_config.json  (tessera)
 for s in train val test; do echo "$s: $(ls "$D/$s" | wc -l) files"; done
@@ -263,7 +239,7 @@ du -sh "$D"
 ```
 
 A finished download has `window_config.json` and files in all three splits. Run the same download
-command again when the job stopped early.
+command again when it stopped early.
 
 </details>
 
@@ -325,10 +301,12 @@ bash scripts/ice/setup.sh
 An existing data root is never replaced. Download into a new folder and train on that:
 
 ```bash
-sbatch -J fp-download -p ice-cpu --qos=coc-ice -c 8 --mem=64G -t 16:00:00 -o logs/%x-%j.out \
-  --wrap 'source scripts/ice/env.sh && python -m firepred.cli.dataset \
-    --window-repo SamuelWu318/ts-satfire-daily --work-dir "$FIRE_WORK/tmp" \
-    download -ts 6 -it 1 --data-root "$HOME/scratch/firepred/data-daily-v2"'
+source scripts/ice/env.sh
+
+python -m firepred.cli.dataset \
+  --window-repo SamuelWu318/ts-satfire-daily \
+  download -ts 6 -it 1 \
+  --data-root "$HOME/scratch/firepred/data-daily-v2"
 ```
 
 Then use `DATA_ROOT="$HOME/scratch/firepred/data-daily-v2"` in `plan.sh`. Delete the old root with
@@ -342,9 +320,11 @@ Then use `DATA_ROOT="$HOME/scratch/firepred/data-daily-v2"` in `plan.sh`. Delete
 Rebuild the zone files in place:
 
 ```bash
-sbatch -J fp-zones -p ice-cpu --qos=coc-ice -c 8 --mem=64G -t 4:00:00 -o logs/%x-%j.out \
-  --wrap 'source scripts/ice/env.sh && python -m firepred.cli.dataset zones \
-    --data-root "$HOME/scratch/firepred/data-daily" -ts 6 -it 1 --overwrite'
+source scripts/ice/env.sh
+
+python -m firepred.cli.dataset zones \
+  --data-root "$HOME/scratch/firepred/data-daily" -ts 6 -it 1 \
+  --overwrite
 ```
 
 </details>
@@ -429,7 +409,8 @@ rate, batch size, seed, `TS`, `IT` or zone folder differ from the saved state. A
 
 ### 2.2 Choose the dataset
 
-Point `DATA_ROOT` at a folder you downloaded in [Step 5](#step-5-download-a-dataset).
+Point `DATA_ROOT` at a folder you downloaded in [Step 5](#step-5-download-a-dataset). Download first:
+when `DATA_ROOT` has no `window_config.json`, `plan.sh` queues its own slow conversion job.
 
 <details>
 <summary><b>Daily dataset</b> (<code>data-daily</code>, the default)</summary>
@@ -461,25 +442,6 @@ folder, and `--tessera-cells-per-pixel N` for embeddings built on a finer grid.
 ```bash
 NAME=swin_converted DATA_ROOT="$HOME/scratch/firepred/data-daily-converted" bash scripts/ice/plan.sh
 ```
-
-</details>
-
-<details>
-<summary><b>A data root that does not exist yet</b> (download as part of the run)</summary>
-
-```bash
-NAME=swin_daily DAILY_REPO=SamuelWu318/ts-satfire-daily \
-DATA_ROOT="$HOME/scratch/firepred/data-daily-new" bash scripts/ice/plan.sh
-```
-
-| Setting | Default | Meaning |
-| --- | --- | --- |
-| `DAILY_REPO` | unset | Download this daily dataset repo |
-| `SRC_REPO` | `SamuelWu318/ts-satfire-processed-6-1` | Used when `DAILY_REPO` is unset: convert these windows (slower) |
-| `DEST_REPO` | unset | Also upload the conversion to this repo |
-
-`plan.sh` skips this whenever `DATA_ROOT/window_config.json` exists. Changing a repo setting never
-replaces an existing data root, so use a new `DATA_ROOT` for each dataset.
 
 </details>
 
@@ -749,9 +711,9 @@ python -m firepred.cli.train --help
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `PARTITION` | `coc-gpu` | GPU partition, or a comma list: each job starts on whichever has a free GPU first |
-| `QOS` | `coc-ice` | QOS of the GPU jobs. `QOS=default` uses your Slurm default |
-| `GPU_TYPE` | any | One GPU model, such as `h100`, `h200`, `a100` |
+| `PARTITION` | `ice-gpu` | GPU partition, or a comma list: each job starts on whichever has a free GPU first |
+| `QOS` | your default | QOS of the GPU jobs. Set it only for a named QOS, such as `QOS=coc-ice` |
+| `GPU_TYPE` | any NVIDIA or AMD GPU | One GPU model, such as `h100`, `h200`, `a100`. `ice-gpu` also has AMD `mi210` and `r9700` GPUs, which this CUDA build cannot use |
 | `CPU_PARTITION` | `ice-cpu` | Partition of the data job |
 | `CPU_QOS` | same as `QOS` | QOS of the data job |
 | `ACCOUNT` | your default | Slurm account |
@@ -759,7 +721,7 @@ python -m firepred.cli.train --help
 `plan.sh` tests each listed partition with `sbatch --test-only` and drops one that refuses the job.
 
 <details>
-<summary>Default: <code>coc-gpu</code> under <code>coc-ice</code></summary>
+<summary>Default: <code>ice-gpu</code> under your default QOS</summary>
 
 ```bash
 NAME=swin_daily bash scripts/ice/plan.sh
@@ -771,7 +733,7 @@ NAME=swin_daily bash scripts/ice/plan.sh
 <summary>Whichever of two partitions has a free GPU first</summary>
 
 ```bash
-NAME=swin_daily PARTITION=coc-gpu,ice-gpu bash scripts/ice/plan.sh
+NAME=swin_daily PARTITION=ice-gpu,coe-gpu bash scripts/ice/plan.sh
 ```
 
 All partitions in one list must accept the same QOS.
@@ -782,27 +744,28 @@ All partitions in one list must accept the same QOS.
 <summary>Only H100 GPUs</summary>
 
 ```bash
-GPU_TYPE=h100 bash scripts/ice/partitions.sh coc-gpu ice-gpu      # who has them for you
-NAME=swin_h100 PARTITION=coc-gpu,ice-gpu GPU_TYPE=h100 bash scripts/ice/plan.sh
+GPU_TYPE=h100 bash scripts/ice/partitions.sh ice-gpu coe-gpu      # who has them for you
+NAME=swin_h100 PARTITION=ice-gpu,coe-gpu GPU_TYPE=h100 bash scripts/ice/plan.sh
 ```
 
 </details>
 
 <details>
-<summary>Your Slurm default QOS (<code>partitions.sh</code> shows <code>default</code>)</summary>
+<summary>A named QOS (<code>partitions.sh</code> shows one, such as <code>coc-ice</code>)</summary>
 
 ```bash
-NAME=swin_ice PARTITION=ice-gpu CPU_PARTITION=ice-cpu QOS=default CPU_QOS=default bash scripts/ice/plan.sh
+NAME=swin_coc QOS=coc-ice CPU_QOS=default bash scripts/ice/plan.sh
 ```
+
+`CPU_QOS=default` keeps the data job on your default QOS.
 
 </details>
 
 <details>
-<summary>Another partition with its own QOS</summary>
+<summary>College of Engineering H100/H200 nodes (<code>coe-gpu</code>)</summary>
 
 ```bash
-NAME=swin_pace PARTITION=pace-gpu QOS=<qos from partitions.sh> CPU_QOS=coc-ice bash scripts/ice/plan.sh
-NAME=swin_coe PARTITION=coe-gpu QOS=coe-ice CPU_QOS=coc-ice bash scripts/ice/plan.sh   # College of Engineering
+NAME=swin_coe PARTITION=coe-gpu bash scripts/ice/plan.sh
 ```
 
 </details>
@@ -816,7 +779,6 @@ test still score whole windows.
 | --- | --- | --- |
 | `ZONES` | unset | `1` turns zone training on |
 | `ZONES_ROOT` | `<DATA_ROOT>/zones` | Folder of zone files |
-| `SCALE_KM` | `2.25` | Distance that separates fires when zone files are built |
 
 Zone files must match the run's `TS`. They are always built with `-it 1` and work for any training
 `IT`. Use one `ZONES_ROOT` per `TS`, because existing zone files are skipped, not rebuilt.
@@ -827,15 +789,14 @@ Zone files must match the run's `TS`. They are always built with `-it 1` and wor
 Build the zone files once, then train:
 
 ```bash
-sbatch -J fp-zones -p ice-cpu --qos=coc-ice -c 8 --mem=64G -t 4:00:00 -o logs/%x-%j.out \
-  --wrap 'source scripts/ice/env.sh && python -m firepred.cli.dataset zones \
-    --data-root "$HOME/scratch/firepred/data-daily" -ts 6 -it 1 \
-    --zones-root "$HOME/scratch/firepred/data-daily/zones"'
+source scripts/ice/env.sh
+
+python -m firepred.cli.dataset zones \
+  --data-root "$HOME/scratch/firepred/data-daily" -ts 6 -it 1 \
+  --zones-root "$HOME/scratch/firepred/data-daily/zones"
 
 NAME=swin_zones ZONES=1 TS=6 bash scripts/ice/plan.sh
 ```
-
-Training checks the zone files before it starts, so submit it after the zones job ends.
 
 </details>
 
@@ -843,10 +804,11 @@ Training checks the zone files before it starts, so submit it after the zones jo
 <summary>Zones at another window length (<code>TS=8</code>)</summary>
 
 ```bash
-sbatch -J fp-zones -p ice-cpu --qos=coc-ice -c 8 --mem=64G -t 4:00:00 -o logs/%x-%j.out \
-  --wrap 'source scripts/ice/env.sh && python -m firepred.cli.dataset zones \
-    --data-root "$HOME/scratch/firepred/data-daily" -ts 8 -it 1 \
-    --zones-root "$HOME/scratch/firepred/data-daily/zones-ts8"'
+source scripts/ice/env.sh
+
+python -m firepred.cli.dataset zones \
+  --data-root "$HOME/scratch/firepred/data-daily" -ts 8 -it 1 \
+  --zones-root "$HOME/scratch/firepred/data-daily/zones-ts8"
 
 NAME=swin_zones_ts8 ZONES=1 TS=8 ZONES_ROOT="$HOME/scratch/firepred/data-daily/zones-ts8" \
 bash scripts/ice/plan.sh
@@ -858,10 +820,11 @@ bash scripts/ice/plan.sh
 <summary>Zones with TESSERA</summary>
 
 ```bash
-sbatch -J fp-zones -p ice-cpu --qos=coc-ice -c 8 --mem=64G -t 4:00:00 -o logs/%x-%j.out \
-  --wrap 'source scripts/ice/env.sh && python -m firepred.cli.dataset zones \
-    --data-root "$HOME/scratch/firepred/data-daily-tessera" -ts 6 -it 1 \
-    --zones-root "$HOME/scratch/firepred/data-daily-tessera/zones"'
+source scripts/ice/env.sh
+
+python -m firepred.cli.dataset zones \
+  --data-root "$HOME/scratch/firepred/data-daily-tessera" -ts 6 -it 1 \
+  --zones-root "$HOME/scratch/firepred/data-daily-tessera/zones"
 
 NAME=swin_tessera_zones ZONES=1 DATA_ROOT="$HOME/scratch/firepred/data-daily-tessera" \
 EXTRA="--tessera" bash scripts/ice/plan.sh
@@ -870,13 +833,14 @@ EXTRA="--tessera" bash scripts/ice/plan.sh
 </details>
 
 <details>
-<summary>Another zone separation distance</summary>
+<summary>Another zone separation distance (<code>--scale-km</code>, default 2.25)</summary>
 
 ```bash
-sbatch -J fp-zones -p ice-cpu --qos=coc-ice -c 8 --mem=64G -t 4:00:00 -o logs/%x-%j.out \
-  --wrap 'source scripts/ice/env.sh && python -m firepred.cli.dataset zones \
-    --data-root "$HOME/scratch/firepred/data-daily" -ts 6 -it 1 --scale-km 3 \
-    --zones-root "$HOME/scratch/firepred/data-daily/zones-3km"'
+source scripts/ice/env.sh
+
+python -m firepred.cli.dataset zones \
+  --data-root "$HOME/scratch/firepred/data-daily" -ts 6 -it 1 --scale-km 3 \
+  --zones-root "$HOME/scratch/firepred/data-daily/zones-3km"
 
 NAME=swin_zones_3km ZONES=1 ZONES_ROOT="$HOME/scratch/firepred/data-daily/zones-3km" bash scripts/ice/plan.sh
 ```
@@ -911,10 +875,12 @@ Logs are `logs/fp-<NAME>-<jobid>.out` in the clone you submitted from. Press Ctr
 
 ```bash
 grep -h -m3 "Traceback\|Error\|CANCELLED\|DUE TO TIME LIMIT" logs/fp-swin_daily-*.out
+grep -l "no GPU visible" logs/fp-swin_daily-*.out       # jobs that got no NVIDIA GPU, such as an AMD node
 sacct -u $USER -S today --format=JobID,JobName%25,State,Elapsed,ExitCode
 ```
 
-`DUE TO TIME LIMIT` is normal inside a chain: the next job continues the run.
+`DUE TO TIME LIMIT` is normal inside a chain: the next job continues the run. A log with
+`no GPU visible` ran on the CPU; cancel it and resubmit with `GPU_TYPE=h100` or another NVIDIA model.
 
 </details>
 
@@ -1016,7 +982,7 @@ NAME=swin_daily_lr0001
 CKPT=$(grep -h "Best checkpoint" logs/fp-$NAME-*.out | tail -1 | sed 's/.*: //')
 echo "$CKPT"                       # must print a .pth path
 
-sbatch -J fp-test-$NAME -p coc-gpu --qos=coc-ice --gres=gpu:1 -c 8 --mem=64G -t 2:00:00 \
+sbatch -J fp-test-$NAME -p ice-gpu --gres=gpu:1 -c 8 --mem=64G -t 2:00:00 \
   -o logs/%x-%j.out --wrap "source scripts/ice/env.sh && python -m firepred.cli.train -test \
   --checkpoint $CKPT -m swinunetr3d -mode pred -b 8 -lr 0.001 -nh 3 -ed 36 -ts 6 -it 1 \
   --data-root $HOME/scratch/firepred/data-daily --num-workers 6"
@@ -1035,7 +1001,7 @@ NAME=swin_tessera_ctx
 CKPT=$(grep -h "Best checkpoint" logs/fp-$NAME-*.out | tail -1 | sed 's/.*: //')
 echo "$CKPT"
 
-sbatch -J fp-test-$NAME -p coc-gpu --qos=coc-ice --gres=gpu:1 -c 8 --mem=64G -t 2:00:00 \
+sbatch -J fp-test-$NAME -p ice-gpu --gres=gpu:1 -c 8 --mem=64G -t 2:00:00 \
   -o logs/%x-%j.out --wrap "source scripts/ice/env.sh && python -m firepred.cli.train -test \
   --checkpoint $CKPT --trust-checkpoint --tessera -m swinunetr3d_tessera -mode pred -b 8 -lr 0.001 \
   -nh 3 -ed 36 -ts 6 -it 1 --data-root $HOME/scratch/firepred/data-daily-tessera --num-workers 6"
@@ -1053,7 +1019,7 @@ NAME=swin_zones
 CKPT=$(grep -h "Best checkpoint" logs/fp-$NAME-*.out | tail -1 | sed 's/.*: //')
 echo "$CKPT"
 
-sbatch -J fp-test-$NAME -p coc-gpu --qos=coc-ice --gres=gpu:1 -c 8 --mem=64G -t 2:00:00 \
+sbatch -J fp-test-$NAME -p ice-gpu --gres=gpu:1 -c 8 --mem=64G -t 2:00:00 \
   -o logs/%x-%j.out --wrap "source scripts/ice/env.sh && python -m firepred.cli.train -test \
   --checkpoint $CKPT -m swinunetr3d -mode pred -b 8 -lr 0.001 -nh 3 -ed 36 -ts 6 -it 1 \
   --data-root $HOME/scratch/firepred/data-daily --num-workers 6"
@@ -1081,7 +1047,7 @@ Then submit the test job from the matching case above.
 <summary><b>Test interactively on a GPU node</b></summary>
 
 ```bash
-salloc -p coc-gpu --qos=coc-ice --gres=gpu:1 -c 8 --mem=64G -t 2:00:00
+salloc -p ice-gpu --gres=gpu:1 -c 8 --mem=64G -t 2:00:00
 hostname                     # a compute node; if it shows a login node, run: srun --pty bash
 source scripts/ice/env.sh
 NAME=swin_daily_lr0001
@@ -1141,12 +1107,12 @@ directory is small.
 
 ```bash
 bash scripts/ice/partitions.sh                                  # every partition
-bash scripts/ice/partitions.sh coc-gpu ice-gpu pace-gpu         # only these
-GPU_TYPE=h100 bash scripts/ice/partitions.sh coc-gpu ice-gpu    # can I get an H100 there?
+bash scripts/ice/partitions.sh ice-gpu coe-gpu ice-cpu          # only these
+GPU_TYPE=h100 bash scripts/ice/partitions.sh ice-gpu coe-gpu    # can I get an H100 there?
 ```
 
-The `QOS` column names the QOS that worked; pass it as `QOS=...`. `default` means pass
-`QOS=default`, so `plan.sh` omits `--qos` and Slurm picks your default. One job carries one QOS, so
+The `QOS` column names the QOS that worked. `default` needs no setting: the scripts already use
+your Slurm default. A named QOS, such as `coc-ice`, goes in `QOS=coc-ice`. One job carries one QOS, so
 partitions that need different QOS cannot share one `PARTITION` list.
 
 </details>
@@ -1155,9 +1121,9 @@ partitions that need different QOS cannot share one `PARTITION` list.
 <summary>My accounts and QOS, and what each QOS allows</summary>
 
 ```bash
-sacctmgr show assoc user=$USER format=account%15,partition%15,qos%40
-sacctmgr show qos name=coc-ice format=name%12,maxwall,maxtrespu%30,maxjobspu,maxsubmitpu
-scontrol show partition coc-gpu        # AllowAccounts, AllowQos, MaxTime
+sacctmgr show assoc user=$USER format=account%15,partition%15,qos%40,defaultqos%15
+sacctmgr show qos name=<qos> format=name%12,maxwall,maxtrespu%30,maxjobspu,maxsubmitpu   # a QOS from the line above
+scontrol show partition ice-gpu        # AllowAccounts, AllowQos, MaxTime
 ```
 
 An empty partition in the first command means any partition.
@@ -1168,7 +1134,7 @@ An empty partition in the first command means any partition.
 <summary>Would this exact job be accepted, and when would it start?</summary>
 
 ```bash
-sbatch --test-only -p coc-gpu --qos=coc-ice --gres=gpu:1 -t 1:00:00 --wrap true
+sbatch --test-only -p ice-gpu --gres=gpu:1 -t 1:00:00 --wrap true
 ```
 
 It submits nothing. It fails with Slurm's reason, such as "Invalid qos specification", when you may
@@ -1179,12 +1145,12 @@ not use that partition, QOS, account or GPU model.
 <details>
 <summary>Submit a script by hand instead of through <code>plan.sh</code></summary>
 
-Options on the command line override the script's `#SBATCH` lines. `QOS` and `CPU_QOS` are read by
-`plan.sh` only, so pass `--qos` yourself:
+Options on the command line override the script's `#SBATCH` lines. With none, the script's partition
+and your default QOS apply. `QOS` and `CPU_QOS` are read by `plan.sh` only, so add `--qos=<name>`
+yourself when you need a named QOS:
 
 ```bash
-NAME=swin_daily sbatch -p coc-gpu,ice-gpu --qos=coc-ice scripts/ice/train.sbatch
-DAILY_REPO=SamuelWu318/ts-satfire-daily sbatch -p ice-cpu --qos=coc-ice scripts/ice/data.sbatch
+NAME=swin_daily sbatch -p ice-gpu,coe-gpu scripts/ice/train.sbatch
 ```
 
 </details>
@@ -1196,9 +1162,9 @@ DAILY_REPO=SamuelWu318/ts-satfire-daily sbatch -p ice-cpu --qos=coc-ice scripts/
 
 ```bash
 sinfo -s
-sinfo -p coc-gpu,ice-gpu,pace-gpu -o "%.12P %.5a %.10l %.5D %.8t %G"
+sinfo -p ice-gpu,coe-gpu -o "%.12P %.5a %.10l %.5D %.8t %G"
 sinfo -o "%.12P %G" | sort -u                     # GPU models per partition
-pace-check-queue coc-gpu                          # PACE's own view of a queue
+pace-check-queue ice-gpu                          # PACE's own view of a queue
 ```
 
 </details>
@@ -1207,8 +1173,8 @@ pace-check-queue coc-gpu                          # PACE's own view of a queue
 <summary>Which nodes have free GPUs right now?</summary>
 
 ```bash
-sinfo -p coc-gpu,ice-gpu,pace-gpu -t idle,mix -N -o "%N %P %t %G"
-sinfo -N -p coc-gpu -O "NodeList:24,StateCompact:8,Gres:28,GresUsed:34,CPUsState:16,Memory:9"
+sinfo -p ice-gpu,coe-gpu -t idle,mix -N -o "%N %P %t %G"
+sinfo -N -p ice-gpu -O "NodeList:24,StateCompact:8,Gres:28,GresUsed:34,CPUsState:16,Memory:9"
 ```
 
 `CPUsState` reads allocated/idle/other/total. A `mix` node may still have free GPUs; `GresUsed`
@@ -1271,8 +1237,8 @@ seff <jobid>                          # how well a finished job used its CPUs an
 <summary>How busy is a partition, and what is my priority?</summary>
 
 ```bash
-squeue -p coc-gpu -t PENDING | wc -l
-squeue -p coc-gpu -t RUNNING | wc -l
+squeue -p ice-gpu -t PENDING | wc -l
+squeue -p ice-gpu -t RUNNING | wc -l
 sprio -u $USER
 sshare -u $USER
 ```
@@ -1297,7 +1263,7 @@ scancel -u $USER             # all of my jobs
 <summary>Get a GPU node for an hour</summary>
 
 ```bash
-salloc -p coc-gpu --qos=coc-ice --gres=gpu:1 -c 8 --mem=32G -t 1:00:00
+salloc -p ice-gpu --gres=gpu:1 -c 8 --mem=32G -t 1:00:00
 hostname                     # a compute node; if it is still a login node, run: srun --pty bash
 nvidia-smi
 source scripts/ice/env.sh    # this repository's Python environment

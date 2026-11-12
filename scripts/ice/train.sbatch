@@ -1,5 +1,5 @@
 #!/bin/bash
-# GT PACE ICE: one training run on one GPU, by default of the coc-gpu partition (your Slurm default QOS).
+# GT PACE ICE: one training run on one GPU, by default of the ice-gpu partition (your Slurm default QOS).
 # The run state ($RUNS/$NAME.state, --resume) is rewritten every epoch, so after the 16 h limit the
 # same command continues where it stopped; plan.sh chains such jobs. A finished run leaves
 # $RUNS/$NAME.done and later jobs of the chain exit at once.
@@ -7,10 +7,10 @@
 #   NAME=swin_zones ZONES=1 sbatch scripts/ice/train.sbatch               # one training sample per fire
 #   NAME=swin_it2 IT=2 EXTRA="--epochs 50" sbatch scripts/ice/train.sbatch
 #   MODEL, BATCH, LR, TS, IT, ZONES_ROOT, EXTRA (any other train flags) also apply.
-#   Elsewhere: sbatch -p coc-gpu,ice-gpu,pace-gpu --qos=<qos> [--gres=gpu:h100:1] scripts/ice/train.sbatch
+#   Elsewhere: sbatch -p ice-gpu,coe-gpu [--qos=<qos>] [--gres=gpu:h100:1] scripts/ice/train.sbatch
 #   (a comma list starts on the first partition with a free GPU; bash scripts/ice/partitions.sh shows yours).
 #SBATCH -J fp-train
-#SBATCH -p coc-gpu
+#SBATCH -p ice-gpu
 #SBATCH --gres=gpu:1
 #SBATCH -N 1 --cpus-per-task=8 --mem=64G
 #SBATCH -t 16:00:00
