@@ -172,6 +172,27 @@ Train on it with `DATA_ROOT="$HOME/scratch/firepred/data-daily"`, which is also 
 </details>
 
 <details>
+<summary><b>Daily dataset with zone files</b> (for fire split runs, <code>ZONES=1</code>)</summary>
+
+The same daily archives plus ready-made zone files (built at `-ts 6`, 3 km separation). They land in
+`<data root>/zones`, where `ZONES=1` looks by default, so there is nothing to build.
+
+```bash
+source scripts/ice/env.sh
+
+python -m firepred.cli.dataset \
+  --window-repo SamuelWu318/ts-satfire-daily-zones \
+  download -ts 6 -it 1 \
+  --data-root "$HOME/scratch/firepred/data-daily"
+```
+
+Into a data root that already holds the daily dataset, this keeps the archives and only adds
+`zones/`. The summary ends with `Zone files: 149 in .../zones`. Train with
+`NAME=swin_zones ZONES=1 TS=6 bash scripts/ice/plan.sh`; see [2.6](#26-fire-split-zones-this-branch-only).
+
+</details>
+
+<details>
 <summary><b>Daily dataset with TESSERA embeddings</b></summary>
 
 ```bash
@@ -783,19 +804,45 @@ test still score whole windows.
 Zone files must match the run's `TS`. They are always built with `-it 1` and work for any training
 `IT`. Use one `ZONES_ROOT` per `TS`, because existing zone files are skipped, not rebuilt.
 
-<details>
-<summary>Zones at <code>TS=6</code> on the daily dataset</summary>
+`SamuelWu318/ts-satfire-daily-zones` already holds zone files for `TS=6` at 3 km separation, and
+`download` puts them in `<data root>/zones`. Build your own only for another `TS` or distance.
 
-Build the zone files once, then train:
+<details open>
+<summary>Zones at <code>TS=6</code>, downloaded (no build)</summary>
+
+```bash
+source scripts/ice/env.sh
+
+python -m firepred.cli.dataset \
+  --window-repo SamuelWu318/ts-satfire-daily-zones \
+  download -ts 6 -it 1 \
+  --data-root "$HOME/scratch/firepred/data-daily"
+
+ls "$HOME/scratch/firepred/data-daily/zones" | wc -l     # 149
+
+NAME=swin_zones ZONES=1 TS=6 bash scripts/ice/plan.sh
+```
+
+Add `SMOKE=1` to check one training step with the zones on a GPU before the real jobs start.
+
+</details>
+
+<details>
+<summary>Zones at <code>TS=6</code>, built yourself (default 2.25 km)</summary>
+
+Build the zone files once into their own folder, then train. Keep them apart from the downloaded
+`zones/`: a folder holds one separation distance, and a file built with another stops the build.
+Only the train split is read, so `-mode train` saves time.
 
 ```bash
 source scripts/ice/env.sh
 
 python -m firepred.cli.dataset zones \
-  --data-root "$HOME/scratch/firepred/data-daily" -ts 6 -it 1 \
-  --zones-root "$HOME/scratch/firepred/data-daily/zones"
+  --data-root "$HOME/scratch/firepred/data-daily" -ts 6 -it 1 -mode train \
+  --zones-root "$HOME/scratch/firepred/data-daily/zones-2.25km"
 
-NAME=swin_zones ZONES=1 TS=6 bash scripts/ice/plan.sh
+NAME=swin_zones_225 ZONES=1 TS=6 ZONES_ROOT="$HOME/scratch/firepred/data-daily/zones-2.25km" \
+bash scripts/ice/plan.sh
 ```
 
 </details>
@@ -822,9 +869,11 @@ bash scripts/ice/plan.sh
 ```bash
 source scripts/ice/env.sh
 
-python -m firepred.cli.dataset zones \
-  --data-root "$HOME/scratch/firepred/data-daily-tessera" -ts 6 -it 1 \
-  --zones-root "$HOME/scratch/firepred/data-daily-tessera/zones"
+python -m firepred.cli.dataset \
+  --window-repo SamuelWu318/ts-satfire-daily-zones \
+  --tessera-repo SamuelWu318/ts-tesserafire \
+  download -ts 6 -it 1 --tessera \
+  --data-root "$HOME/scratch/firepred/data-daily-tessera"
 
 NAME=swin_tessera_zones ZONES=1 DATA_ROOT="$HOME/scratch/firepred/data-daily-tessera" \
 EXTRA="--tessera" bash scripts/ice/plan.sh

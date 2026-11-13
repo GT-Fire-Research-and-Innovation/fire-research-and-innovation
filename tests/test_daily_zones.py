@@ -77,3 +77,39 @@ def test_daily_roots_need_no_daily_stride(tmp_path):
     assert read_fire_labels(tmp_path / "v3" / "train" / "p1.npz", 7)[0].tobytes() == targets[7:13].tobytes()
     with pytest.raises(ValueError, match="cannot give -ts 5"):  # converted from 6-day windows: no day-5 target
         read_fire_labels(tmp_path / "v3" / "train" / "p1.npz", 5)
+
+
+class FakeRoi:
+    """ROI stand-in: fire 1 trains, fire 2 tests, fire 3 is in no split."""
+
+    def split_of(self):
+        """Give the split of each fire id."""
+        return {"1": "train", "2": "test"}
+
+
+def test_download_copies_the_repos_zone_files(tmp_path, monkeypatch):
+    """A window repo with zones/ gives <data_root>/zones; fires outside every split are skipped."""
+    pytest.importorskip("huggingface_hub")
+    import fake_hub
+    from firepred.data import hub, windows_master
+
+    monkeypatch.setattr(fake_hub, "ROOT", str(tmp_path / "hub"))
+    monkeypatch.setitem(__import__("sys").modules, "huggingface_hub", fake_hub)
+    monkeypatch.setattr(hub, "download_roi_csvs", lambda *args, **kwargs: [])
+    monkeypatch.setattr(windows_master, "read_roi", lambda paths: FakeRoi())
+    repo = fake_hub._repo("owner/daily-zones")
+    for name in ("train/p1.npz", "test/p2.npz", "zones/p1.npz", "zones/p2.npz", "zones/p3.npz"):
+        (repo / name).parent.mkdir(parents=True, exist_ok=True)
+        (repo / name).write_bytes(name.encode())
+    (repo / "window_config.json").write_text(json.dumps({"dataset": "owner/daily-zones"}))
+
+    data_root = tmp_path / "data"
+    report = windows_master.download_windows(None, window_repo="owner/daily-zones", data_root=data_root)
+    assert report.zones == ("zones/p1.npz", "zones/p2.npz")
+    assert "zones/p3.npz" in report.skipped
+    assert sorted(p.name for p in (data_root / "zones").iterdir()) == ["p1.npz", "p2.npz"]
+    assert (data_root / "zones" / "p1.npz").read_bytes() == b"zones/p1.npz"
+    assert "Zone files: 2" in report.summary()
+
+    again = windows_master.download_windows(None, window_repo="owner/daily-zones", data_root=data_root)
+    assert again.zones == report.zones and not again.downloaded   # kept, not fetched again

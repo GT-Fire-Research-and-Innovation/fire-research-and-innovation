@@ -48,6 +48,7 @@ from firepred.config.dataset import (
     WINDOW_UPLOAD_BATCH,
     WORK_DIR,
     ZIP_FOLDERS,
+    ZONE_DIR,
     window_repo_for,
     with_dataset,
 )
@@ -245,6 +246,7 @@ class DownloadReport:
         excluded (tuple[str, ...]): archives TESSERA mode leaves out.
         missing_tessera (tuple[str, ...]): archives without a TESSERA file.
         window_config (dict | None): the repo's window_config.json.
+        zones (tuple[str, ...]): "zones/p<id>.npz" zone files downloaded or already on disk.
     """
 
     data_root: Path
@@ -254,11 +256,21 @@ class DownloadReport:
     excluded: tuple
     missing_tessera: tuple = ()
     window_config: dict = None
+    zones: tuple = ()
 
     def summary(self):
-        """Summarize the download, with a warning for archives without TESSERA."""
+        """Summarize the download, with a warning for archives without TESSERA.
+
+        The first line counts the archives. A line for zone files follows when the
+        repo had any, and a warning names the archives still without a TESSERA file.
+
+        Returns:
+            str: the summary, one or more lines.
+        """
         text = (f"{self.data_root}: downloaded {len(self.downloaded)}, already present {len(self.present)}, "
                 f"skipped {len(self.skipped)}, excluded {len(self.excluded)}")
+        if self.zones:
+            text += f"\nZone files: {len(self.zones)} in {self.data_root / ZONE_DIR} (train with --zones-dir there)"
         if self.missing_tessera:
             text += f"\nWARNING: {len(self.missing_tessera)} window archives have no TESSERA file: " \
                     f"{list(self.missing_tessera)}"
@@ -802,7 +814,8 @@ def download_windows(
     """Download every window archive of the window repo into a local data root.
 
     Each archive goes to the train/val/test folder its fire belongs to (from the
-    ROI CSVs); archives already on disk are kept. The repo's window_config.json
+    ROI CSVs); archives already on disk are kept. A repo with a zones/ folder
+    (zone files for --zones-dir) has those copied to <data_root>/zones too. The repo's window_config.json
     is copied to <data_root>/window_config.json, naming the repo as its dataset
     and keeping statistics computed there earlier that the repo's copy lacks.
     In TESSERA mode, fires without prior-year TESSERA are left out and the
@@ -840,8 +853,19 @@ def download_windows(
         local = keep_statistics(window_config, read_window_config_file(data_root))
         write_window_config_file(data_root, with_dataset(local, window_repo))
 
-    downloaded, present, skipped = [], [], []
+    downloaded, present, skipped, zones = [], [], [], []
+    excluded_ids = {fire_id_of(name) for name in excluded}
     for name in hub.list_repo_files(window_repo, token):
+        # Zone files (zones/p<id>.npz) keep their folder: <data_root>/zones is --zones-dir's usual place.
+        if name.split("/")[0] == ZONE_DIR and name.endswith(".npz"):
+            fire_id = fire_id_of(name)
+            if fire_id in excluded_ids or fire_id not in split_of:
+                skipped.append(name)
+                continue
+            if not (data_root / name).exists():
+                hub.download_file(window_repo, name, token, local_dir=data_root)
+            zones.append(name)
+            continue
         # Only split folders hold window archives (tessera/p<id>.npz shares their names).
         if name.split("/")[0] not in SPLITS or not name.endswith(".npz"):
             continue
@@ -863,7 +887,7 @@ def download_windows(
     if include_tessera:
         missing = tuple(tessera_master.download_tessera_files(data_root, tessera_repo, token))
     report = DownloadReport(data_root, tuple(downloaded), tuple(present), tuple(skipped), tuple(excluded),
-                            missing, window_config)
+                            missing, window_config, tuple(zones))
     print(report.summary())
     return report
 
