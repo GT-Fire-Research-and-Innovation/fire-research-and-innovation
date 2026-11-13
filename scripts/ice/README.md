@@ -5,7 +5,7 @@ Everything needed to train and test models on Georgia Tech's PACE ICE cluster wi
 otherwise. Click a ▸ line to open its commands.
 
 1. [Quickstart](#1-quickstart): one-time setup and data download, up to the point of launching a model.
-2. [Run a model](#2-run-a-model): choosing the dataset, the model, the parameters and the partition.
+2. [Run a model](#2-run-a-model): the pieces of a run command, every parameter, and examples.
 3. [Test a model](#3-test-a-model): finding a run's test F1 and IoU, or testing a chosen checkpoint.
 4. [Reference](#4-reference): partitions, QOS, GPUs, queues, storage and file locations.
 
@@ -144,19 +144,43 @@ works, and add `--qos=<name>` only when that partition needs a named QOS. Run
 
 ### Step 5: download a dataset
 
-Training reads a local folder, the data root. Run one of the commands below from the repository root.
-Files already downloaded are kept, so run the same command again if it stops.
+Training reads a local folder, the data root. A download is one command built from pieces: start
+from the base command, then apply the pieces you want. Files already downloaded are kept, so run the
+same command again if it stops.
 
-A long download can outlast your login session. To run it on a compute node instead, start with
-this, then run the same commands and `exit` when done:
+**Base: the daily dataset.**
 
 ```bash
-salloc -p ice-cpu -c 8 --mem=64G -t 4:00:00
-hostname                     # a compute node; if it shows a login node, run: srun --pty bash
+source scripts/ice/env.sh
+
+python -m firepred.cli.dataset \
+  --window-repo SamuelWu318/ts-satfire-daily \
+  download -ts 6 -it 1 \
+  --data-root "$HOME/scratch/firepred/data-daily"
 ```
 
+**Pieces.** Each piece changes the base command as the table says.
+
+| Piece | Change to the base command | What it adds |
+| --- | --- | --- |
+| TESSERA | Add `--tessera-repo SamuelWu318/ts-tesserafire` before `download`, add `--tessera` after `-it 1`, and use the data root `data-daily-tessera` | TESSERA embeddings in `<data root>/tessera`. Fires without prior-year TESSERA are left out |
+| Compute node | Run `salloc -p ice-cpu -c 8 --mem=64G -t 4:00:00` first, then the command, then `exit` | Keeps a long download alive after you log out |
+
+Rules for putting pieces together:
+
+- Options about repositories (`--window-repo`, `--tessera-repo`) go before the word `download`. Options
+  about the download (`-ts`, `-it`, `--tessera`, `--data-root`) go after it.
+- Keep `-ts 6 -it 1`. The daily dataset holds 6-day windows one day apart, and training on this branch
+  uses the same `TS=6 IT=1`.
+- Give a TESSERA download its own data root. It leaves out fires, so it is not the same dataset as
+  `data-daily`.
+- After `salloc`, check that `hostname` names a compute node. If it shows a login node, run
+  `srun --pty bash`.
+
+The ready-made combinations:
+
 <details>
-<summary><b>Daily dataset, no TESSERA</b> (recommended to start)</summary>
+<summary><b>Daily</b> (base only, recommended to start)</summary>
 
 ```bash
 source scripts/ice/env.sh
@@ -172,7 +196,7 @@ Train on it with `DATA_ROOT="$HOME/scratch/firepred/data-daily"`, which is also 
 </details>
 
 <details>
-<summary><b>Daily dataset with TESSERA embeddings</b></summary>
+<summary><b>Daily + TESSERA</b></summary>
 
 ```bash
 source scripts/ice/env.sh
@@ -184,11 +208,13 @@ python -m firepred.cli.dataset \
   --data-root "$HOME/scratch/firepred/data-daily-tessera"
 ```
 
-Fires without prior-year TESSERA are left out, so keep this in its own data root. Embeddings land in
-`<data root>/tessera`. Train on it with `DATA_ROOT="$HOME/scratch/firepred/data-daily-tessera"` and
-`--tessera` in `EXTRA`.
+Train on it with `DATA_ROOT="$HOME/scratch/firepred/data-daily-tessera"` and `--tessera` in `EXTRA`.
 
 </details>
+
+Zone files and fire split training are on the `fire-split-zones` branch only.
+
+Other dataset tasks:
 
 <details>
 <summary><b>Convert the processed 6-day windows into a daily dataset</b> (slow; only if the daily repo is unavailable)</summary>
@@ -205,36 +231,19 @@ python -m firepred.cli.dataset \
 ```
 
 It downloads one fire at a time into `--work-dir`, converts it and checks it reads back identical.
-Fires already converted are skipped when you run it again.
+Fires already converted are skipped when you run it again. Add `--dest-repo <your-hf-user>/ts-satfire-daily`
+after `--dest-root` to also upload the result. Your token needs write access to that repo.
 
 </details>
 
 <details>
-<summary><b>Convert and upload the daily dataset to your own Hugging Face repo</b></summary>
-
-Your token needs write access to the target repo.
+<summary><b>Check that a download finished</b></summary>
 
 ```bash
-source scripts/ice/env.sh
-mkdir -p "$HOME/scratch/firepred/tmp"
-
-python -m firepred.cli.dataset \
-  --window-repo SamuelWu318/ts-satfire-processed-6-1 \
-  --work-dir "$HOME/scratch/firepred/tmp" \
-  convert-daily -ts 6 -it 1 \
-  --dest-root "$HOME/scratch/firepred/data-daily-converted" \
-  --dest-repo <your-hf-user>/ts-satfire-daily
-```
-
-</details>
-
-<details>
-<summary>Check that a download finished</summary>
-
-```bash
-D="$HOME/scratch/firepred/data-daily"
+D="$HOME/scratch/firepred/data-daily"            # or data-daily-tessera
 ls "$D"                                           # train  val  test  window_config.json  (tessera)
 for s in train val test; do echo "$s: $(ls "$D/$s" | wc -l) files"; done
+ls "$D/tessera" 2>/dev/null | wc -l              # TESSERA files, on a TESSERA data root
 du -sh "$D"
 ```
 
@@ -344,214 +353,223 @@ To keep pulling meanwhile, use a second clone for new work.
 ## 2. Run a model
 
 One command, `plan.sh`, queues everything for a run: data preparation when the data root is empty,
-an optional GPU smoke test, then a chain of training jobs that continue one another.
+an optional GPU smoke test, then a chain of training jobs that continue one another. You build the
+command from pieces: settings written before `bash scripts/ice/plan.sh`.
 
 ```bash
-NAME=swin_daily_lr0001 \
-MODEL=swinunetr3d \
-DATA_ROOT="$HOME/scratch/firepred/data-daily" \
-BATCH=8 LR=0.0001 TS=6 IT=1 CHAIN=3 \
-EXTRA="--epochs 100 --lr-schedule cosine --lr-min 0.000001" \
-bash scripts/ice/plan.sh
-
-bash scripts/ice/status.sh
+NAME=<run name> <piece> <piece> ... EXTRA="<training flags of every piece>" bash scripts/ice/plan.sh
+bash scripts/ice/status.sh          # watch it
 ```
 
-Put settings before `bash scripts/ice/plan.sh` as above. Every setting except `NAME` has a default.
-Each section below gives ready commands for one choice; combine their settings in one command.
+1. Pick one piece from each table in [2.1](#21-pieces) you care about. Skip a table to keep its default.
+2. Write the settings in any order before `bash scripts/ice/plan.sh`.
+3. Join the training flags of all pieces into one `EXTRA="..."`. A second `EXTRA=` replaces the first
+   instead of adding to it.
 
-### 2.1 Name the run
+[2.2](#22-every-parameter) lists every setting and flag. [2.3](#23-examples) has finished commands.
 
-`NAME` identifies the run. Its state is saved to `~/scratch/firepred/runs/$NAME.state` after every
-epoch, and a finished run leaves `$NAME.done`. Put the settings you vary into the name, such as
-`swin_daily_lr0001_cosine`.
+### 2.1 Pieces
 
-<details>
-<summary>Start a new experiment</summary>
+**Name** (required)
 
-Use a name that does not exist yet:
+| Piece | Write |
+| --- | --- |
+| New run | `NAME=<new name>`, such as `NAME=swin_daily_lr0001_cosine`. `ls ~/scratch/firepred/runs/` shows names already used |
+| Continue a stopped run | The same `NAME` and the same settings as before. It resumes after the last finished epoch |
 
-```bash
-ls ~/scratch/firepred/runs/          # names already used
-NAME=swin_daily_lr0001_cosine LR=0.0001 EXTRA="--lr-schedule cosine" bash scripts/ice/plan.sh
-```
+Each run saves its state to `~/scratch/firepred/runs/$NAME.state` after every epoch. A finished run
+leaves `$NAME.done`, and later jobs with that name exit at once. Resuming is refused when the model,
+loss, learning-rate schedule, TESSERA use, epochs, learning rate, batch size, seed, `TS` or `IT`
+differ from the saved state.
 
-</details>
+**Dataset.** Download it first ([Step 5](#step-5-download-a-dataset)). A data root without
+`window_config.json` makes `plan.sh` queue its own slow conversion job.
 
-<details>
-<summary>Continue a run that stopped (time limit, failure, cancelled)</summary>
+| Piece | Write | Notes |
+| --- | --- | --- |
+| Daily (default) | nothing, or `DATA_ROOT="$HOME/scratch/firepred/data-daily"` | |
+| TESSERA | `DATA_ROOT="$HOME/scratch/firepred/data-daily-tessera"` **and** `--tessera` in `EXTRA` | Both halves are needed. Without `--tessera` the TESSERA files are ignored |
+| Converted | `DATA_ROOT="$HOME/scratch/firepred/data-daily-converted"` | A dataset you converted yourself |
 
-Submit the same command with the same `NAME` and settings. It resumes after the last finished epoch:
+**Model.** One `MODEL=<name>`. [The model table](#models) lists each model's options.
 
-```bash
-NAME=swin_daily_lr0001_cosine LR=0.0001 EXTRA="--lr-schedule cosine" CHAIN=2 bash scripts/ice/plan.sh
-```
+| Piece | Write | Notes |
+| --- | --- | --- |
+| SwinUNETR-3D (default) | nothing, or `MODEL=swinunetr3d` | With the TESSERA piece, TESSERA joins the input as extra channels |
+| SwinUNETR-3D, learned day weights | `MODEL=swinunetr3d_tpool` | |
+| SwinUNETR-3D, TESSERA as context | `MODEL=swinunetr3d_tessera` | **Needs the TESSERA piece** |
+| TESSERA context and day weights | `MODEL=swinunetr3d_tessera_tpool` | **Needs the TESSERA piece** |
+| UNETR-3D | `MODEL=unetr3d` | |
+| 3-D U-Net | `MODEL=unet3d` | |
+| Attention U-Net | `MODEL=attunet` | Default loss `dice`; every other model defaults to `dicece` |
+| ConvLSTM U-Net | `MODEL=convlstm` | |
+| ResNet-18 U-Net | `MODEL=res18unet` | |
 
-Resuming is refused when the model, loss, learning-rate schedule, TESSERA use, epochs, learning
-rate, batch size, seed, `TS` or `IT` differ from the saved state. A finished run exits at once.
+The two TESSERA-context models stop about one second after W&B starts when `--tessera` is missing,
+with `swinunetr3d_tessera needs TESSERA inputs (train with --tessera); got 43 input channels`.
 
-</details>
+**Training.** Settings go before `bash`, flags go inside `EXTRA`.
 
-### 2.2 Choose the dataset
+| Piece | Write |
+| --- | --- |
+| Learning rate | `LR=0.0001` (default `0.001`) |
+| Batch size | `BATCH=16` (default `8`). Larger batches need more GPU memory, so pair them with `GPU_TYPE=h100` or `h200` |
+| Epochs | `--epochs 200` (default `100`) |
+| Seed | `-seed 1` (default `42`) |
+| Cosine decay | `--lr-schedule cosine --lr-min 0.000001` |
+| Plateau decay | `--lr-schedule plateau --lr-patience 5 --lr-decay-factor 0.5 --lr-min 0.000001` |
+| Dice loss | `--loss dice` |
+| Dice + cross-entropy, fixed weights | `--loss dicece --ce-weight 1 10` (background 1, fire 10) |
+| Dice + cross-entropy, weights from the data | `--loss dicece --ce-weight auto` (the default for `dicece`) |
+| Test scores in W&B during training | `--test-every 10`. Charts only: the kept checkpoint is still chosen by validation loss |
+| No final test | `--no-test-after-train` |
+| Keep checkpoints in W&B | `--upload-checkpoints` |
+| Model option | `--model-option KEY=VALUE`, repeatable. See [the model table](#models) |
 
-Point `DATA_ROOT` at a folder you downloaded in [Step 5](#step-5-download-a-dataset). Download first:
-when `DATA_ROOT` has no `window_config.json`, `plan.sh` queues its own slow conversion job.
+On this branch `TS` and `IT` must match `DATA_ROOT/window_config.json`, so the daily dataset needs the
+defaults `TS=6 IT=1`. Other window settings need the `fire-split-zones` branch.
 
-<details>
-<summary><b>Daily dataset</b> (<code>data-daily</code>, the default)</summary>
+**Length and checks**
 
-```bash
-NAME=swin_daily DATA_ROOT="$HOME/scratch/firepred/data-daily" bash scripts/ice/plan.sh
-```
+| Piece | Write | Notes |
+| --- | --- | --- |
+| Queue more jobs | `CHAIN=5` (default `3`) | Each job runs up to 16 hours and continues the last. Raise it for long runs |
+| Quick trial | `CHAIN=1` and `--epochs 2` in `EXTRA` | Finishes in one short job |
+| GPU smoke test first | `SMOKE=1` | One training step on a GPU before the chain starts. It ignores `EXTRA` and `IT`, so **leave it off for TESSERA runs**: a TESSERA-context model fails the smoke test, and training then never starts |
 
-</details>
+**Where it runs.** [Step 4](#step-4-check-which-partitions-accept-your-jobs) shows which partitions you may use.
 
-<details>
-<summary><b>Daily dataset with TESSERA</b> (<code>data-daily-tessera</code>)</summary>
+| Piece | Write | Notes |
+| --- | --- | --- |
+| `ice-gpu` (default) | nothing | Your default QOS |
+| First free GPU of several partitions | `PARTITION=ice-gpu,coe-gpu` | All partitions in one list must accept the same QOS |
+| College of Engineering H100/H200 nodes | `PARTITION=coe-gpu` | |
+| One GPU model | `GPU_TYPE=h100` | Also `h200`, `a100`. `ice-gpu` has AMD `mi210` and `r9700` GPUs this CUDA build cannot use |
+| A named QOS | `QOS=coc-ice CPU_QOS=default` | `CPU_QOS=default` keeps the data job on your default QOS |
+| Another Slurm account | `ACCOUNT=<account>` | |
 
-Add `--tessera` to `EXTRA`:
+`plan.sh` tests each listed partition with `sbatch --test-only` and drops one that refuses the job.
 
-```bash
-NAME=swin_tessera DATA_ROOT="$HOME/scratch/firepred/data-daily-tessera" \
-EXTRA="--tessera --epochs 100" bash scripts/ice/plan.sh
-```
+### 2.2 Every parameter
 
-Embeddings are read from `<DATA_ROOT>/tessera`. Add `--tessera-dir <path>` to `EXTRA` for another
-folder, and `--tessera-cells-per-pixel N` for embeddings built on a finer grid.
-
-</details>
-
-<details>
-<summary><b>Converted dataset</b> (<code>data-daily-converted</code>)</summary>
-
-```bash
-NAME=swin_converted DATA_ROOT="$HOME/scratch/firepred/data-daily-converted" bash scripts/ice/plan.sh
-```
-
-</details>
-
-### 2.3 Choose the model
-
-Set `MODEL`. Every other setting stays the same.
-
-<details>
-<summary><code>swinunetr3d</code>: SwinUNETR-3D (default)</summary>
-
-```bash
-NAME=swin_daily MODEL=swinunetr3d bash scripts/ice/plan.sh
-```
-
-</details>
-
-<details>
-<summary><code>swinunetr3d_tpool</code>: SwinUNETR-3D that learns a weight per input day</summary>
-
-It learns how to weight each day's output instead of averaging them.
-
-```bash
-NAME=swin_tpool MODEL=swinunetr3d_tpool bash scripts/ice/plan.sh
-```
-
-</details>
-
-<details>
-<summary><code>swinunetr3d</code> with TESSERA as extra input channels</summary>
-
-```bash
-NAME=swin_tessera_channels MODEL=swinunetr3d DATA_ROOT="$HOME/scratch/firepred/data-daily-tessera" \
-EXTRA="--tessera" bash scripts/ice/plan.sh
-```
-
-</details>
-
-<details>
-<summary><code>swinunetr3d_tessera</code>: SwinUNETR-3D with TESSERA as multi-scale context</summary>
-
-TESSERA conditions every skip connection instead of joining the input.
-
-```bash
-NAME=swin_tessera_ctx MODEL=swinunetr3d_tessera DATA_ROOT="$HOME/scratch/firepred/data-daily-tessera" \
-EXTRA="--tessera" bash scripts/ice/plan.sh
-```
-
-</details>
-
-<details>
-<summary><code>swinunetr3d_tessera_tpool</code>: TESSERA context plus learned day weights</summary>
-
-```bash
-NAME=swin_tessera_tpool MODEL=swinunetr3d_tessera_tpool DATA_ROOT="$HOME/scratch/firepred/data-daily-tessera" \
-EXTRA="--tessera" bash scripts/ice/plan.sh
-```
-
-</details>
-
-<details>
-<summary><code>unetr3d</code>: UNETR-3D</summary>
-
-```bash
-NAME=unetr_daily MODEL=unetr3d bash scripts/ice/plan.sh
-```
-
-</details>
-
-<details>
-<summary><code>unet3d</code>: 3-D U-Net</summary>
-
-```bash
-NAME=unet3d_daily MODEL=unet3d bash scripts/ice/plan.sh
-```
-
-</details>
-
-<details>
-<summary><code>attunet</code>: Attention U-Net (default loss <code>dice</code>)</summary>
-
-Every other model defaults to the `dicece` loss.
-
-```bash
-NAME=attunet_daily MODEL=attunet bash scripts/ice/plan.sh
-```
-
-</details>
-
-<details>
-<summary><code>convlstm</code>: ConvLSTM U-Net</summary>
-
-```bash
-NAME=convlstm_daily MODEL=convlstm bash scripts/ice/plan.sh
-```
-
-</details>
-
-<details>
-<summary><code>res18unet</code>: ResNet-18 U-Net over the days stacked as channels</summary>
-
-```bash
-NAME=res18_daily MODEL=res18unet bash scripts/ice/plan.sh
-```
-
-</details>
-
-### 2.4 Choose the parameters
+#### Settings before `bash scripts/ice/plan.sh`
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
+| `NAME` | required | Run name. Also the job name `fp-$NAME` and the log `logs/fp-$NAME-<jobid>.out` |
+| `MODEL` | `swinunetr3d` | Model, from [the model table](#models) |
+| `DATA_ROOT` | `~/scratch/firepred/data-daily` | Data root training reads |
 | `BATCH` | `8` | Batch size |
 | `LR` | `0.001` | Learning rate |
-| `TS` | `6` | Input window length in consecutive days |
-| `IT` | `1` | Days between window starts. `TS=6 IT=2` uses days 1-6 to predict day 7, then days 3-8 to predict day 9 |
-| `CHAIN` | `3` | Training jobs queued one after another, each up to 16 hours, continuing the same run |
-| `SMOKE` | `0` | `1` adds a short GPU check before training |
-| `EXTRA` | empty | Any other training flags, in one quoted string |
+| `TS` | `6` | Input days per window. Must match `window_config.json`: `6` on the daily dataset |
+| `IT` | `1` | Days between window starts. Must match `window_config.json`: `1` on the daily dataset |
+| `EXTRA` | empty | Every other training flag, in one quoted string. See the flag table below |
+| `CHAIN` | `3` | Training jobs queued in a row, each up to 16 hours |
+| `SMOKE` | `0` | `1` adds a one-step GPU check before training. Not for TESSERA runs |
+| `PARTITION` | `ice-gpu` | GPU partition, or a comma list |
+| `GPU_TYPE` | any GPU | One GPU model, such as `h100`, `h200` or `a100` |
+| `QOS` | your default | QOS of the GPU jobs. Set it only for a named QOS |
+| `CPU_PARTITION` | `ice-cpu` | Partition of the data job |
+| `CPU_QOS` | same as `QOS` | QOS of the data job. `default` means your default |
+| `ACCOUNT` | your default | Slurm account of every job |
+| `FIRE_WORK` | `~/scratch/firepred` | Folder for data, run states and W&B files |
+| `FIREPRED_ENV` | `~/scratch/envs/firepred` | Python environment |
 
-`train.sbatch` already passes `-mode pred -nh 3 -ed 36 --num-workers 6`; flags in `EXTRA` override them.
+Only when `plan.sh` queues a data job, because `DATA_ROOT` has no `window_config.json`:
 
-On this branch, training checks `TS` and `IT` against `DATA_ROOT/window_config.json`. The daily
-dataset needs `TS=6 IT=1`, the defaults. Other window settings need the `fire-split-zones` branch.
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `DAILY_REPO` | unset | Download daily archives from this repo, such as `SamuelWu318/ts-satfire-daily`, instead of converting |
+| `SRC_REPO` | `SamuelWu318/ts-satfire-processed-6-1` | Window repo the conversion reads |
+| `DEST_REPO` | unset | Also upload the converted archives to this repo |
+
+Each training job gets one GPU, 8 CPUs, 64 GB of memory and 16 hours. `train.sbatch` always passes
+`-mode pred -nh 3 -ed 36 --num-workers 6` and `--resume` with the run state.
+Flags in `EXTRA` come last, so `-nh`, `-ed` and `--num-workers` in `EXTRA` override those.
+
+#### Training flags for `EXTRA`
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| **Length and repeatability** | | |
+| `--epochs N` | `100` | Epochs of the whole run, across every job of the chain |
+| `-seed N` | `42` | Seed of the weights, shuffling and augmentation |
+| `-r N` | `1` | Run number, recorded only |
+| `--num-workers N` | `6` | Processes that load data |
+| `--device auto\|cpu\|cuda\|tpu` | `auto` | `auto` takes the GPU when one is visible |
+| **Loss** | | |
+| `--loss dice\|dicece` | per model | `dice` for `attunet`, `dicece` for the rest. `dicece` is MONAI's DiceCELoss |
+| `--ce-weight auto` or `--ce-weight BG FIRE` | `auto` | `dicece` class weights. `auto` is 1 and the training split's background-to-fire pixel ratio |
+| `--lambda-dice X` | `1.0` | Weight of the Dice term |
+| `--lambda-ce X` | `1.0` | Weight of the cross-entropy term |
+| **Learning-rate schedule** | | |
+| `--lr-schedule none\|plateau\|cosine` | `none` | `none` keeps the rate constant, as in the paper |
+| `--lr-min X` | `0.000001` | Lowest rate, for `plateau` and `cosine` |
+| `--lr-decay-factor X` | `0.5` | `plateau`: multiply the rate by this |
+| `--lr-patience N` | `5` | `plateau`: epochs without a lower validation loss before decaying |
+| **Inputs** | | |
+| `--normalization window-config\|paper` | `window-config` | Input statistics: the training split's, from `window_config.json`, or the released code's fixed numbers |
+| `--unzip-dir off\|auto\|PATH` | `off` | Unzip the archives once for faster reads. `auto` puts them beside the data root |
+| `-nc N` | derived | Check the input channels: `43`, or `172` with `--tessera` |
+| **TESSERA** | | |
+| `--tessera` | off | Add TESSERA. Required by `swinunetr3d_tessera` and `swinunetr3d_tessera_tpool` |
+| `--tessera-dir PATH` | `<DATA_ROOT>/tessera` | Another folder of TESSERA files |
+| `--tessera-cells-per-pixel K` | `1` | TESSERA cells per VIIRS pixel side. Must match how the files were built |
+| `--tessera-min-coverage X` | `0.5` | TESSERA pixels below this coverage are zeroed and masked |
+| **Model** | | |
+| `-nh N` | `3` | Attention heads of the SwinUNETR-3D models |
+| `-ed N` | `36` | Feature size of the SwinUNETR-3D models |
+| `--swin-temporal-downsample` | off | SwinUNETR-3D models: also halve the days in patch merging, as the released code does |
+| `--unetr-version v0\|v1` | `v1` | `unetr3d` sizes. `v1` is the paper's |
+| `--model-option KEY=VALUE` | none | Model setting, repeatable. See [the model table](#models) |
+| **Testing and logging** | | |
+| `--no-test-after-train` | off | Skip the final test. By default the best checkpoint scores the test fires after training |
+| `--test-every N` | `0` | Also score the test fires every N epochs, for W&B charts only |
+| `--test-csv PATH` | `roi/us_fire_2021_out_new.csv` | Fire list of the test scoring |
+| `--plot-dir PATH` | `evaluation_plot` | Folder of prediction plots from the final test |
+| `--upload-checkpoints` | off | Store each best checkpoint as a W&B artifact |
+| `--wandb-user NAME` | `gt-fri` | W&B team. The project is `AFBAPred` |
+
+Set through a setting instead of `EXTRA`: `-m` (`MODEL`), `-b` (`BATCH`), `-lr` (`LR`), `-ts` (`TS`),
+`-it` (`IT`), `--data-root` (`DATA_ROOT`) and `--resume` (`NAME`).
+`-test`, `--checkpoint`, `--trust-checkpoint` and `--load-epoch` are for testing, in [section 3](#3-test-a-model).
+`python -m firepred.cli.train --help` prints every flag, after `source scripts/ice/env.sh`.
+
+#### Models
+
+| `MODEL` | Model | TESSERA | Default loss | `--model-option` (default) |
+| --- | --- | --- | --- | --- |
+| `swinunetr3d` | SwinUNETR-3D, the paper's main model | Optional, as 129 extra input channels | `dicece` | `attn_version=v1` (or `v2`) |
+| `swinunetr3d_tpool` | SwinUNETR-3D that learns a weight per input day instead of averaging the days | Optional, as extra input channels | `dicece` | `attn_version=v1` |
+| `swinunetr3d_tessera` | SwinUNETR-3D whose skip connections are conditioned on TESSERA at every scale | **Required** | `dicece` | `context_channels=32`, `attn_version=v1` |
+| `swinunetr3d_tessera_tpool` | `swinunetr3d_tessera` with learned day weights | **Required** | `dicece` | `context_channels=32`, `attn_version=v1` |
+| `unetr3d` | UNETR-3D | Optional | `dicece` | none; use `--unetr-version` |
+| `unet3d` | 3-D U-Net | Optional | `dicece` | none |
+| `attunet` | Attention U-Net | Optional | `dice` | none |
+| `convlstm` | ConvLSTM U-Net: a shared 2-D encoder with a ConvLSTM over the days | Optional | `dicece` | `width=16` |
+| `res18unet` | ResNet-18 U-Net over the days stacked as channels | Optional | `dicece` | `reduce_width=64`, `full_width=32` |
+
+`-nh`, `-ed` and `--swin-temporal-downsample` apply to the four SwinUNETR-3D models only.
+
+### 2.3 Examples
+
+Each example names its pieces, then gives the command.
+
+<details open>
+<summary><b>Paper settings</b>: daily, SwinUNETR-3D, rate 0.001 constant, 100 epochs</summary>
+
+Pieces: name, daily (default), SwinUNETR-3D (default), epochs.
+
+```bash
+NAME=swin_paper MODEL=swinunetr3d BATCH=8 LR=0.001 EXTRA="--epochs 100" bash scripts/ice/plan.sh
+```
+
+</details>
 
 <details>
-<summary><b>Quick trial</b>: 2 epochs, one job, with a GPU smoke test</summary>
+<summary><b>Quick trial</b> with a GPU smoke test</summary>
+
+Pieces: name, quick trial, GPU smoke test first.
 
 ```bash
 NAME=trial_swin CHAIN=1 SMOKE=1 EXTRA="--epochs 2" bash scripts/ice/plan.sh
@@ -560,39 +578,33 @@ NAME=trial_swin CHAIN=1 SMOKE=1 EXTRA="--epochs 2" bash scripts/ice/plan.sh
 </details>
 
 <details>
-<summary><b>Paper settings</b>: learning rate 0.001, constant, 100 epochs</summary>
+<summary><b>Cosine decay, H100 only</b></summary>
 
-These are the defaults:
-
-```bash
-NAME=swin_paper BATCH=8 LR=0.001 EXTRA="--epochs 100" bash scripts/ice/plan.sh
-```
-
-</details>
-
-<details>
-<summary><b>Cosine learning-rate decay</b></summary>
+Pieces: name, learning rate, epochs, cosine decay, first free GPU of several partitions, one GPU model.
 
 ```bash
-NAME=swin_lr0001_cosine LR=0.0001 \
+NAME=swin_lr0001_cosine_h100 LR=0.0001 PARTITION=ice-gpu,coe-gpu GPU_TYPE=h100 \
 EXTRA="--epochs 100 --lr-schedule cosine --lr-min 0.000001" bash scripts/ice/plan.sh
 ```
 
 </details>
 
 <details>
-<summary><b>Plateau learning-rate decay</b>: halve after 5 epochs without improvement</summary>
+<summary><b>TESSERA as context</b>: <code>swinunetr3d_tessera</code></summary>
+
+Pieces: name, TESSERA (both halves), TESSERA-context model, epochs.
 
 ```bash
-NAME=swin_plateau LR=0.001 \
-EXTRA="--epochs 100 --lr-schedule plateau --lr-patience 5 --lr-decay-factor 0.5 --lr-min 0.000001" \
-bash scripts/ice/plan.sh
+NAME=swin_tessera_ctx MODEL=swinunetr3d_tessera DATA_ROOT="$HOME/scratch/firepred/data-daily-tessera" \
+EXTRA="--tessera --epochs 100" bash scripts/ice/plan.sh
 ```
 
 </details>
 
 <details>
 <summary><b>Learning-rate sweep</b>: one run per value</summary>
+
+Pieces: name, learning rate, epochs, cosine decay, repeated in a loop with a distinct `NAME` each time.
 
 ```bash
 for LR in 0.001 0.0005 0.0001; do
@@ -615,135 +627,18 @@ done
 </details>
 
 <details>
-<summary><b>Batch size</b></summary>
+<summary><b>Another model with a model option</b>: wider ConvLSTM, weighted loss</summary>
+
+Pieces: name, ConvLSTM, model option, Dice + cross-entropy with fixed weights.
 
 ```bash
-NAME=swin_b16 BATCH=16 bash scripts/ice/plan.sh
-```
-
-A larger batch needs more GPU memory. Pair it with `GPU_TYPE=h100` or `h200` if it runs out.
-
-</details>
-
-<details>
-<summary><b>Loss and class weights</b></summary>
-
-```bash
-NAME=swin_dice EXTRA="--loss dice" bash scripts/ice/plan.sh                 # Dice only
-NAME=swin_dicece_w10 EXTRA="--loss dicece --ce-weight 1 10" bash scripts/ice/plan.sh   # background 1, fire 10
-NAME=swin_dicece_auto EXTRA="--loss dicece --ce-weight auto" bash scripts/ice/plan.sh  # weights from the data's pixel ratio
+NAME=convlstm_w32_ce10 MODEL=convlstm \
+EXTRA="--model-option width=32 --loss dicece --ce-weight 1 10" bash scripts/ice/plan.sh
 ```
 
 </details>
 
-<details>
-<summary><b>More epochs than the chain can fit</b></summary>
-
-Each job runs up to 16 hours. Queue more jobs for long runs:
-
-```bash
-NAME=swin_long CHAIN=5 EXTRA="--epochs 200" bash scripts/ice/plan.sh
-```
-
-If the chain ends early, run the same command again: it continues from the saved state.
-
-</details>
-
-<details>
-<summary><b>Chart test scores during training</b></summary>
-
-```bash
-NAME=swin_watch EXTRA="--epochs 100 --test-every 10" bash scripts/ice/plan.sh
-```
-
-Scores the test fires every 10 epochs for W&B charts only. The kept checkpoint is still chosen by
-validation loss.
-
-</details>
-
-<details>
-<summary><b>Other flags</b></summary>
-
-| Flag | Meaning |
-| --- | --- |
-| `--no-test-after-train` | Skip the final test after training |
-| `--upload-checkpoints` | Store each best checkpoint as a W&B artifact |
-| `--model-option KEY=VALUE` | Model-specific setting, repeatable |
-| `--swin-temporal-downsample` | SwinUNETR-3D: halve the days in patch merging, as the released code does |
-
-Every flag:
-
-```bash
-source scripts/ice/env.sh
-python -m firepred.cli.train --help
-```
-
-</details>
-
-### 2.5 Choose where it runs
-
-| Setting | Default | Meaning |
-| --- | --- | --- |
-| `PARTITION` | `ice-gpu` | GPU partition, or a comma list: each job starts on whichever has a free GPU first |
-| `QOS` | your default | QOS of the GPU jobs. Set it only for a named QOS, such as `QOS=coc-ice` |
-| `GPU_TYPE` | any NVIDIA or AMD GPU | One GPU model, such as `h100`, `h200`, `a100`. `ice-gpu` also has AMD `mi210` and `r9700` GPUs, which this CUDA build cannot use |
-| `CPU_PARTITION` | `ice-cpu` | Partition of the data job |
-| `CPU_QOS` | same as `QOS` | QOS of the data job |
-| `ACCOUNT` | your default | Slurm account |
-
-`plan.sh` tests each listed partition with `sbatch --test-only` and drops one that refuses the job.
-
-<details>
-<summary>Default: <code>ice-gpu</code> under your default QOS</summary>
-
-```bash
-NAME=swin_daily bash scripts/ice/plan.sh
-```
-
-</details>
-
-<details>
-<summary>Whichever of two partitions has a free GPU first</summary>
-
-```bash
-NAME=swin_daily PARTITION=ice-gpu,coe-gpu bash scripts/ice/plan.sh
-```
-
-All partitions in one list must accept the same QOS.
-
-</details>
-
-<details>
-<summary>Only H100 GPUs</summary>
-
-```bash
-GPU_TYPE=h100 bash scripts/ice/partitions.sh ice-gpu coe-gpu      # who has them for you
-NAME=swin_h100 PARTITION=ice-gpu,coe-gpu GPU_TYPE=h100 bash scripts/ice/plan.sh
-```
-
-</details>
-
-<details>
-<summary>A named QOS (<code>partitions.sh</code> shows one, such as <code>coc-ice</code>)</summary>
-
-```bash
-NAME=swin_coc QOS=coc-ice CPU_QOS=default bash scripts/ice/plan.sh
-```
-
-`CPU_QOS=default` keeps the data job on your default QOS.
-
-</details>
-
-<details>
-<summary>College of Engineering H100/H200 nodes (<code>coe-gpu</code>)</summary>
-
-```bash
-NAME=swin_coe PARTITION=coe-gpu bash scripts/ice/plan.sh
-```
-
-</details>
-
-### 2.6 Watch, resume and stop
+### 2.4 Watch, resume and stop
 
 <details>
 <summary>See all jobs, runs and the latest epoch</summary>
@@ -777,17 +672,19 @@ sacct -u $USER -S today --format=JobID,JobName%25,State,Elapsed,ExitCode
 
 `DUE TO TIME LIMIT` is normal inside a chain: the next job continues the run. A log with
 `no GPU visible` ran on the CPU; cancel it and resubmit with `GPU_TYPE=h100` or another NVIDIA model.
+A W&B run that ends after about a second means the settings were wrong, and every job of the chain
+fails the same way. The most common case is a TESSERA-context model without `--tessera` in `EXTRA`.
 
 </details>
 
 <details>
-<summary>Stop a run</summary>
+<summary>Continue a run that stopped (time limit, failure, cancelled)</summary>
+
+Submit the same command with the same `NAME` and settings. It resumes after the last finished epoch:
 
 ```bash
-scancel -n fp-swin_daily          # every queued and running job of run swin_daily
+NAME=swin_daily_lr0001_cosine LR=0.0001 EXTRA="--lr-schedule cosine" CHAIN=2 bash scripts/ice/plan.sh
 ```
-
-Restart it later with the same `plan.sh` command and `NAME`.
 
 </details>
 
@@ -802,8 +699,16 @@ NAME=swin_daily CHAIN=2 bash scripts/ice/plan.sh
 
 </details>
 
-**Smoke test caveat:** `SMOKE=1` passes the model, data root and `TS`, but not `EXTRA` or
-`IT`. It does not reproduce a TESSERA or custom-interval run.
+<details>
+<summary>Stop a run</summary>
+
+```bash
+scancel -n fp-swin_daily          # every queued and running job of run swin_daily
+```
+
+Restart it later with the same `plan.sh` command and `NAME`.
+
+</details>
 
 ---
 
@@ -866,12 +771,10 @@ Open the printed link. The Overview tab lists `test_f1` and `test_iou`. W&B run 
 ### Test a chosen checkpoint
 
 Use this when a run stopped before its final test, was trained with `--no-test-after-train`, or
-should be scored again after a code change. Each command reads the checkpoint path from the run's
-log, then submits a GPU job. Match `-m`, `-ts`, `-it` and the TESSERA flags to the run. `-b` and `-lr`
-are required but do not change the scores.
+should be scored again after a code change. Like a training command, a test command is a base plus
+pieces that match how the run was trained.
 
-<details>
-<summary><b>Plain run</b> (no TESSERA)</summary>
+**Base: find the checkpoint, then submit a GPU job.**
 
 ```bash
 NAME=swin_daily_lr0001
@@ -884,13 +787,25 @@ sbatch -J fp-test-$NAME -p ice-gpu --gres=gpu:1 -c 8 --mem=64G -t 2:00:00 \
   --data-root $HOME/scratch/firepred/data-daily --num-workers 6"
 ```
 
-</details>
+**Pieces.** Change the base where the run's training differed. `-b` and `-lr` are required but do
+not change the scores.
 
-<details>
-<summary><b>TESSERA run</b></summary>
+| The run was trained with | Change in the test command |
+| --- | --- |
+| Another `MODEL` | `-m <model>` |
+| `-nh`, `-ed`, `--swin-temporal-downsample`, `--unetr-version` or `--model-option` in `EXTRA` | The same flags and values |
+| TESSERA | Add `--tessera --trust-checkpoint`, use `--data-root $HOME/scratch/firepred/data-daily-tessera`, and add `--tessera-cells-per-pixel K` if training used it |
+| Another GPU partition or QOS | `-p <partition>`, and `--qos=<name>` for a named QOS |
+| A test that hits its time limit | A larger `-t` |
 
 TESSERA checkpoints on the default torch 2.3.1 need `--trust-checkpoint`. Use it only for
-checkpoints your own runs created.
+checkpoints your own runs created. A checkpoint trained with other inputs is refused with an error
+naming the difference.
+
+<details>
+<summary><b>Example: a TESSERA-context run</b></summary>
+
+Pieces: another `MODEL`, TESSERA.
 
 ```bash
 NAME=swin_tessera_ctx
@@ -908,7 +823,7 @@ sbatch -J fp-test-$NAME -p ice-gpu --gres=gpu:1 -c 8 --mem=64G -t 2:00:00 \
 <details>
 <summary><b>Run with no "Best checkpoint" line</b> (stopped before the end)</summary>
 
-Find the checkpoint through the run's W&B id:
+Find the checkpoint through the run's W&B id, then use it as `CKPT` in the base command:
 
 ```bash
 NAME=swin_daily_lr0001
@@ -916,8 +831,6 @@ RUN_ID=$(grep -ho "wandb.ai/[^ ]*/runs/[a-z0-9]*" logs/fp-$NAME-*.out | head -1 
 CKPT=$(ls -t ~/scratch/firepred/wandb/*-$RUN_ID/files/*.pth | head -1)
 echo "$CKPT"
 ```
-
-Then submit the test job from the matching case above.
 
 </details>
 
@@ -938,6 +851,8 @@ python -m firepred.cli.train -test --checkpoint "$CKPT" \
 exit
 ```
 
+The same pieces apply.
+
 </details>
 
 <details>
@@ -955,8 +870,7 @@ A new W&B run named `test_pred_...` also holds `test_f1` and `test_iou`.
 
 **Always pass `--checkpoint`.** Without it, `-test` takes the newest checkpoint whose file name matches
 the model, batch size and tags. Runs with different learning rates share that file name, so it can
-pick another run's checkpoint. A checkpoint trained with other inputs is refused with an error naming
-the difference. Raise `-t` if a test job hits its time limit.
+pick another run's checkpoint.
 
 ---
 
