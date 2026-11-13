@@ -857,7 +857,12 @@ def download_windows(
     excluded_ids = {fire_id_of(name) for name in excluded}
     for name in hub.list_repo_files(window_repo, token):
         # Zone files (zones/p<id>.npz) keep their folder: <data_root>/zones is --zones-dir's usual place.
-        if name.split("/")[0] == ZONE_DIR and name.endswith(".npz"):
+        # Exactly two plain parts, so a repo name such as zones/../x.npz never writes outside data_root.
+        parts = name.split("/")
+        if parts[0] == ZONE_DIR and name.endswith(".npz"):
+            if len(parts) != 2 or parts[1] in ("", ".", "..") or "\\" in name:
+                skipped.append(name)
+                continue
             fire_id = fire_id_of(name)
             if fire_id in excluded_ids or fire_id not in split_of:
                 skipped.append(name)

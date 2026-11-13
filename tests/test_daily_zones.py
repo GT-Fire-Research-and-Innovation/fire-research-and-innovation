@@ -98,7 +98,7 @@ def test_download_copies_the_repos_zone_files(tmp_path, monkeypatch):
     monkeypatch.setattr(hub, "download_roi_csvs", lambda *args, **kwargs: [])
     monkeypatch.setattr(windows_master, "read_roi", lambda paths: FakeRoi())
     repo = fake_hub._repo("owner/daily-zones")
-    for name in ("train/p1.npz", "test/p2.npz", "zones/p1.npz", "zones/p2.npz", "zones/p3.npz"):
+    for name in ("train/p1.npz", "test/p2.npz", "zones/p1.npz", "zones/p2.npz", "zones/p3.npz", "zones/sub/p1.npz"):
         (repo / name).parent.mkdir(parents=True, exist_ok=True)
         (repo / name).write_bytes(name.encode())
     (repo / "window_config.json").write_text(json.dumps({"dataset": "owner/daily-zones"}))
@@ -110,6 +110,7 @@ def test_download_copies_the_repos_zone_files(tmp_path, monkeypatch):
     assert sorted(p.name for p in (data_root / "zones").iterdir()) == ["p1.npz", "p2.npz"]
     assert (data_root / "zones" / "p1.npz").read_bytes() == b"zones/p1.npz"
     assert "Zone files: 2" in report.summary()
+    assert "zones/sub/p1.npz" in report.skipped and not (data_root / "zones" / "sub").exists()
 
     again = windows_master.download_windows(None, window_repo="owner/daily-zones", data_root=data_root)
     assert again.zones == report.zones and not again.downloaded   # kept, not fetched again
