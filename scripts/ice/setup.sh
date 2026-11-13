@@ -59,13 +59,19 @@ esac
 # that is numpy 1.26, scipy 1.13, pandas 2.3, matplotlib 3.9, rasterio 1.4, pyproj 3.6.1 and
 # backports.zstd 1.3.0. backports.zstd reads the Zstandard archives before Python 3.14.
 PACKAGES=(scipy pandas matplotlib tqdm huggingface_hub rasterio pyproj einops wandb pytest)
-"$PY" -c 'import sys; sys.exit(sys.version_info >= (3, 14))' && PACKAGES+=(backports.zstd)
+FORCE=(huggingface_hub)                # always reinstalled from scratch (see below)
+if "$PY" -c 'import sys; sys.exit(sys.version_info >= (3, 14))'; then
+  PACKAGES+=(backports.zstd); FORCE+=(backports.zstd)
+fi
 MODULES=(torch torchvision monai numpy "${PACKAGES[@]}")   # import names, which are also the pip names
 
 # One package that fails must not leave the others uninstalled: a failed install is only reported here,
 # and the check below installs whatever is still missing.
 "$PY" -m pip install --upgrade --index-url "$TORCH_URL" "${TORCH[@]}" || echo "!! torch did not install"
 "$PY" -m pip install --upgrade "${PINS[@]}" "${PACKAGES[@]}" || echo "!! some packages did not install"
+# pip skips a package whose record is still there even when its files are gone ("Requirement already
+# satisfied", then ModuleNotFoundError), so these two are always reinstalled. Both are small.
+"$PY" -m pip install --force-reinstall --no-deps "${FORCE[@]}" || echo "!! ${FORCE[*]} did not reinstall"
 
 # missing MODULE...: the modules this Python cannot import, one per line (each reason goes to stderr).
 missing() {
@@ -83,8 +89,10 @@ EOF
 for name in $(missing "${MODULES[@]}"); do
   echo "Installing $name again on its own"
   case "$name" in
-    torch|torchvision) "$PY" -m pip install --index-url "$TORCH_URL" "${TORCH[@]}" || true ;;
-    *) "$PY" -m pip install "${PINS[@]}" "$name" || true ;;
+    torch|torchvision) "$PY" -m pip install --force-reinstall --no-deps --index-url "$TORCH_URL" "${TORCH[@]}" || true
+                       "$PY" -m pip install --index-url "$TORCH_URL" "${TORCH[@]}" || true ;;
+    *) "$PY" -m pip install --force-reinstall --no-deps "$name" || true      # files gone, record left
+       "$PY" -m pip install "${PINS[@]}" "$name" || true ;;                  # and its dependencies
   esac
 done
 MISSING=$(missing "${MODULES[@]}")
