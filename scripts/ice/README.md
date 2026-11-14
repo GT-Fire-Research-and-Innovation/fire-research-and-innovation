@@ -2,7 +2,8 @@
 
 Everything needed to train and test models on Georgia Tech's PACE ICE cluster with the scripts in
 `scripts/ice/`. Run every command from the repository root on an ICE login node unless a step says
-otherwise. Click a ▸ line to open its commands.
+otherwise. Click a ▸ line to open its commands. New here: [QUICKSTART.md](QUICKSTART.md) goes from login
+to a first run (both datasets, one model each) on one page.
 
 1. [Quickstart](#1-quickstart): one-time setup and data download, up to the point of launching a model.
 2. [Run a model](#2-run-a-model): the pieces of a run command, every parameter, and examples.
