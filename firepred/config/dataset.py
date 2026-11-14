@@ -258,6 +258,33 @@ SPLITS = ("train", "val", "test")
 # real archives).
 NPZ_COMPRESSLEVEL = 6
 
+# ----- Daily archives ----- #
+
+# Format version 3 stores each fire's days once instead of its windows: with
+# -it 1 every day sat in up to TS_LENGTH windows, and day t of window k is
+# bit-identical to day t-1 of window k+1 (the running maxima of channels 3, 4,
+# 6, 7 carry over from the fire's first day, never from a window's). Windows are
+# sliced from the days when read, for the archive's own window settings or any
+# other whose target days it holds. See firepred/data/archive.py. [ours]
+DAILY_FORMAT_VERSION = 3
+ARCHIVE_FORMAT_VERSIONS = (ARCHIVE_FORMAT_VERSION, DAILY_FORMAT_VERSION)
+
+# Days per compressed block of one channel. Compressing each day alone packs
+# about 2x worse (neighbouring days share most pixels); one block per channel
+# per fire packs tightest but makes every window decompress the whole fire.
+# 6 days matched the whole-fire size within 1% on real fires (30.4 -> 5.5 MB,
+# 12 windows) and decoded a window in about 15 ms, as fast as a format-2 window.
+DAILY_BLOCK_DAYS = 6
+
+# Daily archives are written once and read many times. Zstandard decodes at the
+# same speed at every level, so they use a high one: 19 packed real fires 13%
+# tighter than 6, for slower writing only.
+DAILY_COMPRESSLEVEL = 19
+
+# The Hugging Face repo of daily archives converted from the 6-1 window repo. One
+# repo serves every window length >= 6 and every stride. [ours]
+DAILY_REPO = "SamuelWu318/ts-satfire-daily"
+
 # ----- Prediction labels ----- #
 
 # The target is the pixels newly burned on the day after the input window:
@@ -327,6 +354,7 @@ DEFAULT_DATA_ROOT = Path("data")
 # to the working directory unless a master function is given other paths.
 WORK_DIR = "."                 # temp/ and staging/ go here while building
 DATA_DIR = "./data"            # a local data root: train/, val/, test/ (+ tessera/)
+DAILY_DATA_DIR = "./data-daily"  # convert-daily writes daily archives here
 ROI_CACHE_DIR = "hf_roi"       # downloaded ROI CSVs
 DATA_ZIP = "data.zip"          # the window data bundle in a window repo
 TESSERA_ZIP = "tessera.zip"    # the TESSERA bundle in TESSERA_REPO

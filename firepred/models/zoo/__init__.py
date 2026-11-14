@@ -8,5 +8,6 @@ available as `-m <name>`.
     swinunetr3d_tessera_tpool.py  both of the above [ours]
     unet3d.py, attunet.py, unetr3d.py   the paper's baselines
     res18unet.py                  ResNet-18 U-Net over the days stacked as channels [ours]
+    convlstm.py                   ConvLSTM U-Net: a shared 2D encoder with a ConvLSTM over the days [ours]
     _template.py                  the starting point for `python -m firepred.cli.new_model NAME`
 """

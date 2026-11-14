@@ -204,6 +204,24 @@
         "training"
       ],
       "reason": "wind_fix: observed wind direction (channel 12) is encoded as degrees / 180 - 1 (the whole compass on -1..1) instead of sin(degrees); still 43 channels."
+    },
+    {
+      "groups": [
+        "cli"
+      ],
+      "reason": "daily archives: new dataset subcommand convert-daily; stage gets --src-repo for daily repos without data.zip"
+    },
+    {
+      "groups": [
+        "cli"
+      ],
+      "reason": "train: --resume (run state rewritten every epoch)"
+    },
+    {
+      "groups": [
+        "cli"
+      ],
+      "reason": "cli: check help lists res18unet (stale since the Res18 merge); --test-after-train help is the same on every Python (BooleanFlagAction)"
     }
   ]
 }

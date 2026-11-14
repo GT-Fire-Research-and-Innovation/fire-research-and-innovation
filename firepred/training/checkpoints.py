@@ -1,8 +1,9 @@
-"""Checkpoints: save, keep the best N, load for testing.
+"""Checkpoints: save, keep the best N, load for testing, and resume an interrupted run.
 
 Level 3 (training). CheckpointStore saves during training (training/trainer.py);
 find_test_checkpoint finds one for -test and CheckpointLoader reads it back
-(training/experiment.py). Uploading a checkpoint to W&B is
+(training/experiment.py). RunState (--resume) keeps everything an interrupted
+run needs to continue, rewritten after every epoch. Uploading a checkpoint to W&B is
 the Tracker's job (training/tracker.py), so this module never touches W&B.
 
 A checkpoint is a plain dict (no repo classes are pickled, so moving code never
@@ -20,8 +21,10 @@ breaks loading):
 import glob
 import heapq
 import os
+import random
 from pathlib import Path
 
+import numpy as np
 import torch
 
 from firepred.training.accelerator import Device
@@ -115,6 +118,31 @@ class CheckpointStore:
             list[tuple[float, Path]]: (validation loss, file) pairs.
         """
         return [(-loss, Path(path)) for loss, path in sorted(self._heap, reverse=True)]
+
+    def state(self):
+        """List the kept checkpoints as [validation loss, file] pairs, for a RunState."""
+        return [[loss, str(path)] for loss, path in self.ranking()]
+
+    def restore(self, kept):
+        """Take back the checkpoints an earlier part of this run kept (RunState); missing files are dropped.
+
+        A resumed run keeps ranking against the checkpoints it already saved.
+        If more remain than the store keeps, the worst ones are deleted.
+
+        Args:
+            kept (list[list]): [validation loss, file] pairs from state().
+
+        Returns:
+            CheckpointStore: this store.
+        """
+        self._heap = []
+        for loss, path in kept:
+            if Path(path).is_file():
+                heapq.heappush(self._heap, (-float(loss), str(path)))
+        while len(self._heap) > self.keep:
+            _, displaced = heapq.heappop(self._heap)
+            Path(displaced).unlink(missing_ok=True)
+        return self
 
     @property
     def best(self):
@@ -233,7 +261,10 @@ class CheckpointLoader:
                 """
                 return reconstruct(*args, **kwargs)
 
+            # torch matches an allowed function by __module__ + "." + __qualname__; the
+            # nested definition's qualname ("...<locals>._reconstruct") would never match.
             _reconstruct.__module__ = module_name
+            _reconstruct.__qualname__ = "_reconstruct"
             return _reconstruct
 
         allowed = [np.ndarray, np.dtype]
@@ -341,3 +372,132 @@ class CheckpointLoader:
                 "--swin-temporal-downsample"
             )
         return checkpoint
+
+
+# Settings a resumed run must share with the run that wrote its state.
+RESUME_SETTINGS = ("run_name", "checkpoint_template", "epochs", "learning_rate", "batch_size", "seed",
+                   "ts_length", "ts_interval")
+
+
+class RunState:
+    """Keep what an interrupted training run needs to continue: the file --resume names.
+
+    A cluster job has a time limit. With --resume FILE, every finished epoch
+    rewrites FILE (atomically) with the weights, the optimizer, gradient scaler
+    and schedule, the kept checkpoints, every random generator and the W&B run
+    id. Starting the same command again continues after the last finished
+    epoch, in the same W&B run, and draws the same random numbers an
+    uninterrupted run would have. The file is this run's own, so it is read
+    trusted (it holds Python and numpy random states).
+
+    Attributes:
+        path (Path): the state file.
+    """
+
+    FORMAT = 1
+
+    def __init__(self, path):
+        """Point at the state file; nothing is read or written yet."""
+        self.path = Path(path)
+
+    def exists(self):
+        """Whether an earlier part of this run left a state to continue from."""
+        return self.path.is_file()
+
+    @staticmethod
+    def settings_of(config):
+        """Give the settings a resumed run must share, as plain values."""
+        return {name: getattr(config, name) for name in RESUME_SETTINGS}
+
+    def write(self, epoch, trainer, store, run_id, generator=None):
+        """Save the state after a finished epoch, replacing the previous one only once fully written.
+
+        The state is first written to a .partial file and then renamed over the
+        old one. A job stopped mid-write therefore still leaves the last complete state.
+
+        Args:
+            epoch (int): the 0-based epoch just finished.
+            trainer (Trainer): its model, optimizer, scaler and schedule.
+            store (CheckpointStore): the kept checkpoints.
+            run_id (str): the W&B run to continue.
+            generator (torch.Generator | None): the training loader's shuffling generator.
+
+        Returns:
+            Path: the state file.
+        """
+        state = {
+            "format": self.FORMAT,
+            "epoch": epoch,
+            "settings": self.settings_of(trainer.config),
+            "trainer": trainer.state_dict(),
+            "kept_checkpoints": store.state(),
+            "wandb_run_id": run_id,
+            "random": {
+                "python": random.getstate(),
+                "numpy": np.random.get_state(),
+                "torch": torch.get_rng_state(),
+                "cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else [],
+                "loader": generator.get_state() if generator is not None else None,
+            },
+        }
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        partial = self.path.with_name(self.path.name + ".partial")
+        Device.of(next(trainer.model.parameters()).device).save(state, partial)
+        os.replace(partial, self.path)
+        return self.path
+
+    def read(self, device, config):
+        """Load the state and refuse it if it belongs to another run.
+
+        The state is compared with this run's settings (RESUME_SETTINGS). Any
+        difference stops the run instead of mixing two runs in one state file.
+
+        Args:
+            device (Device | torch.device | str): where its tensors go.
+            config (RunConfig): this run's settings.
+
+        Returns:
+            dict: the state.
+
+        Raises:
+            ValueError: if the state was written by a run with other settings, or another format.
+        """
+        state = CheckpointLoader(device).read(self.path, trusted=True)
+        if state.get("format") != self.FORMAT:
+            raise ValueError(f"{self.path} is not a run state this code writes (format {state.get('format')})")
+        ours = self.settings_of(config)
+        changed = [f"{name} {state['settings'].get(name)!r} (now {ours[name]!r})"
+                   for name in RESUME_SETTINGS if state["settings"].get(name) != ours[name]]
+        if changed:
+            raise ValueError(f"{self.path} belongs to a run with other settings: {', '.join(changed)}. "
+                             "Use another --resume file for a new run.")
+        return state
+
+    @staticmethod
+    def restore(state, trainer, store, generator=None):
+        """Put a read state back: weights, optimizer, scaler, schedule, kept checkpoints and random generators.
+
+        With every random generator restored, the rest of the run draws the
+        same numbers as an uninterrupted run. Training then continues after the
+        last finished epoch.
+
+        Args:
+            state (dict): read()'s result.
+            trainer (Trainer): the run's trainer.
+            store (CheckpointStore): the run's checkpoint store.
+            generator (torch.Generator | None): the training loader's shuffling generator.
+
+        Returns:
+            int: the first epoch still to train.
+        """
+        trainer.load_state_dict(state["trainer"])
+        store.restore(state["kept_checkpoints"])
+        rng = state["random"]
+        random.setstate(rng["python"])
+        np.random.set_state(rng["numpy"])
+        torch.set_rng_state(rng["torch"].cpu())
+        if rng["cuda"] and torch.cuda.is_available() and len(rng["cuda"]) == torch.cuda.device_count():
+            torch.cuda.set_rng_state_all([s.cpu() for s in rng["cuda"]])
+        if generator is not None and rng["loader"] is not None:
+            generator.set_state(rng["loader"].cpu())
+        return state["epoch"] + 1

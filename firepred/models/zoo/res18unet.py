@@ -38,6 +38,9 @@ FULL_WIDTH = 32  # channels of the full-resolution skip; override with --model-o
 def conv_block(in_channels, out_channels):
     """Two 3x3 convolutions with batch norm and ReLU, keeping the image size.
 
+    It is the U-Net's basic block. The convolutions have no bias, since batch
+    norm adds one.
+
     Args:
         in_channels (int): input channels.
         out_channels (int): output channels.
@@ -58,12 +61,18 @@ def conv_block(in_channels, out_channels):
 class UpBlock(nn.Module):
     """Upsample to the skip's size, concatenate the skip, then convolve.
 
+    One decoder level of the U-Net. Upsampling is bilinear, so the block has
+    no transposed convolution.
+
     Attributes:
         conv (torch.nn.Sequential): the conv block after the concatenation.
     """
 
     def __init__(self, in_channels, skip_channels, out_channels):
         """Build the conv block for the concatenated channels.
+
+        The block sees the deeper channels and the skip channels side by side.
+        Its output has out_channels channels.
 
         Args:
             in_channels (int): channels coming up from the deeper level.
@@ -75,6 +84,9 @@ class UpBlock(nn.Module):
 
     def forward(self, x, skip):
         """Join one deeper feature map with its skip connection.
+
+        The deeper map is resized to the skip's height and width first. The
+        two are then concatenated and convolved.
 
         Args:
             x (torch.Tensor): (B, in_channels, h, w).
@@ -90,6 +102,10 @@ class UpBlock(nn.Module):
 class Model(nn.Module):
     """ResNet-18 U-Net over the days stacked as channels.
 
+    The T days of C channels become one image of C x T channels, which a 1x1
+    convolution reduces before torchvision's ResNet-18 encoder. A U-Net decoder
+    with a full-resolution skip brings the features back to the input size.
+
     Attributes:
         reduce (torch.nn.Sequential): 1x1 conv from C x T to reduce_width channels, batch norm, ReLU.
         full (torch.nn.Sequential): full-resolution skip block.
@@ -102,6 +118,9 @@ class Model(nn.Module):
 
     def __init__(self, in_channels, num_classes, ts_length, reduce_width, full_width):
         """Build the 1x1 reduce, the encoder from torchvision's resnet18 and the U-Net decoder.
+
+        The ResNet-18 layers start from random weights. Its stem convolution
+        is replaced so it reads reduce_width channels instead of RGB.
 
         Args:
             in_channels (int): input channels per day.
@@ -150,6 +169,7 @@ class Model(nn.Module):
         """Run the ResNet-18 U-Net on one batch.
 
         R is reduce_width (64 by default) and F is full_width (32 by default).
+        The shape comments on the right follow one batch through the network.
 
         Args:
             x (torch.Tensor): input of shape (B, C, T, H, W), C = in_channels, T = ts_length.

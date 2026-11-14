@@ -89,6 +89,21 @@ def path_or_omit(value):
     return OMIT if value is None else Path(value).expanduser()
 
 
+class BooleanFlagAction(argparse.BooleanOptionalAction):
+    """Read a --x / --no-x flag, with the same help text on every Python version.
+
+    Older Pythons (3.9 among them) append " (default: %(default)s)" to the
+    help of such a flag, and newer ones (3.12) do not. This action keeps the
+    help exactly as written, so --help reads the same wherever the code runs.
+    """
+
+    def __init__(self, *args, **kwargs):
+        """Build argparse's action, then put the help back as it was written."""
+        written = kwargs.get("help")
+        super().__init__(*args, **kwargs)
+        self.help = written
+
+
 class CeWeightAction(argparse.Action):
     """Read --ce-weight: two class weights (background, fire), or the word "auto".
 
@@ -175,6 +190,11 @@ FLAGS = (
         "action": "store_true", "help": "Allow full unpickling of the -test checkpoint (it can run code stored in the "
         "file). Needed only for checkpoints with TESSERA statistics on torch < 2.4; use only for checkpoints you or "
         "your runs created"}),
+    Flag(("--resume",), "resume", {
+        "help": "NEW: a run-state file. Training continues from it when it exists and rewrites it after every "
+        "epoch (weights, optimizer, schedule, kept checkpoints, random generators, W&B run id), so a job stopped "
+        "by a time limit continues when the same command runs again. Refused if the run's settings differ"},
+         default=None, to_config=path_or_omit),
     Flag(("--load-epoch",), "load_epoch", {"type": int, "help": "-test without --checkpoint: the epoch of the "
                                            "checkpoint to look for in the W&B run folders (default: any epoch; "
                                            "the newest matching file is used)"}),
@@ -184,7 +204,7 @@ FLAGS = (
                                            "the current weights every N epochs (0 = never). Logging only: no gradients, "
                                            "eval mode, and checkpoint choice still uses validation loss"}),
     Flag(("--test-after-train",), "test_after_train", {
-        "action": argparse.BooleanOptionalAction, "help": "After training, score the test fires with the "
+        "action": BooleanFlagAction, "help": "After training, score the test fires with the "
         "lowest-validation-loss checkpoint and log test F1/IoU to the same W&B run"}),
     Flag(("--tessera",), "tessera", {"action": "store_true",
                                      "help": "Append per-fire TESSERA embeddings (128 bands + validity mask)"}),
@@ -372,7 +392,7 @@ def argv_for(config):
         name = flag.flags[0]
         if flag.action == "store_true":
             argv += [name] if value else []
-        elif flag.action is argparse.BooleanOptionalAction:
+        elif flag.action is BooleanFlagAction:
             argv.append(name if value else f"--no-{name.lstrip('-')}")
         elif flag.action == "append":
             for key, item in value:

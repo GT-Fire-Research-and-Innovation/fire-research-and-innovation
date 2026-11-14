@@ -31,6 +31,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from firepred.config.dataset import (
+    DAILY_BLOCK_DAYS,
+    DAILY_COMPRESSLEVEL,
+    DAILY_DATA_DIR,
+    DAILY_FORMAT_VERSION,
     DATA_DIR,
     DATA_ZIP,
     ROI_CACHE_DIR,
@@ -48,7 +52,7 @@ from firepred.config.dataset import (
     with_dataset,
 )
 from firepred.data import files, hub, tessera_master
-from firepred.data.archive import find_fire_sources, write_fire_archive
+from firepred.data.archive import convert_to_daily, find_fire_sources, fire_name, write_fire_archive
 from firepred.data.stats import (
     NORMALIZATION,
     PIXEL_COUNTS,
@@ -942,11 +946,12 @@ def pull_data_zip(data_root, token=None, repo_id=None, zip_name=DATA_ZIP):
 
 def stage_training_data(work, token=None, window_repo=None, tessera_repo=TESSERA_REPO,
                         attached_data_root=None, attached_zip=None,
-                        attached_tessera_dir=None, attached_tessera_zip=None):
+                        attached_tessera_dir=None, attached_tessera_zip=None, src_repo=SRC_REPO):
     """Make the training data ready in a notebook and return where it is.
 
-    The data comes from an attached extracted folder, an attached data.zip, or
-    the window repo's data.zip, in that order. In TESSERA mode the TESSERA
+    The data comes from an attached extracted folder, an attached data.zip, the
+    window repo's data.zip, or (a repo without one, such as a daily repo) the
+    repo's archives one by one, in that order. In TESSERA mode the TESSERA
     files are staged too and the training root is a symlinked view without the
     excluded fires. This replaces the training notebooks' data cell.
 
@@ -959,17 +964,26 @@ def stage_training_data(work, token=None, window_repo=None, tessera_repo=TESSERA
         attached_zip (str | Path | None): an attached data.zip.
         attached_tessera_dir (str | Path | None): an attached folder of TESSERA files.
         attached_tessera_zip (str | Path | None): an attached tessera.zip.
+        src_repo (str): the raw GeoTIFF repo (its ROI CSVs place archives in their splits).
 
     Returns:
         StagedData: the data root, the training root and archive counts.
     """
+    window_repo = window_repo or work.window_repo
     if attached_data_root:
         data_root = files.find_data_root(attached_data_root)
-    else:
+    elif attached_zip or DATA_ZIP in hub.list_repo_files(window_repo, token):
         archive = Path(attached_zip) if attached_zip else Path(
-            hub.download_file(window_repo or work.window_repo, DATA_ZIP, token, local_dir=work.download_dir)
+            hub.download_file(window_repo, DATA_ZIP, token, local_dir=work.download_dir)
         )
         data_root = files.extract_data(archive, work.extract_dir)
+    else:
+        # Daily repos ship no data.zip (it would only duplicate the archives): each
+        # archive is downloaded straight into its split folder, so the disk holds
+        # the data once and nothing is unpacked.
+        download_windows(token, window_repo=window_repo, src_repo=src_repo, data_root=work.extract_dir,
+                         roi_dir=work.roi_dir, length=work.ts_length, interval=work.ts_interval)
+        data_root = files.find_data_root(work.extract_dir)
 
     tessera_dir, train_root = None, data_root
     if work.use_tessera:
@@ -979,3 +993,190 @@ def stage_training_data(work, token=None, window_repo=None, tessera_repo=TESSERA
     staged = StagedData(data_root, train_root, tessera_dir, files.count_archives(train_root))
     print(staged.summary())
     return staged
+
+
+# ----- Daily archives ----- #
+
+
+@dataclass(frozen=True)
+class DailyConversionReport:
+    """Record what convert_daily did.
+
+    Every converted fire was read back window by window and matched bit for
+    bit. summary() is the line the master prints at the end.
+
+    Attributes:
+        dest_root (Path): where the daily archives are.
+        converted (tuple[tuple[str, int, int, int], ...]): (split/p<id>, windows checked,
+            source bytes, daily bytes) per converted fire.
+        present (tuple[str, ...]): fires skipped because their daily archive exists.
+        uploaded (tuple[str, ...]): files uploaded to the destination repo.
+    """
+
+    dest_root: Path
+    converted: tuple
+    present: tuple
+    uploaded: tuple
+
+    def summary(self):
+        """Say how many fires were converted and how much smaller they got.
+
+        Sizes count only the fires converted in this run, not the skipped ones.
+        The ratio compares the format-2 sources with their daily archives.
+
+        Returns:
+            str: one line.
+        """
+        source = sum(row[2] for row in self.converted)
+        daily = sum(row[3] for row in self.converted)
+        windows = sum(row[1] for row in self.converted)
+        ratio = f" ({source / daily:.1f}x smaller)" if daily else ""
+        return (f"Daily archives in {self.dest_root}: {len(self.converted)} fires converted, {windows} windows "
+                f"checked bit-identical, {source / 1e9:.2f} GB -> {daily / 1e9:.2f} GB{ratio}; "
+                f"{len(self.present)} already there; {len(self.uploaded)} files uploaded")
+
+
+def daily_window_config(config, source, block_days, compresslevel):
+    """Give a daily data root's window_config.json: the source's settings and statistics, format version 3.
+
+    Every window reads back bit-identical, so the source's pixel counts and
+    normalization still describe the data. The notes record the conversion.
+
+    Args:
+        config (dict): the source's window_config.json.
+        source (str): the source repo or data root, for the notes.
+        block_days (int): days per block.
+        compresslevel (int): Zstandard level.
+
+    Returns:
+        dict: the daily data root's window_config.json.
+    """
+    notes = dict(config.get("notes") or {})
+    notes.update({
+        "npz_compresslevel": compresslevel,
+        "daily_block_days": block_days,
+        "converted_from": source,
+        "daily_code_version": files.code_version(),
+        "archive_format_version": "3 = one frame per day; windows are sliced when read (data/archive.py)",
+    })
+    return {**config, "archive_format_version": DAILY_FORMAT_VERSION, "notes": notes}
+
+
+def daily_sources(token, window_repo, data_root, splits):
+    """List the format-2 archives to convert: (split, p<id>, local path or repo file name)."""
+    if data_root:
+        return [(split, fire_name(path), path) for split in splits for path in find_fire_sources(Path(data_root) / split)]
+    return [(name.split("/")[0], Path(name).stem, name) for name in sorted(hub.list_repo_files(window_repo, token))
+            if name.split("/")[0] in splits and name.count("/") == 1 and name.endswith(".npz")]
+
+
+def upload_daily_batch(dest_root, pending, dest_repo, token):
+    """Upload a batch of new daily archives, one commit per split.
+
+    The archives are hard-linked into a hidden staging folder, so the disk
+    holds no second copy. The folder is removed after the upload.
+
+    Args:
+        dest_root (Path): the daily data root.
+        pending (list[tuple[str, str]]): (split, file name) of each archive to upload.
+        dest_repo (str): the destination repo.
+        token (str | None): a token with write access.
+
+    Returns:
+        list[str]: the uploaded repo paths.
+    """
+    uploaded = []
+    for split in sorted({split for split, _ in pending}):
+        with tempfile.TemporaryDirectory(prefix=".daily_upload_", dir=dest_root) as staging:
+            for pending_split, name in pending:
+                if pending_split == split:
+                    try:
+                        os.link(dest_root / split / name, Path(staging) / name)
+                    except OSError:
+                        shutil.copy2(dest_root / split / name, Path(staging) / name)
+            uploaded += [f"{split}/{name}" for name in hub.upload_folder(staging, dest_repo, split, token)]
+    return uploaded
+
+
+def convert_daily(token=None, window_repo=None, data_root=None, dest_root=DAILY_DATA_DIR, dest_repo=None,
+                  length=TS_LENGTH, interval=TS_INTERVAL, splits=SPLITS, block_days=DAILY_BLOCK_DAYS,
+                  compresslevel=DAILY_COMPRESSLEVEL, batch_size=WINDOW_UPLOAD_BATCH, work_dir=WORK_DIR,
+                  overwrite=False):
+    """Convert format-2 window archives into daily archives, proving every window reads back bit-identical.
+
+    The source is a data root on disk (data_root) or a window repo, whose
+    archives are downloaded one at a time and deleted once converted, so one
+    archive is on disk at a time. Daily archives go to dest_root/<split>/; with
+    dest_repo they are also uploaded every batch_size fires, with the data
+    root's window_config.json at the end. Fires whose daily archive exists are
+    skipped (resume) unless overwrite. The source is never changed.
+
+    Args:
+        token (str | None): a Hugging Face token (write access for dest_repo).
+        window_repo (str | None): the format-2 repo (default: the one for length/interval).
+        data_root (str | Path | None): convert this data root's archives instead of a repo.
+        dest_root (str | Path): where the daily archives go.
+        dest_repo (str | None): also upload them here.
+        length (int): input days per window of the source.
+        interval (int): days between window starts of the source.
+        splits (tuple[str, ...]): the splits to convert.
+        block_days (int): days per block.
+        compresslevel (int): Zstandard level.
+        batch_size (int): fires per upload.
+        work_dir (str | Path): where downloads wait while converted.
+        overwrite (bool): convert fires whose daily archive exists.
+
+    Returns:
+        DailyConversionReport: what was converted, skipped and uploaded.
+
+    Raises:
+        ValueError: if the source's window_config.json records other window settings or is already daily.
+    """
+    source = str(data_root) if data_root else (window_repo or window_repo_for(length, interval))
+    config = read_window_config_file(data_root) if data_root else hub.read_window_config(source, token)
+    if config is not None:
+        if config.get("archive_format_version") == DAILY_FORMAT_VERSION:
+            raise ValueError(f"{source} already holds daily archives")
+        for key, asked in (("ts_length", length), ("ts_interval", interval)):
+            if key in config and int(config[key]) != int(asked):
+                raise ValueError(f"{source} records {key} = {config[key]}, not {asked}: pass the source's -ts/-it")
+    dest_root = Path(dest_root)
+    remote = set(hub.list_repo_files(dest_repo, token)) if dest_repo and not overwrite else set()
+    if dest_repo:
+        hub.ensure_repo(dest_repo, token)
+
+    converted, present, uploaded, pending = [], [], [], []
+
+    for split, name, where in daily_sources(token, window_repo or source, data_root, splits):
+        target = dest_root / split / f"{name}.npz"
+        if not overwrite and (target.exists() or f"{split}/{name}.npz" in remote):
+            present.append(f"{split}/{name}")
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="daily_", dir=work_dir) as temp:
+            local = Path(where) if data_root else Path(hub.download_file(source, where, token, local_dir=temp))
+            source_bytes = sum(f.stat().st_size for f in local.rglob("*")) if local.is_dir() else local.stat().st_size
+            windows = convert_to_daily(local, target, length, interval, block_days, compresslevel)
+        row = (f"{split}/{name}", windows, source_bytes, target.stat().st_size)
+        converted.append(row)
+        print(f"{row[0]}: {windows} windows, {row[2] / 1e6:.1f} MB -> {row[3] / 1e6:.1f} MB, bit-identical")
+        if dest_repo:
+            pending.append((split, target.name))
+            if len(pending) >= batch_size:
+                uploaded += upload_daily_batch(dest_root, pending, dest_repo, token)
+                pending.clear()
+    if dest_repo:
+        uploaded += upload_daily_batch(dest_root, pending, dest_repo, token)
+
+    if config is not None:
+        daily = daily_window_config(config, source, block_days, compresslevel)
+        daily = with_dataset(daily, dest_repo) if dest_repo else daily
+        write_window_config_file(dest_root, keep_statistics(daily, read_window_config_file(dest_root)))
+        if dest_repo:
+            hub.upload_file(window_config_path(dest_root), WINDOW_CONFIG_FILE, dest_repo, token)
+            uploaded.append(WINDOW_CONFIG_FILE)
+    else:
+        print(f"WARNING: {source} has no {WINDOW_CONFIG_FILE}; {dest_root} gets none")
+    report = DailyConversionReport(dest_root, tuple(converted), tuple(present), tuple(uploaded))
+    print(report.summary())
+    return report
