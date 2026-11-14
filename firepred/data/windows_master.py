@@ -35,6 +35,7 @@ from firepred.config.dataset import (
     DAILY_COMPRESSLEVEL,
     DAILY_DATA_DIR,
     DAILY_FORMAT_VERSION,
+    DAILY_FORMAT_VERSIONS,
     DATA_DIR,
     DATA_ZIP,
     ROI_CACHE_DIR,
@@ -1037,7 +1038,7 @@ class DailyConversionReport:
 
 
 def daily_window_config(config, source, block_days, compresslevel):
-    """Give a daily data root's window_config.json: the source's settings and statistics, format version 3.
+    """Give a daily data root's window_config.json: the source's settings and statistics, the daily format version.
 
     Every window reads back bit-identical, so the source's pixel counts and
     normalization still describe the data. The notes record the conversion.
@@ -1057,7 +1058,8 @@ def daily_window_config(config, source, block_days, compresslevel):
         "daily_block_days": block_days,
         "converted_from": source,
         "daily_code_version": files.code_version(),
-        "archive_format_version": "3 = one frame per day; windows are sliced when read (data/archive.py)",
+        "archive_format_version": (f"{DAILY_FORMAT_VERSION} = one frame per day, members named by channel "
+                                   "(channel_names); windows are sliced when read (data/archive.py)"),
     })
     return {**config, "archive_format_version": DAILY_FORMAT_VERSION, "notes": notes}
 
@@ -1135,7 +1137,7 @@ def convert_daily(token=None, window_repo=None, data_root=None, dest_root=DAILY_
     source = str(data_root) if data_root else (window_repo or window_repo_for(length, interval))
     config = read_window_config_file(data_root) if data_root else hub.read_window_config(source, token)
     if config is not None:
-        if config.get("archive_format_version") == DAILY_FORMAT_VERSION:
+        if config.get("archive_format_version") in DAILY_FORMAT_VERSIONS:
             raise ValueError(f"{source} already holds daily archives")
         for key, asked in (("ts_length", length), ("ts_interval", interval)):
             if key in config and int(config[key]) != int(asked):

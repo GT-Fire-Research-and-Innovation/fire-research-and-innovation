@@ -26,11 +26,11 @@ Each window is its own member, so reading one window decompresses only that wind
 unzip_data_root() can unpack every archive once into a p<id>/ folder of the same .npy
 members (byte-identical arrays, no decompression on every read).
 
-Daily archives [ours, format version 3], one per fire, hold each day once instead of
+Daily archives [ours, format version 4], one per fire, hold each day once instead of
 each window (DAILY_FORMAT_VERSION in firepred/config/dataset.py says why):
 
     p<id>.npz
-    ├── format_version   scalar, 3
+    ├── format_version   scalar, 4
     ├── num_windows      scalar, windows of the archive's own settings (format-2 readers stop
     │                    on the version instead of misreading the file)
     ├── ts_length, ts_interval   the window settings the archive was built with (its default view)
@@ -38,13 +38,18 @@ each window (DAILY_FORMAT_VERSION in firepred/config/dataset.py says why):
     ├── block_days       scalar B
     ├── frame_shape      (3,) int32: channels, height, width
     ├── label_sel        scalar (optional, as in format 2)
+    ├── channel_names    (channels,) str: what each channel holds, its members' name
+    │                    (STORED_CHANNEL_KEYS: "viirs_i1", ..., "forecast_specific_humidity")
     ├── static_channels  (k,) int16: channels identical on every day, stored once
-    ├── static_c17       (256, 256) float32, one per static channel
-    ├── days_c00_000     (n <= B, 256, 256) float32: channel 0, days 0 .. n-1
-    ├── days_c00_006, ..., days_c01_000, ...
+    ├── static_slope     (256, 256) float32, one per static channel (static_<channel name>)
+    ├── days_viirs_i1_000    (n <= B, 256, 256) float32: channel 0, days 0 .. n-1
+    ├── days_viirs_i1_006, ..., days_viirs_i2_000, ...   (days_<channel name>_<first day>)
     ├── target_days      (targets,) int16: the day of each stored next-day target
     ├── targets          (targets, 256, 32) uint8: the targets as bits (np.packbits on the last axis)
     └── target_dtype     the targets' dtype as written by format 2 (float32)
+
+Format 3 is the same without channel_names: its members are named by channel number
+(static_c17, days_c00_000), as if every channel's name were c<number>. Both read alike.
 
 open_fire() answers archive["data_007"], archive["label_007"], archive["num_windows"] and
 archive.files for a daily archive exactly as for a format-2 one, so every reader works
@@ -91,6 +96,7 @@ from firepred.config.dataset import (
     DAILY_COMPRESSLEVEL,
     DAILY_FORMAT_VERSION,
     NPZ_COMPRESSLEVEL,
+    STORED_CHANNEL_KEYS,
     TESSERA_BANDS,
     TESSERA_FORMAT_VERSION,
     TESSERA_QUANTIZATION,
@@ -524,7 +530,7 @@ def unzip_data_root(data_root, unzip_root, splits=("train", "val", "test"), work
     return unzip_root
 
 
-# ===== Daily archives (format version 3) ===== #
+# ===== Daily archives (format versions 3 and 4) ===== #
 
 
 # A member only daily archives have; open_fire tells the formats apart by it.
@@ -537,14 +543,54 @@ def is_daily_archive(path):
         return f"{DAILY_MARKER}.npy" in bundle.namelist()
 
 
-def block_member(channel, first_day):
-    """Name the member holding one channel's block of days that starts on first_day."""
-    return f"days_c{channel:02d}_{first_day:03d}"
+def block_member(name, first_day):
+    """Name the member holding the block of days from first_day of the channel called name."""
+    return f"days_{name}_{first_day:03d}"
 
 
-def static_member(channel):
-    """Name the member holding a channel that is the same on every day."""
-    return f"static_c{channel:02d}"
+def static_member(name):
+    """Name the member holding the channel called name when it is the same on every day."""
+    return f"static_{name}"
+
+
+def format3_channel_names(channels):
+    """Give the channel names format 3 used in its member names, c00 for channel 0 and so on."""
+    return tuple(f"c{channel:02d}" for channel in range(channels))
+
+
+def daily_channel_names(channels, names=None):
+    """Check and give the channel names a daily archive's members are named by.
+
+    Format 4 names each channel's members by what it holds, such as
+    days_viirs_i4_night_running_max_000 or static_elevation. The names go into
+    member names, so they must be unique and plain.
+
+    Args:
+        channels (int): the stored channels.
+        names (Sequence[str] | None): one name per channel; None gives
+            STORED_CHANNEL_KEYS, which describe the 27 stored channels (none
+            for a fire without frames).
+
+    Returns:
+        tuple[str, ...]: the names.
+
+    Raises:
+        ValueError: if there is not one name per channel, a name repeats, or a
+            name is not lowercase letters, digits and underscores.
+    """
+    if names is None:
+        names = STORED_CHANNEL_KEYS if channels else ()
+    names = tuple(str(name) for name in names)
+    if len(names) != channels:
+        raise ValueError(f"{channels} channels need {channels} names, got {len(names)}"
+                         + ("; pass channel_names for frames other than the 27 stored channels" if channels
+                            != len(STORED_CHANNEL_KEYS) else ""))
+    if len(set(names)) != len(names):
+        raise ValueError(f"channel names repeat: {names}")
+    bad = [name for name in names if not name or not all(c.islower() or c.isdigit() or c == "_" for c in name)]
+    if bad:
+        raise ValueError(f"channel names must be lowercase letters, digits and underscores: {bad}")
+    return names
 
 
 def window_starts(last_target_day, length, interval):
@@ -645,13 +691,15 @@ def days_from_windows(count, read, length, interval):
 
 
 def write_daily_archive(save_path, fire, length, interval, label_sel=None, block_days=DAILY_BLOCK_DAYS,
-                        compresslevel=DAILY_COMPRESSLEVEL):
+                        compresslevel=DAILY_COMPRESSLEVEL, channel_names=None):
     """Write one fire's days and targets as a daily archive.
 
     A channel that is bit-identical on every day (terrain, land cover) is
-    stored once; the others in blocks of block_days days. The targets are
-    stored as bits. length and interval are recorded as the archive's own
-    window settings, the windows it gives when none are asked for.
+    stored once; the others in blocks of block_days days. Each channel's
+    members are named by what it holds (static_elevation, days_ndvi_006), and
+    the names are stored in channel order. The targets are stored as bits.
+    length and interval are recorded as the archive's own window settings,
+    the windows it gives when none are asked for.
 
     Args:
         save_path (str | Path): where to write p<id>.npz.
@@ -661,14 +709,17 @@ def write_daily_archive(save_path, fire, length, interval, label_sel=None, block
         label_sel (int | None): the label rule that built the targets; None leaves it out.
         block_days (int): days per block.
         compresslevel (int): Zstandard level.
+        channel_names (Sequence[str] | None): one name per channel (None: STORED_CHANNEL_KEYS).
 
     Returns:
         Path: save_path.
 
     Raises:
+        ValueError: if the channel names do not fit the channels (daily_channel_names).
         RuntimeError: if the written file does not read back with the same windows count.
     """
     channels, num_days, height, width = fire.days.shape
+    names = daily_channel_names(channels, channel_names)
     static = [channel for channel in range(channels)
               if num_days and all(np.array_equal(fire.days[channel, day].view(np.uint32),
                                                  fire.days[channel, 0].view(np.uint32)) for day in range(num_days))]
@@ -684,13 +735,14 @@ def write_daily_archive(save_path, fire, length, interval, label_sel=None, block
     }
     if label_sel is not None:
         payload["label_sel"] = np.asarray(label_sel, dtype=np.int16)
+    payload["channel_names"] = np.asarray(names, dtype=str)
     payload["static_channels"] = np.asarray(static, dtype=np.int16)
-    for channel in range(channels):
+    for channel, name in enumerate(names):
         if channel in static:
-            payload[static_member(channel)] = fire.days[channel, 0]
+            payload[static_member(name)] = fire.days[channel, 0]
             continue
         for first_day in range(0, num_days, block_days):
-            payload[block_member(channel, first_day)] = fire.days[channel, first_day:first_day + block_days]
+            payload[block_member(name, first_day)] = fire.days[channel, first_day:first_day + block_days]
     payload["target_days"] = np.asarray(fire.target_days, dtype=np.int16)
     payload["targets"] = np.packbits(fire.targets, axis=-1)
     payload["target_dtype"] = np.asarray(fire.target_dtype)
@@ -713,6 +765,8 @@ class DailyArchive:
 
     Attributes:
         files (list[str]): the window names plus every stored member.
+        channel_names (tuple[str, ...]): the name each channel's members carry
+            (format 4: its channel_names member; format 3: c00, c01, ...).
         length (int): input days per window.
         interval (int): days between window starts.
         starts (tuple[int, ...]): the first day of every window.
@@ -739,6 +793,11 @@ class DailyArchive:
         self.interval = int(interval) if interval is not None else read("ts_interval")
         self.num_days, self.block_days = read(DAILY_MARKER), read("block_days")
         self.frame_shape = tuple(int(n) for n in npz["frame_shape"])
+        # Format 4 lists its channel names; format 3 named its members by channel number.
+        self.channel_names = (tuple(str(name) for name in npz["channel_names"]) if "channel_names" in npz.files
+                              else format3_channel_names(self.frame_shape[0]))
+        if len(self.channel_names) != self.frame_shape[0]:
+            raise ValueError(f"{source} names {len(self.channel_names)} channels but stores {self.frame_shape[0]}")
         self.static_channels = frozenset(int(c) for c in npz["static_channels"])
         self.target_days = [int(day) for day in npz["target_days"]]
         self._target_index = {day: index for index, day in enumerate(self.target_days)}
@@ -760,7 +819,7 @@ class DailyArchive:
         """Decompress one channel's block of days once while it is needed."""
         key = (channel, first_day)
         if key not in self._blocks:
-            self._blocks[key] = self._npz[block_member(channel, first_day)]
+            self._blocks[key] = self._npz[block_member(self.channel_names[channel], first_day)]
         return self._blocks[key]
 
     def window(self, index):
@@ -805,7 +864,7 @@ class DailyArchive:
             out = np.empty((stop - start, *self.frame_shape[1:]), dtype=np.float32)
         if channel in self.static_channels:
             if channel not in self._static:
-                self._static[channel] = self._npz[static_member(channel)]
+                self._static[channel] = self._npz[static_member(self.channel_names[channel])]
             out[:] = self._static[channel]
             return out
         day = start
@@ -881,12 +940,12 @@ def read_daily_fire(source):
     with open_fire(source) as archive:
         channels, height, width = archive.frame_shape
         days = np.empty((channels, archive.num_days, height, width), dtype=np.float32)
-        for channel in range(channels):
+        for channel, name in enumerate(archive.channel_names):
             if channel in archive.static_channels:
-                days[channel] = archive[static_member(channel)]
+                days[channel] = archive[static_member(name)]
             else:
                 for first_day in range(0, archive.num_days, archive.block_days):
-                    block = archive[block_member(channel, first_day)]
+                    block = archive[block_member(name, first_day)]
                     days[channel, first_day:first_day + len(block)] = block
         packed = archive["targets"]
         targets = np.unpackbits(packed, axis=-1, count=width).astype(bool) if len(packed) else np.zeros((0, 0, 0), bool)

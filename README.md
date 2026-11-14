@@ -64,7 +64,7 @@ on either statistics command also writes it back to the window repo. `rebuild-zi
 it: it downloads every archive, measures both statistics into `window_config.json` (local and
 repo), then zips and uploads data.zip.
 
-### Daily archives (format 3): the same windows, about 6x smaller
+### Daily archives (format 4): the same windows, about 6x smaller
 A window archive stores every window whole, so with `-it 1` each day is stored up to 6 times.
 A daily archive stores each day once: terrain and land cover once per fire, the other channels in
 blocks of 6 days, and the targets as bits. Windows are cut from the days when they are read. Every
@@ -83,8 +83,12 @@ source, then keeps the source's `window_config.json` statistics (they describe i
 - One daily archive gives windows of any length and stride whose target days it holds.
   `open_fire(path, length, interval)` reads them; an archive converted from 6-1 windows serves
   `-ts 6` and longer, at any `-it`. Training still uses the settings in `window_config.json`.
-- Code from before format 3 stops on these files with "unsupported format version 3".
-  Format-2 archives still read as before.
+- Members are named by what each channel holds, not its number: `days_viirs_i4_night_running_max_000`
+  (night I4's running maximum, days 0-5), `static_elevation`; the archive's `channel_names` lists them in
+  channel order (`STORED_CHANNEL_KEYS` in `firepred/config/dataset.py`). Format-3 archives, named by
+  number (`days_c06_000`, `static_c19`), still read the same; `convert-daily` writes format 4.
+- Training code from before format 4 stops on these files with "unsupported format version 4"
+  (before format 3: "... version 3"). Format-2 archives still read as before.
 
 ## Train and test
 ```

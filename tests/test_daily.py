@@ -1,14 +1,17 @@
-"""Daily archives (format version 3): each day stored once, windows sliced when read."""
+"""Daily archives (format versions 3 and 4): each day stored once, windows sliced when read."""
 
 import dataclasses
 import json
+import re
 import sys
 import zipfile
 
 import numpy as np
 import pytest
 
+from firepred.config.dataset import DAILY_FORMAT_VERSION, STORED_CHANNEL_KEYS, STORED_CHANNEL_NAMES
 from firepred.data.archive import (
+    DailyFire,
     convert_to_daily,
     days_from_windows,
     fire_name,
@@ -16,9 +19,12 @@ from firepred.data.archive import (
     index_fires,
     is_daily_archive,
     open_fire,
+    open_npz,
     read_daily_fire,
     unzip_data_root,
+    write_daily_archive,
     write_fire_archive,
+    write_npz,
 )
 
 STATIC = (17, 18, 19, 21)
@@ -73,7 +79,7 @@ def test_every_window_setting_reads_back_bit_identical(tmp_path):
                 assert bits(archive[f"data_{window:03d}"]) == bits(data[window])
                 assert bits(archive[f"label_{window:03d}"]) == bits(labels[window])
     with open_fire(daily) as archive:  # no settings: the archive's own (6, 1)
-        assert int(archive["format_version"]) == 3 and int(archive["label_sel"]) == 0
+        assert int(archive["format_version"]) == DAILY_FORMAT_VERSION and int(archive["label_sel"]) == 0
         assert int(archive["num_windows"]) == 9
         with pytest.raises(KeyError):
             archive["data_009"]
@@ -103,13 +109,81 @@ def test_static_channels_are_stored_once_and_days_read_back(tmp_path):
     convert_to_daily(v2_archive(tmp_path / "v2" / "p1.npz", days, targets), daily, 6, 1, block_days=4,
                      compresslevel=1)
     names = zipfile.ZipFile(daily).namelist()
+    assert {"static_slope.npy", "static_aspect.npy", "static_elevation.npy", "static_land_cover.npy"} <= set(names)
     for channel in STATIC:
-        assert f"static_c{channel}.npy" in names and not any(n.startswith(f"days_c{channel}_") for n in names)
-    assert {"days_c00_000.npy", "days_c00_004.npy", "days_c00_008.npy"} <= set(names)
+        assert not any(n.startswith(f"days_{STORED_CHANNEL_KEYS[channel]}_") for n in names)
+    assert {"days_viirs_i1_000.npy", "days_viirs_i1_004.npy", "days_viirs_i1_008.npy",
+            "days_viirs_i4_night_running_max_000.npy", "days_forecast_specific_humidity_008.npy"} <= set(names)
+    assert not any(re.fullmatch(r"(days_c\d\d_\d+|static_c\d\d)\.npy", n) for n in names)  # format 3's numbers
+    with open_npz(daily) as archive:
+        assert tuple(archive["channel_names"].tolist()) == STORED_CHANNEL_KEYS
     fire = read_daily_fire(daily)
     assert bits(fire.days) == bits(days)
     assert fire.target_days.tolist() == list(range(6, 11))
     assert bits(fire.targets) == bits(targets[6:11])
+
+
+def as_format3(daily, path):
+    """Rewrite a daily archive the way format 3 stored it: members named by channel number, no channel_names."""
+    with open_npz(daily) as archive:
+        names = archive["channel_names"].tolist()
+        payload = {}
+        for member in archive.files:
+            if member == "channel_names":
+                continue
+            renamed = member
+            for channel, name in enumerate(names):
+                first_day = member[len(f"days_{name}_"):]
+                if member == f"static_{name}":
+                    renamed = f"static_c{channel:02d}"
+                elif member.startswith(f"days_{name}_") and first_day.isdigit():
+                    renamed = f"days_c{channel:02d}_{first_day}"
+            payload[renamed] = archive[member]
+    payload["format_version"] = np.asarray(3, dtype=np.int16)
+    return write_npz(path, payload, compresslevel=1)
+
+
+def test_format3_archives_with_numbered_members_read_the_same(tmp_path):
+    """An archive written before channel names (days_c00_000, static_c19) gives the same windows and days."""
+    days, targets = daily_fire(np.random.default_rng(5), 12)
+    daily = tmp_path / "p1.npz"
+    convert_to_daily(v2_archive(tmp_path / "v2" / "p1.npz", days, targets), daily, 6, 1, block_days=4,
+                     compresslevel=1)
+    old = as_format3(daily, tmp_path / "p1_format3.npz")
+    names = set(zipfile.ZipFile(old).namelist())
+    assert {"days_c00_000.npy", "days_c06_004.npy", "static_c19.npy"} <= names and "channel_names.npy" not in names
+    for length, interval in ((6, 1), (7, 2)):
+        with open_fire(daily, length, interval) as new_fire, open_fire(old, length, interval) as old_fire:
+            assert old_fire.channel_names == tuple(f"c{c:02d}" for c in range(27))
+            assert new_fire.channel_names == STORED_CHANNEL_KEYS
+            assert int(old_fire["num_windows"]) == int(new_fire["num_windows"]) > 0
+            for window in range(int(new_fire["num_windows"])):
+                for kind in ("data", "label"):
+                    assert bits(old_fire[f"{kind}_{window:03d}"]) == bits(new_fire[f"{kind}_{window:03d}"])
+    assert bits(read_daily_fire(old).days) == bits(days)
+    assert [window for _, window in index_fires([old])] == [window for _, window in index_fires([daily])]
+
+
+def test_channel_names_must_fit_the_frames(tmp_path):
+    """Frames other than the 27 stored channels need their own names: one each, unique, lowercase."""
+    fire = DailyFire(np.random.default_rng(6).normal(size=(3, 7, 4, 4)).astype(np.float32),
+                     np.asarray([6, 7], dtype=np.int16), np.zeros((2, 4, 4), dtype=bool))
+    with pytest.raises(ValueError, match="pass channel_names"):
+        write_daily_archive(tmp_path / "p1.npz", fire, 6, 1)
+    for names, problem in ((("red", "red", "blue"), "repeat"), (("red", "Green", "blue"), "lowercase"),
+                           (("red", "green"), "3 channels need 3 names"), (("red", "gr/een", "blue"), "lowercase")):
+        with pytest.raises(ValueError, match=problem):
+            write_daily_archive(tmp_path / "p1.npz", fire, 6, 1, channel_names=names)
+    write_daily_archive(tmp_path / "p1.npz", fire, 6, 1, compresslevel=1, channel_names=("red", "green", "blue"))
+    assert {"days_red_000.npy", "days_blue_006.npy"} <= set(zipfile.ZipFile(tmp_path / "p1.npz").namelist())
+    assert bits(read_daily_fire(tmp_path / "p1.npz").days) == bits(fire.days)
+
+
+def test_channel_keys_name_every_stored_channel():
+    """Every stored channel has one member name, unique and safe in a file name."""
+    assert len(STORED_CHANNEL_KEYS) == len(STORED_CHANNEL_NAMES) == 27
+    assert len(set(STORED_CHANNEL_KEYS)) == 27
+    assert all(key.replace("_", "").isalnum() and key == key.lower() for key in STORED_CHANNEL_KEYS)
 
 
 def test_build_fire_windows_gives_the_same_windows_as_any_daily_view(tmp_path):
@@ -185,7 +259,8 @@ def test_daily_data_root_trains_like_the_window_archives(tmp_path):
     v2, v3, report = make_roots(tmp_path, {"train": [("p1", 9), ("p2", 7)]})
     assert len(report.converted) == 2 and sum(row[1] for row in report.converted) == 6
     config = json.loads((v3 / "window_config.json").read_text())
-    assert config["archive_format_version"] == 3 and config["pixel_counts"] == {"train": {"fires": ["kept"]}}
+    assert config["archive_format_version"] == DAILY_FORMAT_VERSION
+    assert config["pixel_counts"] == {"train": {"fires": ["kept"]}}
 
     names = lambda index: [(fire_name(path), window) for path, window in index]  # noqa: E731
     assert names(index_fires(find_fire_sources(v2 / "train"))) == names(index_fires(find_fire_sources(v3 / "train")))

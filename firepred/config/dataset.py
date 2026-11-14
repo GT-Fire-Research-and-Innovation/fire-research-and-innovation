@@ -59,6 +59,44 @@ STORED_CHANNEL_NAMES = (
 )
 N_STORED_CHANNELS = 27
 
+# What each stored channel holds, as a name safe in a file member: daily
+# archives (format 4) name their members by it (days_viirs_i4_night_running_max_000,
+# static_elevation) and list it in their channel_names member. Fixed here rather
+# than derived from STORED_CHANNEL_NAMES, so relabelling a channel never renames
+# the members of archives already written. Channels 3, 4, 6, 7 hold the running
+# maximum since the fire's first day, not the day's own value. Channel 22 is the
+# paper's "Total Precipitation Surface", the forecast precipitation that leads
+# the forecast group 22-26. [ours]
+STORED_CHANNEL_KEYS = (
+    "viirs_i1",                       # 0
+    "viirs_i2",                       # 1
+    "viirs_i3",                       # 2
+    "viirs_i4_running_max",           # 3
+    "viirs_i5_running_max",           # 4
+    "viirs_m11",                      # 5
+    "viirs_i4_night_running_max",     # 6
+    "viirs_i5_night_running_max",     # 7
+    "ndvi",                           # 8
+    "evi",                            # 9
+    "total_precipitation",            # 10
+    "wind_speed",                     # 11
+    "wind_direction",                 # 12
+    "min_temperature",                # 13
+    "max_temperature",                # 14
+    "energy_release_component",       # 15
+    "specific_humidity",              # 16
+    "slope",                          # 17
+    "aspect",                         # 18
+    "elevation",                      # 19
+    "pdsi",                           # 20
+    "land_cover",                     # 21
+    "forecast_total_precipitation",   # 22
+    "forecast_wind_speed",            # 23
+    "forecast_wind_direction",        # 24
+    "forecast_temperature",           # 25
+    "forecast_specific_humidity",     # 26
+)
+
 # Stored channels FIREPRED_FIRST_CHANNEL.. come from the FirePred GeoTIFF (its band 0 onward).
 FIREPRED_FIRST_CHANNEL = 8
 
@@ -266,8 +304,14 @@ NPZ_COMPRESSLEVEL = 6
 # 6, 7 carry over from the fire's first day, never from a window's). Windows are
 # sliced from the days when read, for the archive's own window settings or any
 # other whose target days it holds. See firepred/data/archive.py. [ours]
-DAILY_FORMAT_VERSION = 3
-ARCHIVE_FORMAT_VERSIONS = (ARCHIVE_FORMAT_VERSION, DAILY_FORMAT_VERSION)
+# Version 4 names each channel's members by what it holds (STORED_CHANNEL_KEYS,
+# listed in the archive's channel_names member); version 3 named them by number
+# (days_c06_000) and still reads the same. Training code from before version 4
+# stops on "unsupported format version 4" (archive.index_fires) instead of looking
+# for members that are not there.
+DAILY_FORMAT_VERSION = 4
+DAILY_FORMAT_VERSIONS = (3, DAILY_FORMAT_VERSION)
+ARCHIVE_FORMAT_VERSIONS = (ARCHIVE_FORMAT_VERSION, *DAILY_FORMAT_VERSIONS)
 
 # Days per compressed block of one channel. Compressing each day alone packs
 # about 2x worse (neighbouring days share most pixels); one block per channel
