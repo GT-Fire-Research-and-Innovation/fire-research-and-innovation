@@ -23,10 +23,28 @@ source scripts/ice/env.sh
 if [ -f "$RUNS/$NAME.done" ]; then echo "$NAME already finished ($RUNS/$NAME.done)"; exit 0; fi
 echo "code: $(git log --oneline -1)  run: $NAME  state: $RUNS/$NAME.state"
 echo "partition: ${SLURM_JOB_PARTITION:-?}  node: $(hostname)  python: $(python -V 2>&1)"
-# Without an NVIDIA GPU torch would train on the CPU, many times slower: stop instead.
-if ! nvidia-smi --query-gpu=name,memory.total --format=csv,noheader; then
-  echo "!! no GPU visible to CUDA on $(hostname) (an AMD node?): stopping instead of training on the CPU."
-  echo "   plan.sh leaves AMD nodes out; with sbatch directly, add --gres=gpu:h100:1 or another NVIDIA model."
+# Check the GPU before training: torch must see one (else it would train on the CPU, many times slower)
+# and have kernels for it (a newer model such as a Blackwell RTX Pro 6000 or B200 fails at its first
+# operation with "no kernel image is available").
+if ! python - <<'PY'
+import sys
+import torch
+if not torch.cuda.is_available():
+    print(f"!! torch {torch.__version__} sees no GPU on this node")
+    sys.exit(1)
+name = torch.cuda.get_device_name(0)
+major, minor = torch.cuda.get_device_capability(0)
+print(f"torch {torch.__version__} (CUDA {torch.version.cuda}) on {name}, compute capability {major}.{minor}; "
+      f"built for {' '.join(torch.cuda.get_arch_list())}")
+try:
+    torch.cat((torch.ones(2, device="cuda"), torch.zeros(2, device="cuda"))).sum().item()
+except RuntimeError as error:
+    print(f"!! this torch build cannot run on {name}: {str(error).splitlines()[0]}")
+    sys.exit(1)
+PY
+then
+  echo "   Stopping before training. Pick a GPU this torch supports, e.g. GPU_TYPE=h100"
+  echo "   (or a100, h200, l40s) with plan.sh, or --gres=gpu:h100:1 with sbatch directly."
   exit 1
 fi
 python -m firepred.cli.train -m "${MODEL:-swinunetr3d}" -mode pred -b "${BATCH:-8}" -lr "${LR:-0.001}" \
