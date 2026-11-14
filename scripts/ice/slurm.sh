@@ -32,6 +32,23 @@ CPU_OPTS=()
 [ -n "$CPU_QOS" ] && CPU_OPTS+=(--qos="$CPU_QOS")
 if [ -n "$ACCOUNT" ]; then GPU_OPTS+=(-A "$ACCOUNT"); CPU_OPTS+=(-A "$ACCOUNT"); fi
 
+# ice-gpu also has AMD GPUs (mi210, r9700). The CUDA build of torch cannot use them, so a job there
+# would see no GPU. Without GPU_TYPE the GPU jobs leave out every node with one of NON_CUDA_GPUS.
+NON_CUDA_GPUS="${NON_CUDA_GPUS:-mi210 mi250 mi300 r9700}"
+
+# non_cuda_nodes LIST: the nodes of the comma list of partitions LIST whose GPUs are one of
+# NON_CUDA_GPUS (or named amd...), as a comma list for sbatch --exclude. Empty without Slurm.
+non_cuda_nodes() {
+  command -v sinfo >/dev/null || return 0
+  local pattern="gpu:($(echo $NON_CUDA_GPUS | tr ' ' '|')|amd)"
+  sinfo -h -N -p "$1" -o '%N %G' 2>/dev/null \
+    | awk -v re="$pattern" 'tolower($2) ~ re {print $1}' | sort -u | paste -sd, - || true
+}
+if [ -z "$GPU_TYPE" ]; then
+  NON_CUDA_NODES=$(non_cuda_nodes "$PARTITION")
+  [ -n "$NON_CUDA_NODES" ] && GPU_OPTS+=(--exclude="$NON_CUDA_NODES")
+fi
+
 # slurm_accepts PART QOS KIND: does Slurm accept a 10-minute job of KIND (gpu or cpu) on PART under QOS
 # (empty QOS: your default)? sbatch --test-only checks partition, account, QOS and GPU type without
 # submitting anything. Returns 0 if accepted; SLURM_REASON then holds the estimated start, else the error.
