@@ -21,9 +21,8 @@ Tracking is a fold over days, state = advance_one_day(state, ...). Each day:
 
 Every threshold comes from one distance (split_settings): gaps shorter than it
 are noise to bridge (speckle, clouds, broken front lines), longer gaps
-separate fires. Day counts are capped at the window length, so tracking never
-remembers a pixel older than one window's input days: a window's zones come
-only from days its inputs hold. A merge keeps the older fire, a pixel equally
+separate fires. The days follow FIRED (Balch et al. 2020), tuned on MTBS
+perimeters: 2.3 km and 11 days. A merge keeps the older fire, a pixel equally
 close to two fires goes to the lower id, and groups are numbered by their first
 pixel in row-major order, so the same input always gives the same fires.
 """
@@ -130,36 +129,31 @@ class FireTracks:
 # ----- Settings and history ----- #
 
 
-def split_settings(scale_km=FIRE_SEPARATION_KM, window_days=TS_LENGTH, min_fire_share=MIN_FIRE_SHARE):
-    """Derive every tracking threshold from one separation distance, within one window's days.
+def split_settings(scale_km=FIRE_SEPARATION_KM, min_fire_share=MIN_FIRE_SHARE):
+    """Derive every tracking threshold from one separation distance.
 
     Smaller distances split more and clean less; larger ones clean more and
     split less. Distances become 375 m pixels, and the slow and fast spread
-    rates turn them into days. Those day counts are capped at window_days, the
-    input days of a window, so no window's zones depend on days before its
-    inputs: at 2.25 km the 11 days of memory become 6 for 6-day windows.
+    rates turn them into days: at 2.25 km, 11 days of memory and a 3-day front,
+    FIRED's 2.3 km and 11 days.
 
     Args:
         scale_km (float): the separation distance in km.
-        window_days (int): input days per window (TS_LENGTH, -ts), the most days tracking looks back.
         min_fire_share (float): fires under this share of a window's fire pixels get no zone (0 keeps all).
 
     Returns:
         SplitSettings: the thresholds.
 
     Raises:
-        ValueError: if scale_km or window_days is not positive, or min_fire_share is not in [0, 1).
+        ValueError: if scale_km is not positive, or min_fire_share is not in [0, 1).
     """
     if scale_km <= 0:
         raise ValueError(f"scale_km must be positive, got {scale_km}")
-    if int(window_days) != window_days or window_days < 1:
-        raise ValueError(f"window_days must be a positive whole number of days, got {window_days}")
     if not 0 <= min_fire_share < 1:
         raise ValueError(f"min_fire_share must be at least 0 and below 1, got {min_fire_share}")
-    window_days = int(window_days)
     # Rounded first, so 6.0000000001 pixels stays 6 when rounded up below.
     pixels = round(scale_km / VIIRS_PIXEL_KM, 6)
-    memory_days = min(window_days, max(1, math.floor(scale_km / SLOW_SPREAD_KM_PER_DAY + 0.5)))  # half up
+    memory_days = max(1, math.floor(scale_km / SLOW_SPREAD_KM_PER_DAY + 0.5))  # rounded half up
     return SplitSettings(
         scale_km=float(scale_km),
         link_pixels=pixels,

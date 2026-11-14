@@ -16,16 +16,14 @@ class SplitSettings:
     """Hold every threshold of fire tracking and zones, all but one derived from one separation distance.
 
     fire_tracks.split_settings computes them, so changing scale_km changes them
-    all together. Distances are in pixels, times in days; the day counts are
-    capped at the window length, so tracking never looks back past one window's
-    input days. min_fire_share is the one threshold set on its own.
+    all together. Distances are in pixels, times in days. min_fire_share is
+    the one threshold set on its own.
 
     Attributes:
         scale_km (float): the separation distance everything comes from.
         link_pixels (float): pixels at most this far apart belong to the same fire.
         merge_pixels (float): two fires merge only when their fronts come this close.
-        memory_days (int): how long a quiet pixel still connects a fire (clouds, missed passes);
-            at most the window length.
+        memory_days (int): how long a quiet pixel still connects a fire (clouds, missed passes, lulls).
         split_days (int): how many recent days count as a fire's front (at most memory_days).
         min_pixels (int): fewest burned pixels for a new fire or a split branch.
         min_growth_days (int): days a new fire must grow on, and a split must hold, before it counts.

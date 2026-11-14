@@ -1,9 +1,9 @@
 """Fire tracking and zone files: new ignitions, splits, merges, cleaning, causality and the files on disk.
 
 Every scenario is drawn by hand on a small grid with the default separation
-distance and 6-day windows (2.25 km: link 6 px, merge 3 px, memory 6 days (11,
-capped at the window), front 3 days, at least 6 pixels and 2 growth days for a
-new fire). Fronts are 4 rows tall.
+distance and 6-day windows (2.25 km: link 6 px, merge 3 px, memory 11 days,
+front 3 days, at least 6 pixels and 2 growth days for a new fire). Fronts are 4
+rows tall.
 """
 
 from dataclasses import replace
@@ -65,19 +65,17 @@ def kinds(events):
 
 
 def test_split_settings_formulas():
-    """Every threshold follows from the one distance; day counts stop at the window length."""
+    """Every threshold follows from the one distance; at 2.25 km the days are FIRED's 11."""
     assert (SETTINGS.link_pixels, SETTINGS.merge_pixels, SETTINGS.memory_days, SETTINGS.split_days,
-            SETTINGS.min_pixels, SETTINGS.min_growth_days) == (6.0, 3.0, 6, 3, 6, 2)
-    assert split_settings(2.25, window_days=20).memory_days == 11       # uncapped
+            SETTINGS.min_pixels, SETTINGS.min_growth_days) == (6.0, 3.0, 11, 3, 6, 2)
     small = split_settings(0.75)
     assert (small.link_pixels, small.merge_pixels, small.memory_days, small.split_days, small.min_pixels) == \
         (2.0, 1.0, 4, 1, 2)
-    wide = split_settings(8.0, window_days=6)                           # 40 days of memory, 8-day front
-    assert (wide.memory_days, wide.split_days, wide.min_growth_days) == (6, 6, 2)
-    assert split_settings(2.25, window_days=1).min_growth_days == 1     # growth counted within memory
+    wide = split_settings(8.0)                                          # 40 days of memory, 8-day front
+    assert (wide.memory_days, wide.split_days, wide.min_growth_days) == (40, 8, 2)
+    assert split_settings(0.1).min_growth_days == 1                     # growth counted within 1 day of memory
     assert SETTINGS.min_fire_share == 0.01 and split_settings(2.25, min_fire_share=0).min_fire_share == 0
-    for bad in ({"scale_km": 0}, {"window_days": 0}, {"window_days": 2.5}, {"min_fire_share": -0.1},
-                {"min_fire_share": 1}):
+    for bad in ({"scale_km": 0}, {"min_fire_share": -0.1}, {"min_fire_share": 1}):
         with pytest.raises(ValueError):
             split_settings(**bad)
 
@@ -191,36 +189,31 @@ def test_cloud_gap_does_not_split_or_restart():
 # ----- Determinism and causality ----- #
 
 
-def test_quiet_fire_ends_after_one_window_of_days():
-    """A fire with no new pixel for a whole window's days ends; when it burns again it is a new fire."""
+def test_flare_up_within_memory_is_the_same_fire():
+    """A fire quiet for 6 days that burns again beside its scar is still one fire, as FIRED counts it."""
     days = paint(empty_days(), {6: (10, 13), 7: (14, 16), 8: (17, 19), 15: (20, 22), 16: (23, 25)})
     tracks = track_fire(history_of(days, last_day=17), SETTINGS)
-    # Days 9..14 are quiet: by day 14 nothing is left in its 6 days of memory.
-    assert kinds(tracks.events) == [(1, "ignition", 0, 6, 14, 0), (2, "ignition", 0, 15, -1, 0)]
-    remembering = track_fire(history_of(days, last_day=17), split_settings(2.25, window_days=11))
-    assert kinds(remembering.events) == [(1, "ignition", 0, 6, -1, 0)]   # 11 days: the same fire
+    assert kinds(tracks.events) == [(1, "ignition", 0, 6, -1, 0)]
+    assert tracks.owners[-1][31, 24] == 1
 
 
-def test_window_zones_come_from_its_own_input_days():
-    """Pixels that burned before a window's first input day set none of its zones."""
+def test_quiet_fire_ends_after_memory_days():
+    """A fire with no new pixel for 11 days ends; when it burns again it is a new fire."""
+    days = paint(empty_days(), {6: (10, 13), 7: (14, 16), 8: (17, 19), 20: (20, 22), 21: (23, 25)})
+    tracks = track_fire(history_of(days, last_day=22), SETTINGS)
+    # Its last pixels (day 8) leave the 11 days of memory on day 19.
+    assert kinds(tracks.events) == [(1, "ignition", 0, 6, 19, 0), (2, "ignition", 0, 20, -1, 0)]
+
+
+def test_window_zones_remember_memory_days():
+    """A window's zones come from fire pixels of the last 11 days, even before its inputs, and no older."""
     days = paint(empty_days(), {6: (10, 13), 7: (14, 16), 8: (17, 19)})
-    history = history_of(days, last_day=16)
+    history = history_of(days, last_day=21)
     tracks = track_fire(history, SETTINGS)
-    # Window 3 holds days 3..8 and sees the fire; window 9 holds days 9..14, after its last pixel.
-    assert window_zones(tracks, history, 3, SETTINGS)[31, 18] == 1
-    assert not window_zones(tracks, history, 9, SETTINGS).any()
-    # With 11 days of memory, window 9's zones would come from days 6..8, before its inputs.
-    eleven = split_settings(2.25, window_days=11)
-    assert window_zones(track_fire(history, eleven), history, 9, eleven)[31, 18] == 1
-
-
-def test_zones_refuse_memory_longer_than_a_window():
-    """Settings that remember past a window's input days cannot make zone files."""
-    days = paint(empty_days(), {6: (10, 13), 7: (14, 16)})
-    history = history_of(days, last_day=8)
-    long_memory = split_settings(2.25, window_days=11)
-    with pytest.raises(ValueError, match="window_days=6"):
-        zone_file(track_fire(history, long_memory), history, long_memory)
+    # Window 13 holds days 13..18: its 11 days of memory (8..18) still hold the day-8 pixels.
+    assert window_zones(tracks, history, 13, SETTINGS)[31, 18] == 1
+    # Window 14 holds days 14..19: memory 9..19 has no fire pixel left.
+    assert not window_zones(tracks, history, 14, SETTINGS).any()
 
 
 def test_drop_small_fires_keeps_a_fire_exactly_at_the_share():
@@ -325,11 +318,11 @@ def test_build_zones_from_archives(tmp_path):
     with pytest.raises(ValueError, match=r"scale_km 2.25 \(now 3.0\)"):
         build_zones(tmp_path, splits=("test",), scale_km=3.0)
 
-    # A zone file from before memory was capped at the window (11 days at 2.25 km) is refused too.
+    # A zone file built while memory was capped at the 6-day window is refused too.
     path = tmp_path / "zones" / "p7.npz"
     old = read_zone_file(path)
-    write_zone_file(path, replace(old, settings=replace(old.settings, memory_days=11)))
-    with pytest.raises(ValueError, match=r"memory_days 11 \(now 6\).*--overwrite"):
+    write_zone_file(path, replace(old, settings=replace(old.settings, memory_days=6)))
+    with pytest.raises(ValueError, match=r"memory_days 6 \(now 11\).*--overwrite"):
         build_zones(tmp_path, splits=("test",))
     build_zones(tmp_path, splits=("test",), overwrite=True)
-    assert read_zone_file(path).settings.memory_days == 6
+    assert read_zone_file(path).settings.memory_days == 11

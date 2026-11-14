@@ -80,9 +80,9 @@ def require_daily_windows(data_root, length=TS_LENGTH, interval=TS_INTERVAL):
 def require_same_settings(path, settings):
     """Refuse to add zones to a zones folder whose existing file was built with other settings.
 
-    Zone files built with different settings (separation distance, or a window
-    length that caps memory_days differently) must never mix, just as window
-    repos never mix window settings. Other settings belong in another zones folder.
+    Zone files built with different settings (separation distance, memory,
+    small-fire share) must never mix, just as window repos never mix window
+    settings. Other settings belong in another zones folder.
 
     Args:
         path (Path): an existing zone file.
@@ -149,7 +149,7 @@ def build_zones(data_root=DATA_DIR, zones_root=None, splits=SPLITS, scale_km=FIR
     data_root = Path(data_root)
     zones_root = Path(zones_root) if zones_root else data_root / ZONE_DIR
     require_daily_windows(data_root, length, interval)
-    settings = split_settings(scale_km, length, min_fire_share)
+    settings = split_settings(scale_km, min_fire_share)
     zones_root.mkdir(parents=True, exist_ok=True)
     print(f"Zones at {settings.scale_km:g} km: link {settings.link_pixels:g} px, "
           f"memory {settings.memory_days} days, fires under {settings.min_fire_share:.1%} of a window get no zone "
