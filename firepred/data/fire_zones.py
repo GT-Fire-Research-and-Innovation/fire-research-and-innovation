@@ -17,6 +17,10 @@ follows that fire from day 0:
                    so a fast run stays with its fire; a group no fire reaches is -1, a new
                    ignition nothing in the inputs could predict
 
+A fire holding less than min_fire_share of the window's fire pixels counts as
+no fire in that window, like a group not yet confirmed: no zone, no sample, and
+its new pixels are -1. Tracking still records it.
+
 A training sample is one fire in one window (fire_sample): its target is that
 fire's new pixels, and its loss skips the other fires' zones and every new
 pixel that is not its own. The inputs are never changed, so training
@@ -42,11 +46,31 @@ def last_input_day(history, window):
     return window + history.first_label_day - 1
 
 
+def drop_small_fires(fires, min_share):
+    """Clear every fire that holds less than min_share of all fire pixels in a map.
+
+    A fire that small would be a training sample with almost no target, so it
+    is treated like a group not yet confirmed as a fire. A fire exactly at the
+    share stays, and a min_share of 0 keeps every fire.
+
+    Args:
+        fires (np.ndarray): (H, W) int, fire ids with 0 elsewhere.
+        min_share (float): the smallest share of the fire pixels a fire may hold.
+
+    Returns:
+        np.ndarray: fires, with the small fires' pixels set to 0.
+    """
+    fire_ids, counts = np.unique(fires[fires > 0], return_counts=True)
+    small = fire_ids[counts < min_share * counts.sum()]
+    return np.where(np.isin(fires, small), 0, fires)
+
+
 def recent_fire_pixels(tracks, history, day, settings):
-    """Mark the recent pixels of every fire on a day with that fire's id.
+    """Mark the recent pixels of every fire on a day with that fire's id, leaving out fires too small to count.
 
     Recent means first seen within the last memory_days, as in tracking.
-    Unowned recent pixels (groups not yet confirmed as fires) are 0.
+    Unowned recent pixels (groups not yet confirmed as fires) are 0, and so
+    are the pixels of fires under min_fire_share of the day's fire pixels.
 
     Args:
         tracks (FireTracks): the archive's tracks.
@@ -57,7 +81,8 @@ def recent_fire_pixels(tracks, history, day, settings):
     Returns:
         np.ndarray: (H, W) int32, fire ids with 0 elsewhere.
     """
-    return np.where(recent_pixels(history, day, settings.memory_days), tracks.owners[day], 0)
+    fires = np.where(recent_pixels(history, day, settings.memory_days), tracks.owners[day], 0)
+    return drop_small_fires(fires, settings.min_fire_share)
 
 
 def window_zones(tracks, history, window, settings):

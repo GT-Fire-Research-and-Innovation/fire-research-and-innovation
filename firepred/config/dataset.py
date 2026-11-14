@@ -332,12 +332,20 @@ SLOW_SPREAD_KM_PER_DAY = 0.2
 FAST_SPREAD_KM_PER_DAY = 1.0
 # Days a new fire must grow on (and a split must hold) before it counts.
 MIN_GROWTH_DAYS = 2
+# A fire holding less than this share of a window's fire pixels gets no zone and
+# no training sample there, like a group not yet confirmed as a fire: its new
+# pixels are left out of every loss. It is dropped, not merged: a fire tracking
+# kept apart lies farther than the separation distance from every other fire,
+# so merging would hand its growth to a fire it never touched. Tracking still
+# records it. 1% of the 256 x 256 crop (655 px) would drop most whole fires, so
+# the share is of the window's fire pixels. [ours]
+MIN_FIRE_SHARE = 0.01
 # Before the first target day the labels say nothing, so night I4 hotter than
 # this marks early fire pixels ("seeds"; night background is about 290 K). They
 # count like burned pixels; scattered warm pixels never group into a fire.
 SEED_NIGHT_I4_KELVIN = 310.0
 NIGHT_I4_CHANNEL = 6
-ZONE_FORMAT_VERSION = 1
+ZONE_FORMAT_VERSION = 2  # 2: settings record min_fire_share, and small fires have no zone
 ZONE_DIR = "zones"
 
 # ----- TESSERA embeddings ----- #

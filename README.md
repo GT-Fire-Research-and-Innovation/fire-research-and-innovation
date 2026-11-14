@@ -65,8 +65,10 @@ that break in two, fires that meet) and writes `<data-root>/zones/p<id>.npz` bes
 archives, which stay unchanged. One distance, `--scale-km` (default 2.25), sets every
 threshold: gaps shorter than it are noise to bridge, longer gaps separate fires. Tracking
 remembers at most one window's input days (`-ts`, 6): the 11 days of memory at 2.25 km are
-capped at 6, so a window's zones come only from days its inputs hold. Zone files record these
-settings; ones built before the cap must be rebuilt with `--overwrite`.
+capped at 6, so a window's zones come only from days its inputs hold. A fire holding less than
+1% of a window's fire pixels (`MIN_FIRE_SHARE`) gets no zone or sample there; its growth is left
+out of every loss, as for an unconfirmed ignition. Zone files record these settings (format 2);
+older ones are refused and must be rebuilt with `--overwrite`.
 Training reads `<data-root>/window_config.json` first and will not start without it.
 `download` copies it from the window repo; `upload-zip` packs it into data.zip; `--upload`
 on either statistics command also writes it back to the window repo. `rebuild-zip` does all of

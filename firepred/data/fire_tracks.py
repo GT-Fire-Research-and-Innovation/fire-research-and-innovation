@@ -39,6 +39,7 @@ from scipy.spatial import cKDTree
 from firepred.config.dataset import (
     FAST_SPREAD_KM_PER_DAY,
     FIRE_SEPARATION_KM,
+    MIN_FIRE_SHARE,
     MIN_GROWTH_DAYS,
     SEED_NIGHT_I4_KELVIN,
     SLOW_SPREAD_KM_PER_DAY,
@@ -129,7 +130,7 @@ class FireTracks:
 # ----- Settings and history ----- #
 
 
-def split_settings(scale_km=FIRE_SEPARATION_KM, window_days=TS_LENGTH):
+def split_settings(scale_km=FIRE_SEPARATION_KM, window_days=TS_LENGTH, min_fire_share=MIN_FIRE_SHARE):
     """Derive every tracking threshold from one separation distance, within one window's days.
 
     Smaller distances split more and clean less; larger ones clean more and
@@ -141,17 +142,20 @@ def split_settings(scale_km=FIRE_SEPARATION_KM, window_days=TS_LENGTH):
     Args:
         scale_km (float): the separation distance in km.
         window_days (int): input days per window (TS_LENGTH, -ts), the most days tracking looks back.
+        min_fire_share (float): fires under this share of a window's fire pixels get no zone (0 keeps all).
 
     Returns:
         SplitSettings: the thresholds.
 
     Raises:
-        ValueError: if scale_km or window_days is not positive.
+        ValueError: if scale_km or window_days is not positive, or min_fire_share is not in [0, 1).
     """
     if scale_km <= 0:
         raise ValueError(f"scale_km must be positive, got {scale_km}")
     if int(window_days) != window_days or window_days < 1:
         raise ValueError(f"window_days must be a positive whole number of days, got {window_days}")
+    if not 0 <= min_fire_share < 1:
+        raise ValueError(f"min_fire_share must be at least 0 and below 1, got {min_fire_share}")
     window_days = int(window_days)
     # Rounded first, so 6.0000000001 pixels stays 6 when rounded up below.
     pixels = round(scale_km / VIIRS_PIXEL_KM, 6)
@@ -165,6 +169,7 @@ def split_settings(scale_km=FIRE_SEPARATION_KM, window_days=TS_LENGTH):
         split_days=min(memory_days, max(1, math.ceil(round(scale_km / FAST_SPREAD_KM_PER_DAY, 6)))),
         min_pixels=max(1, math.ceil(pixels)),
         min_growth_days=min(memory_days, MIN_GROWTH_DAYS),
+        min_fire_share=float(min_fire_share),
     )
 
 

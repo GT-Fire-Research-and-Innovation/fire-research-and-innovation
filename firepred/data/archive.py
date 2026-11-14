@@ -71,7 +71,7 @@ value = code x scale + offset. read_tessera returns float16 for both kinds, so
 nothing after it changes. A reader that predates int8 finds no "embedding" member
 and fails, instead of using the codes as values.
 
-Zone files [ours, format version 1], zones/p<id>.npz, built by data/zones_master.py
+Zone files [ours, format version 2], zones/p<id>.npz, built by data/zones_master.py
 from a window archive's targets (see data/fire_tracks.py and data/fire_zones.py):
 
     format_version, num_windows, label_sel, first_label_day    scalars

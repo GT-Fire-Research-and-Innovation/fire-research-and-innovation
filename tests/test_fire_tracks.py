@@ -21,7 +21,14 @@ from firepred.data.fire_tracks import (
     split_settings,
     track_fire,
 )
-from firepred.data.fire_zones import fire_sample, window_target_owners, window_zones, zone_file
+from firepred.data.fire_zones import (
+    drop_small_fires,
+    fire_sample,
+    fires_in_window,
+    window_target_owners,
+    window_zones,
+    zone_file,
+)
 from firepred.data.zones_master import build_zones
 
 SETTINGS = split_settings(2.25)
@@ -68,7 +75,9 @@ def test_split_settings_formulas():
     wide = split_settings(8.0, window_days=6)                           # 40 days of memory, 8-day front
     assert (wide.memory_days, wide.split_days, wide.min_growth_days) == (6, 6, 2)
     assert split_settings(2.25, window_days=1).min_growth_days == 1     # growth counted within memory
-    for bad in ({"scale_km": 0}, {"window_days": 0}, {"window_days": 2.5}):
+    assert SETTINGS.min_fire_share == 0.01 and split_settings(2.25, min_fire_share=0).min_fire_share == 0
+    for bad in ({"scale_km": 0}, {"window_days": 0}, {"window_days": 2.5}, {"min_fire_share": -0.1},
+                {"min_fire_share": 1}):
         with pytest.raises(ValueError):
             split_settings(**bad)
 
@@ -212,6 +221,37 @@ def test_zones_refuse_memory_longer_than_a_window():
     long_memory = split_settings(2.25, window_days=11)
     with pytest.raises(ValueError, match="window_days=6"):
         zone_file(track_fire(history, long_memory), history, long_memory)
+
+
+def test_drop_small_fires_keeps_a_fire_exactly_at_the_share():
+    """Fires under the share become 0; a fire exactly at it stays; a share of 0 keeps every fire."""
+    fires = np.zeros((10, 11), dtype=np.int32)
+    fires.flat[:98] = 1
+    fires.flat[98], fires.flat[99] = 2, 3        # each 1 of the 100 fire pixels: exactly 1%
+    assert set(np.unique(drop_small_fires(fires, 0.01))) == {0, 1, 2, 3}
+    assert set(np.unique(drop_small_fires(fires, 0.02))) == {0, 1}
+    assert (drop_small_fires(fires, 0) == fires).all()
+    assert not drop_small_fires(np.zeros((4, 4), dtype=np.int32), 0.01).any()
+
+
+def test_small_fire_gets_no_zone_or_target_but_stays_tracked():
+    """A far fire under min_fire_share of a window's fire pixels loses its zone and sample, not its record."""
+    days = paint(empty_days(), {6: (5, 14), 7: (15, 24), 8: (25, 34), 9: (35, 44)})
+    days = paint(days, {7: (50, 51), 8: (52, 52), 9: (53, 53)}, rows=slice(50, 52))
+    history = history_of(days, last_day=9)
+    tracks = track_fire(history, SETTINGS)
+    assert [event.event_id for event in tracks.events] == [1, 2]         # both fires are tracked
+    window = 9 - FIRST_LABEL_DAY       # last input day 8: fire 1 holds 120 pixels, fire 2 holds 6 (4.8%)
+    assert fires_in_window(window_zones(tracks, history, window, SETTINGS)) == (1, 2)
+    assert window_target_owners(tracks, history, window, SETTINGS)[50, 53] == 2
+
+    strict = split_settings(2.25, min_fire_share=0.05)
+    zones = window_zones(tracks, history, window, strict)
+    owners = window_target_owners(tracks, history, window, strict)
+    assert fires_in_window(zones) == (1,)
+    assert owners[50, 53] == -1                                       # its growth: no fire, out of every loss
+    assert owners[31, 40] == 1                                        # fire 1's growth is untouched
+    assert (zones[ROWS] == window_zones(tracks, history, window, SETTINGS)[ROWS]).all()
 
 
 def test_window_zones_ignore_future_labels():

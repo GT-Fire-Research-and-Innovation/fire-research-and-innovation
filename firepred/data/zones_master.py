@@ -17,6 +17,7 @@ import numpy as np
 from firepred.config.dataset import (
     DATA_DIR,
     FIRE_SEPARATION_KM,
+    MIN_FIRE_SHARE,
     SEED_NIGHT_I4_KELVIN,
     SPLITS,
     TS_INTERVAL,
@@ -123,7 +124,7 @@ def describe_zone_file(name, zones):
 
 
 def build_zones(data_root=DATA_DIR, zones_root=None, splits=SPLITS, scale_km=FIRE_SEPARATION_KM,
-                length=TS_LENGTH, interval=TS_INTERVAL, overwrite=False):
+                length=TS_LENGTH, interval=TS_INTERVAL, overwrite=False, min_fire_share=MIN_FIRE_SHARE):
     """Write a zone file for every fire archive of the chosen splits.
 
     Zone files go to zones_root (default <data_root>/zones) as p<id>.npz, the
@@ -140,6 +141,7 @@ def build_zones(data_root=DATA_DIR, zones_root=None, splits=SPLITS, scale_km=FIR
         interval (int): days between window starts; must be 1 for format-2 archives
             (daily archives are read at 1 whatever it is).
         overwrite (bool): rebuild zone files that exist.
+        min_fire_share (float): fires under this share of a window's fire pixels get no zone (MIN_FIRE_SHARE).
 
     Returns:
         tuple[str, ...]: one summary line per fire.
@@ -147,10 +149,11 @@ def build_zones(data_root=DATA_DIR, zones_root=None, splits=SPLITS, scale_km=FIR
     data_root = Path(data_root)
     zones_root = Path(zones_root) if zones_root else data_root / ZONE_DIR
     require_daily_windows(data_root, length, interval)
-    settings = split_settings(scale_km, length)
+    settings = split_settings(scale_km, length, min_fire_share)
     zones_root.mkdir(parents=True, exist_ok=True)
     print(f"Zones at {settings.scale_km:g} km: link {settings.link_pixels:g} px, "
-          f"memory {settings.memory_days} days -> {zones_root}")
+          f"memory {settings.memory_days} days, fires under {settings.min_fire_share:.1%} of a window get no zone "
+          f"-> {zones_root}")
     notes = []
     for split in splits:
         for source in find_fire_sources(data_root / split):
