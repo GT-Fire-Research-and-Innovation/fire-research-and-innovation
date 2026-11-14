@@ -149,8 +149,8 @@ def test_items_carry_zone_maps_that_move_with_the_target(tmp_path):
     assert max(fires_seen) >= 2  # the far ignition becomes a second fire in later windows
 
 
-def test_zone_files_that_do_not_fit_are_refused(tmp_path):
-    """A missing file, another window length, mixed distances or another fire's file stop training."""
+def test_zone_files_that_do_not_fit_are_refused(tmp_path, capsys):
+    """A missing file, another window length or another fire's file stop training; mixed distances warn."""
     from firepred.data.fire_dataset import FireDataset
     from firepred.data.zones_master import build_zones
 
@@ -163,8 +163,8 @@ def test_zone_files_that_do_not_fit_are_refused(tmp_path):
         FireDataset(root / "train", ts_length=6, target_is_single_day=True, zones_dir=zones)
     build_zones(root, zones_root=tmp_path / "zones-3km", splits=("train",), scale_km=3.0)
     (tmp_path / "zones-3km" / "p1.npz").replace(zones / "p1.npz")  # p1 at another distance than p2
-    with pytest.raises(ValueError, match=r"scale_km 2.25 \(others 3.0\).*one zones folder per setting"):
-        FireDataset(root / "train", ts_length=6, target_is_single_day=True, zones_dir=zones)
+    FireDataset(root / "train", ts_length=6, target_is_single_day=True, zones_dir=zones)  # trains anyway
+    assert "p2.npz: scale_km 2.25 (others 3.0)" in capsys.readouterr().out
     (tmp_path / "p1.npz").replace(zones / "p1.npz")
     (zones / "p1.npz").rename(tmp_path / "swap.npz")
     (zones / "p2.npz").rename(zones / "p1.npz")
@@ -219,3 +219,29 @@ def test_zone_runs_are_named_recorded_and_round_trip():
     assert "zones_dir" not in plain.wandb_config() and "zones" not in plain.checkpoint_settings(None)
     with pytest.raises(ValueError, match="GPU or the CPU"):
         RunConfig(model="swinunetr3d", zones_dir="zones", device="tpu")
+
+
+def test_format_1_zone_files_still_train(tmp_path):
+    """A zone file of format 1 (no min_fire_share, every fire had a zone) reads as min_fire_share 0."""
+    from firepred.data.archive import find_fire_sources, open_npz, read_zone_file, read_zone_header, write_npz
+    from firepred.data.fire_dataset import zone_layout
+
+    root = zone_root(tmp_path)
+    zones = root / "zones"
+    for path in zones.glob("*.npz"):  # rewrite each file as format 1 wrote it
+        with open_npz(path) as archive:
+            members = {name: archive[name] for name in archive.files if name != "setting_min_fire_share"}
+        members["format_version"] = np.asarray(1, dtype=np.int16)
+        write_npz(path, members)
+    path = next(zones.glob("*.npz"))
+    assert read_zone_header(path).settings.min_fire_share == 0.0
+    assert read_zone_file(path).format_version == 1
+    layout = zone_layout(zones, find_fire_sources(root / "train"), 6)
+    assert layout.settings.min_fire_share == 0.0
+
+    with open_npz(path) as archive:
+        members = {name: archive[name] for name in archive.files}
+    members["format_version"] = np.asarray(99, dtype=np.int16)
+    write_npz(path, members)
+    with pytest.raises(RuntimeError, match="zone format version 99"):
+        read_zone_header(path)

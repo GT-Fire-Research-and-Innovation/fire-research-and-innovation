@@ -348,6 +348,10 @@ MIN_FIRE_SHARE = 0.01
 SEED_NIGHT_I4_KELVIN = 310.0
 NIGHT_I4_CHANNEL = 6
 ZONE_FORMAT_VERSION = 2  # 2: settings record min_fire_share, and small fires have no zone
+# Zone files training still reads. A version 1 file has no min_fire_share: it gave every fire a zone,
+# so it reads as min_fire_share 0. The model never sees zones (only the loss does), so older files
+# still train; their settings are recorded with the run. [ours]
+ZONE_FORMAT_VERSIONS = (1, 2)
 ZONE_DIR = "zones"
 
 # ----- TESSERA embeddings ----- #

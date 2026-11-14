@@ -136,7 +136,8 @@ about the same; the loss splits the window (`objectives.fire_samples`). Dice is 
 so a small fire counts as much as a large one. Validation, checkpoint choice and test still score
 whole windows, so the numbers compare with whole-window runs. Names gain `_zones`, and W&B and every
 checkpoint record the zone settings. Every zone file must match its archive (same windows, same new
-pixels), or training stops. GPU or CPU only: on a TPU the sample count per batch would recompile.
+pixels), or training stops. Zone files of an older format or other settings still train, since the model
+never sees zones; mixed settings in one folder print a warning. GPU or CPU only: on a TPU the sample count per batch would recompile.
 ```
 python -m firepred.cli.check data --data-root ./data --zones-dir ./data/zones --train-step
 python -m firepred.cli.train -m swinunetr3d -mode pred -b 8 -lr 0.001 -nh 3 -ed 36 -ts 6 -it 1 --data-root ./data \

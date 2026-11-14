@@ -107,6 +107,7 @@ from firepred.config.dataset import (
     TESSERA_QUANTIZATION,
     TESSERA_QUANTIZATIONS,
     ZONE_FORMAT_VERSION,
+    ZONE_FORMAT_VERSIONS,
 )
 from firepred.data.fire_records import FireEvent, SplitSettings, ZoneFile
 
@@ -1419,8 +1420,8 @@ def write_zone_file(save_path, zone_file, compresslevel=NPZ_COMPRESSLEVEL):
 def read_zone_file(path):
     """Read one archive's zone file back into a ZoneFile.
 
-    Every member is read, since a zone file is small. A file written by another
-    format version is refused rather than misread.
+    Every member is read, since a zone file is small. Older format versions
+    (ZONE_FORMAT_VERSIONS) read too; an unknown one is refused rather than misread.
 
     Args:
         path (str | Path): a zones/p<id>.npz file.
@@ -1429,15 +1430,12 @@ def read_zone_file(path):
         ZoneFile: zones, target owners, fires and settings.
 
     Raises:
-        RuntimeError: on another format version.
+        RuntimeError: on a format version this code does not know.
     """
     with open_npz(path) as archive:
-        version = int(np.asarray(archive["format_version"]).item())
-        if version != ZONE_FORMAT_VERSION:
-            raise RuntimeError(f"{path} has zone format version {version}; expected {ZONE_FORMAT_VERSION}")
+        version = _zone_version(archive, path)
         count = int(np.asarray(archive["num_windows"]).item())
-        settings = SplitSettings(**{field.name: archive[f"setting_{field.name}"].item()
-                                    for field in fields(SplitSettings)})
+        settings = _zone_settings(archive)
         columns = {field.name: archive[f"events_{field.name}"] for field in fields(FireEvent)}
         events = tuple(FireEvent(**{name: column[row].item() for name, column in columns.items()})
                        for row in range(len(columns["event_id"])))
@@ -1455,6 +1453,28 @@ def read_zone_file(path):
         first_label_day=first_label_day,
         format_version=version,
     )
+
+
+# Settings a zone format version may predate, with the value its files were built with
+# (version 1 gave every fire a zone, as min_fire_share 0 does).
+ZONE_SETTINGS_BEFORE_RECORDED = {"min_fire_share": 0.0}
+
+
+def _zone_version(archive, path):
+    """Give a zone file's format version, refusing one this code cannot read."""
+    version = int(np.asarray(archive["format_version"]).item())
+    if version not in ZONE_FORMAT_VERSIONS:
+        raise RuntimeError(f"{path} has zone format version {version}; this code reads {ZONE_FORMAT_VERSIONS}")
+    return version
+
+
+def _zone_settings(archive):
+    """Read a zone file's SplitSettings, filling settings an older file predates."""
+    return SplitSettings(**{
+        field.name: (archive[f"setting_{field.name}"].item() if f"setting_{field.name}" in archive.files
+                     else ZONE_SETTINGS_BEFORE_RECORDED[field.name])
+        for field in fields(SplitSettings)
+    })
 
 
 def zone_paths(zones_dir, fire_sources):
@@ -1492,7 +1512,7 @@ def read_zone_header(path):
     """Read a zone file's scalars and settings, leaving its per-window maps unread.
 
     Only the small members are decompressed, so checking every fire's file
-    before training takes a moment. A file of another format version is refused.
+    before training takes a moment. Older format versions read too.
 
     Args:
         path (str | Path): a zones/p<id>.npz file.
@@ -1501,18 +1521,15 @@ def read_zone_header(path):
         ZoneHeader: the file's window count, first target day, label rule and settings.
 
     Raises:
-        RuntimeError: on another format version.
+        RuntimeError: on a format version this code does not know.
     """
     with open_npz(path) as archive:
-        version = int(np.asarray(archive["format_version"]).item())
-        if version != ZONE_FORMAT_VERSION:
-            raise RuntimeError(f"{path} has zone format version {version}; expected {ZONE_FORMAT_VERSION}")
+        _zone_version(archive, path)
         return ZoneHeader(
             num_windows=int(np.asarray(archive["num_windows"]).item()),
             first_label_day=int(np.asarray(archive["first_label_day"]).item()),
             label_sel=int(np.asarray(archive["label_sel"]).item()),
-            settings=SplitSettings(**{field.name: archive[f"setting_{field.name}"].item()
-                                      for field in fields(SplitSettings)}),
+            settings=_zone_settings(archive),
         )
 
 

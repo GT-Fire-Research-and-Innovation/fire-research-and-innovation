@@ -389,7 +389,8 @@ Then use `DATA_ROOT="$HOME/scratch/firepred/data-daily-v2"` in `plan.sh`. Delete
 <details>
 <summary>The zone-building code changed</summary>
 
-Rebuild the zone files in place:
+Optional: older zone files still train, since the model never sees zones. Rebuild them in place only
+to train with the new zone settings:
 
 ```bash
 source scripts/ice/env.sh

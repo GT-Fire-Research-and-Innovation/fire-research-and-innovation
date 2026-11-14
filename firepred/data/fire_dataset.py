@@ -368,8 +368,11 @@ def zone_layout(zones_dir, sources, ts_length, ts_interval=None):
     """Pair every fire with its zone file and check that each file fits its archive.
 
     Every file must exist, predict the same day as the windows (its first target
-    day is the window length), cover every window and share one set of
-    settings, so zones of two distances never mix. Only headers are read here.
+    day is the window length) and cover every window: otherwise its zones would
+    belong to other days. Files built with other settings (another distance or
+    format version) only change which pixels each fire's loss covers, never the
+    model, so they train with a warning; the first file's settings are recorded.
+    Only headers are read here.
 
     Args:
         zones_dir (str | Path): the folder of zones/p<id>.npz files.
@@ -382,9 +385,9 @@ def zone_layout(zones_dir, sources, ts_length, ts_interval=None):
 
     Raises:
         RuntimeError: if a fire has no zone file.
-        ValueError: if a file does not fit its archive, or two files were built differently.
+        ValueError: if a file does not fit its archive.
     """
-    files, strides, settings = zone_paths(zones_dir, sources), {}, None
+    files, strides, settings, mixed = zone_paths(zones_dir, sources), {}, None, []
     for source in sources:
         name = fire_name(source)
         header = read_zone_header(files[name])
@@ -396,14 +399,17 @@ def zone_layout(zones_dir, sources, ts_length, ts_interval=None):
         if (stride == 1 and header.num_windows != windows) or header.num_windows < (windows - 1) * stride + 1:
             raise ValueError(f"{files[name]} has {header.num_windows} windows; {source} needs one for each of its "
                              f"{windows} windows every {stride} days: rebuild the zone files from these archives")
-        if settings is not None and header.settings != settings:
+        if settings is None:
+            settings = header.settings
+        elif header.settings != settings:
             changed = ", ".join(f"{field.name} {getattr(header.settings, field.name)} (others {getattr(settings, field.name)})"
                                 for field in fields(settings)
                                 if getattr(header.settings, field.name) != getattr(settings, field.name))
-            raise ValueError(f"{files[name]} was built with other settings than the other zone files: {changed}. "
-                             "Use one zones folder per setting")
-        settings = header.settings
+            mixed.append(f"{files[name].name}: {changed}")
         strides[name] = stride
+    if mixed:
+        print(f"WARNING: {len(mixed)} zone files in {zones_dir} were built with other settings than the first; "
+              f"training uses them as they are: {mixed[:5]}")
     return ZoneLayout(files, strides, settings)
 
 
