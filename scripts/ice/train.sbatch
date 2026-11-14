@@ -23,7 +23,12 @@ source scripts/ice/env.sh
 if [ -f "$RUNS/$NAME.done" ]; then echo "$NAME already finished ($RUNS/$NAME.done)"; exit 0; fi
 echo "code: $(git log --oneline -1)  run: $NAME  state: $RUNS/$NAME.state"
 echo "partition: ${SLURM_JOB_PARTITION:-?}  node: $(hostname)  python: $(python -V 2>&1)"
-nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || echo "!! no GPU visible"
+# Without an NVIDIA GPU torch would train on the CPU, many times slower: stop instead.
+if ! nvidia-smi --query-gpu=name,memory.total --format=csv,noheader; then
+  echo "!! no GPU visible to CUDA on $(hostname) (an AMD node?): stopping instead of training on the CPU."
+  echo "   plan.sh leaves AMD nodes out; with sbatch directly, add --gres=gpu:h100:1 or another NVIDIA model."
+  exit 1
+fi
 python -m firepred.cli.train -m "${MODEL:-swinunetr3d}" -mode pred -b "${BATCH:-8}" -lr "${LR:-0.001}" \
        -nh 3 -ed 36 -ts "${TS:-6}" -it "${IT:-1}" --data-root "$DATA_ROOT" --num-workers 6 \
        --resume "$RUNS/$NAME.state" ${EXTRA:-}
