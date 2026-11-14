@@ -523,7 +523,7 @@ with `swinunetr3d_tessera needs TESSERA inputs (train with --tessera); got 43 in
 | `ice-gpu` (default) | nothing | Your default QOS |
 | First free GPU of several partitions | `PARTITION=ice-gpu,coe-gpu` | All partitions in one list must accept the same QOS |
 | College of Engineering H100/H200 nodes | `PARTITION=coe-gpu` | |
-| One GPU model | `GPU_TYPE=h100` | Also `h200`, `a100`. `ice-gpu` has AMD `mi210` and `r9700` GPUs this CUDA build cannot use |
+| One GPU model | `GPU_TYPE=h100` | Also `h200`, `a100`. Without it `plan.sh` takes any NVIDIA GPU and leaves out ice-gpu's AMD `mi210` and `r9700` nodes |
 | A named QOS | `QOS=coc-ice CPU_QOS=default` | `CPU_QOS=default` keeps the data job on your default QOS |
 | Another Slurm account | `ACCOUNT=<account>` | |
 
@@ -781,12 +781,13 @@ Logs are `logs/fp-<NAME>-<jobid>.out` in the clone you submitted from. Press Ctr
 
 ```bash
 grep -h -m3 "Traceback\|Error\|CANCELLED\|DUE TO TIME LIMIT" logs/fp-swin_daily-*.out
-grep -l "no GPU visible" logs/fp-swin_daily-*.out       # jobs that got no NVIDIA GPU, such as an AMD node
+grep -l "no GPU visible" logs/fp-swin_daily-*.out       # jobs that stopped on a node without an NVIDIA GPU
 sacct -u $USER -S today --format=JobID,JobName%25,State,Elapsed,ExitCode
 ```
 
 `DUE TO TIME LIMIT` is normal inside a chain: the next job continues the run. A log with
-`no GPU visible` ran on the CPU; cancel it and resubmit with `GPU_TYPE=h100` or another NVIDIA model.
+`no GPU visible` stopped at once because its node had no NVIDIA GPU. `plan.sh` leaves ice-gpu's AMD
+nodes out, so this only happens with `sbatch` used directly; add `--gres=gpu:h100:1` there.
 A W&B run that ends after about a second means the settings were wrong, and every job of the chain
 fails the same way. The most common case is a TESSERA-context model without `--tessera` in `EXTRA`.
 
