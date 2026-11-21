@@ -5,6 +5,10 @@
 # $RUNS/$NAME.done and later jobs of the chain exit at once.
 #   NAME=swin_daily sbatch scripts/ice/train.sbatch
 #   NAME=swin_it2 IT=2 EXTRA="--epochs 50" sbatch scripts/ice/train.sbatch
+#   NAME=swin_daily TEST=10 sbatch scripts/ice/train.sbatch   # test F1/IoU every 10 epochs (default 5)
+#   TEST=N scores the test fires with the current weights every N epochs (W&B + log, --test-every);
+#   TEST=0 tests only once, at the end, with the lowest-validation-loss checkpoint (done unless
+#   EXTRA holds --no-test-after-train). A --test-every in EXTRA comes later and wins over TEST.
 #   MODEL, BATCH, LR, EXTRA (any other train flags) also apply. Daily archives here give the windows they
 #   were converted with (6 days, 1 day apart), so TS=6 IT=1 (the defaults) must match window_config.json.
 #   Elsewhere: sbatch -p ice-gpu,coe-gpu [--qos=<qos>] [--gres=gpu:h100:1] scripts/ice/train.sbatch
@@ -20,9 +24,13 @@ set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"
 source scripts/ice/env.sh
 : "${NAME:?set NAME, e.g. NAME=swin_daily}"
+TEST="${TEST:-5}"
+[[ "$TEST" =~ ^[0-9]+$ ]] || { echo "!! TEST must be a whole number of epochs (0 = test only at the end), got '$TEST'"; exit 1; }
 if [ -f "$RUNS/$NAME.done" ]; then echo "$NAME already finished ($RUNS/$NAME.done)"; exit 0; fi
 echo "code: $(git log --oneline -1)  run: $NAME  state: $RUNS/$NAME.state"
 echo "partition: ${SLURM_JOB_PARTITION:-?}  node: $(hostname)  python: $(python -V 2>&1)"
+if [ "$TEST" = 0 ]; then echo "test F1/IoU: at the end only (TEST=0)"
+else echo "test F1/IoU: every $TEST epochs with the current weights, and at the end (TEST=$TEST)"; fi
 # Check the GPU before training: torch must see one (else it would train on the CPU, many times slower)
 # and have kernels for it (a newer model such as a Blackwell RTX Pro 6000 or B200 fails at its first
 # operation with "no kernel image is available").
@@ -49,6 +57,6 @@ then
 fi
 python -m firepred.cli.train -m "${MODEL:-swinunetr3d}" -mode pred -b "${BATCH:-8}" -lr "${LR:-0.001}" \
        -nh 3 -ed 36 -ts "${TS:-6}" -it "${IT:-1}" --data-root "$DATA_ROOT" --num-workers 6 \
-       --resume "$RUNS/$NAME.state" ${EXTRA:-}
+       --test-every "$TEST" --resume "$RUNS/$NAME.state" ${EXTRA:-}
 touch "$RUNS/$NAME.done"
 echo "$NAME finished"

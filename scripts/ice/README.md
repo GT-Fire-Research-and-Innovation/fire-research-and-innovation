@@ -422,7 +422,7 @@ with `swinunetr3d_tessera needs TESSERA inputs (train with --tessera); got 43 in
 | Dice loss | `--loss dice` |
 | Dice + cross-entropy, fixed weights | `--loss dicece --ce-weight 1 10` (background 1, fire 10) |
 | Dice + cross-entropy, weights from the data | `--loss dicece --ce-weight auto` (the default for `dicece`) |
-| Test scores in W&B during training | `--test-every 10`. Charts only: the kept checkpoint is still chosen by validation loss |
+| Test scores during training | `TEST=10` (default `5`; `TEST=0` tests only at the end). In W&B and the log. Watching only: the kept checkpoint is still chosen by validation loss |
 | No final test | `--no-test-after-train` |
 | Keep checkpoints in W&B | `--upload-checkpoints` |
 | Model option | `--model-option KEY=VALUE`, repeatable. See [the model table](#models) |
@@ -465,6 +465,7 @@ defaults `TS=6 IT=1`. Other window settings need the `fire-split-zones` branch.
 | `TS` | `6` | Input days per window. Must match `window_config.json`: `6` on the daily dataset |
 | `IT` | `1` | Days between window starts. Must match `window_config.json`: `1` on the daily dataset |
 | `EXTRA` | empty | Every other training flag, in one quoted string. See the flag table below |
+| `TEST` | `5` | Score the test fires (test F1/IoU) with the current weights every `TEST` epochs, in W&B and the log. `0` tests only at the end |
 | `CHAIN` | `3` | Training jobs queued in a row, each up to 16 hours |
 | `SMOKE` | `0` | `1` adds a one-step GPU check before training. Not for TESSERA runs |
 | `PARTITION` | `ice-gpu` | GPU partition, or a comma list |
@@ -485,7 +486,7 @@ Only when `plan.sh` queues a data job, because `DATA_ROOT` has no `window_config
 | `DEST_REPO` | unset | Also upload the converted archives to this repo |
 
 Each training job gets one GPU, 8 CPUs, 64 GB of memory and 16 hours. `train.sbatch` always passes
-`-mode pred -nh 3 -ed 36 --num-workers 6` and `--resume` with the run state.
+`-mode pred -nh 3 -ed 36 --num-workers 6`, `--test-every $TEST` and `--resume` with the run state.
 Flags in `EXTRA` come last, so `-nh`, `-ed` and `--num-workers` in `EXTRA` override those.
 
 #### Training flags for `EXTRA`
@@ -525,14 +526,14 @@ Flags in `EXTRA` come last, so `-nh`, `-ed` and `--num-workers` in `EXTRA` overr
 | `--model-option KEY=VALUE` | none | Model setting, repeatable. See [the model table](#models) |
 | **Testing and logging** | | |
 | `--no-test-after-train` | off | Skip the final test. By default the best checkpoint scores the test fires after training |
-| `--test-every N` | `0` | Also score the test fires every N epochs, for W&B charts only |
+| `--test-every N` | `TEST` (`5`) | Also score the test fires every N epochs, for W&B and the log. Set it with `TEST`; the bare Python default is `0` |
 | `--test-csv PATH` | `roi/us_fire_2021_out_new.csv` | Fire list of the test scoring |
 | `--plot-dir PATH` | `evaluation_plot` | Folder of prediction plots from the final test |
 | `--upload-checkpoints` | off | Store each best checkpoint as a W&B artifact |
 | `--wandb-user NAME` | `gt-fri` | W&B team. The project is `AFBAPred` |
 
 Set through a setting instead of `EXTRA`: `-m` (`MODEL`), `-b` (`BATCH`), `-lr` (`LR`), `-ts` (`TS`),
-`-it` (`IT`), `--data-root` (`DATA_ROOT`) and `--resume` (`NAME`).
+`-it` (`IT`), `--test-every` (`TEST`), `--data-root` (`DATA_ROOT`) and `--resume` (`NAME`).
 `-test`, `--checkpoint`, `--trust-checkpoint` and `--load-epoch` are for testing, in [section 3](#3-test-a-model).
 `python -m firepred.cli.train --help` prints every flag, after `source scripts/ice/env.sh`.
 
@@ -726,6 +727,11 @@ Model F1: <f1>; background F1: <bg f1>; model IoU: <iou>; background IoU: <bg io
 
 The W&B run summary holds the same scores as `test_f1` and `test_iou`. Only one checkpoint per run
 stays on disk, the one with the lowest validation loss.
+
+Every `TEST` epochs during training (default 5, `TEST=0` turns it off) the current weights also
+score the test fires. The log gets `Epoch <n>: test fire F1 <f1>, fire IoU <iou> (periodic, current
+weights)` and W&B the `(periodic, current weights)` test charts. These follow progress only; the
+final scores above still come from the lowest-validation-loss checkpoint.
 
 ### Find a run's test F1 and IoU
 

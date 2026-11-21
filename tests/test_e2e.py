@@ -137,6 +137,10 @@ def test_training_run_logs_every_epoch(dicece_run):
     for log in train + val:
         assert all(value > 0 for key, value in log.items() if "Loss" in key)
     assert all(log[LEARNING_RATE] == pytest.approx(1e-3) for log in val)
+    # The periodic scores also reach the job log (the ICE logs are read with grep).
+    lines = [line for line in dicece_run.stdout.splitlines() if "test fire F1" in line]
+    assert [line.split(":")[0] for line in lines] == ["Epoch 1", "Epoch 2"]
+    assert all(line.endswith("(periodic, current weights)") for line in lines)
 
 
 def test_training_run_charts_fire_and_background_scores(dicece_run):

@@ -9,7 +9,9 @@
 #   NAME=swin_long CHAIN=4 EXTRA="--epochs 100" bash scripts/ice/plan.sh
 #   NAME=swin_daily PARTITION=ice-gpu,coe-gpu bash scripts/ice/plan.sh   # first free GPU of the two
 #   NAME=swin_h100 PARTITION=ice-gpu GPU_TYPE=h100 bash scripts/ice/plan.sh
-# Everything train.sbatch reads (MODEL, BATCH, LR, TS, IT, EXTRA, ...) passes through.
+#   NAME=swin_daily TEST=10 bash scripts/ice/plan.sh   # test F1/IoU every 10 epochs; TEST=0: only at the end
+# Everything train.sbatch reads (MODEL, BATCH, LR, TS, IT, TEST, EXTRA, ...) passes through.
+# TEST (default 5) also scores the test fires every TEST epochs with the current weights, for W&B and the log.
 # Where jobs run: PARTITION, CPU_PARTITION, QOS, CPU_QOS, ACCOUNT, GPU_TYPE (scripts/ice/slurm.sh); every listed
 # partition is checked with sbatch --test-only first, and one that refuses the jobs is left out.
 # Which partitions you can use: bash scripts/ice/partitions.sh   Progress: bash scripts/ice/status.sh
@@ -20,8 +22,11 @@ source scripts/ice/slurm.sh
 : "${NAME:?set NAME, e.g. NAME=swin_daily}"
 CHAIN="${CHAIN:-3}"
 TS="${TS:-6}"
+TEST="${TEST:-5}"
+# Checked here too, so a bad value stops on the login node instead of after a wait in the queue.
+[[ "$TEST" =~ ^[0-9]+$ ]] || { echo "!! TEST must be a whole number of epochs (0 = test only at the end), got '$TEST'"; exit 1; }
 mkdir -p logs
-export NAME TS DATA_ROOT FIRE_WORK FIREPRED_ENV
+export NAME TS TEST DATA_ROOT FIRE_WORK FIREPRED_ENV
 
 # A partition that refuses the jobs stops here, on the login node, instead of failing later in the queue.
 GPU_PARTS=$(usable_partitions "$PARTITION" gpu)
@@ -56,4 +61,6 @@ for k in $(seq 1 "$CHAIN"); do
   IDS+=("$J"); DEP=(--dependency=afterany:$J)  # later parts start when the previous one ends, however it ended
 done
 echo "training $NAME: ${IDS[*]}  (state: $RUNS/$NAME.state)"
+if [ "$TEST" = 0 ]; then echo "test F1/IoU: at the end only (TEST=0)"
+else echo "test F1/IoU: every $TEST epochs and at the end (TEST=$TEST; TEST=0 for the end only)"; fi
 echo "Watch: bash scripts/ice/status.sh   Cancel all: scancel -u \$USER"

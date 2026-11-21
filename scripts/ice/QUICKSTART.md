@@ -145,8 +145,9 @@ salloc -p ice-cpu -c 8 --mem=64G -t 4:00:00
 ## 5. Run a model
 
 One command from the login node queues the whole run: `plan.sh` submits `CHAIN` training jobs of up
-to 16 hours each, each continuing where the last stopped, and the run is tested on the test fires at
-the end.
+to 16 hours each, each continuing where the last stopped. Every `TEST` epochs (default 5) the
+current weights score the test fires, and the run is tested once more at the end with its best
+checkpoint.
 
 **Without TESSERA: `swinunetr3d` on `data-daily`**
 
@@ -154,7 +155,7 @@ the end.
 NAME=swin_daily \
 MODEL=swinunetr3d \
 DATA_ROOT="$HOME/scratch/firepred/data-daily" \
-BATCH=8 LR=0.001 TS=6 IT=1 CHAIN=3 \
+BATCH=8 LR=0.001 TS=6 IT=1 CHAIN=3 TEST=5 \
 EXTRA="--epochs 100" \
 bash scripts/ice/plan.sh
 ```
@@ -165,7 +166,7 @@ bash scripts/ice/plan.sh
 NAME=swin_tessera_daily \
 MODEL=swinunetr3d_tessera \
 DATA_ROOT="$HOME/scratch/firepred/data-daily-tessera" \
-BATCH=8 LR=0.001 TS=6 IT=1 CHAIN=3 \
+BATCH=8 LR=0.001 TS=6 IT=1 CHAIN=3 TEST=5 \
 EXTRA="--tessera --epochs 100" \
 bash scripts/ice/plan.sh
 ```
@@ -191,6 +192,7 @@ value shown.
 | `EXTRA` | `"--epochs 100"` | empty | **Change** | Any other training flags, passed as written. Must hold `--tessera` for TESSERA models. More flags below |
 | `LR` | `0.001` | `0.001` | Sometimes | Learning rate. `0.001` is the paper's value |
 | `BATCH` | `8` | `8` | Sometimes | Windows per training step. Lower it (`4`) if a GPU runs out of memory |
+| `TEST` | `5` | `5` | Sometimes | Score the test fires (test F1 and IoU) with the current weights every `TEST` epochs, in W&B and the log. `0` tests only at the end. The final test of the best checkpoint always runs either way |
 | `CHAIN` | `3` | `3` | Sometimes | Training jobs to queue, 16 hours each at most. Extra jobs of a finished run exit at once, so too many costs nothing; too few leaves the run unfinished (queue more with the same command) |
 | `TS` | `6` | `6` | **Leave** | Input days per window. Must match the dataset's `window_config.json`: `6` for both datasets |
 | `IT` | `1` | `1` | **Leave** | Days between window starts. Must match the dataset: `1` |
@@ -205,6 +207,7 @@ These are fixed in `scripts/ice/train.sbatch`. **Leave** them.
 | `-nh` | `3` | Attention heads of the Swin models (the paper's) |
 | `-ed` | `36` | Embedding size of the Swin models (the paper's) |
 | `--num-workers` | `6` | Data-loading processes (the job has 8 CPUs) |
+| `--test-every` | `TEST` (`5`) | Test F1/IoU every `TEST` epochs with the current weights. `TEST=0` turns it off |
 | `--resume` | `~/scratch/firepred/runs/<NAME>.state` | Saved after every epoch, so the next job continues |
 
 ### Flags for `EXTRA`
@@ -216,7 +219,7 @@ These are fixed in `scripts/ice/train.sbatch`. **Leave** them.
 | `--lr-schedule none\|plateau\|cosine` | `none` | Sometimes | Learning-rate decay. `none` keeps it constant (the paper); `cosine` decays smoothly to `--lr-min` over `--epochs` |
 | `--lr-min X` | `0.000001` | Sometimes | Lowest learning rate for `plateau` and `cosine` |
 | `--loss dice\|dicece` | `dicece` for Swin models | Sometimes | Training loss. `dicece` is the paper's |
-| `--test-every N` | `0` (never) | Sometimes | Also score the test fires every N epochs, for W&B curves only |
+| `--test-every N` | `TEST` (`5`) | Leave | Set it with `TEST` instead. Here it overrides `TEST` |
 | `-seed N` | `42` | Sometimes | Random seed. Change it to repeat a run with another seed |
 | `--no-test-after-train` | testing on | Leave | Skip scoring the test fires at the end |
 | `--tessera-cells-per-pixel k` | `1` | Leave | Must match the TESSERA files: `1` for `ts-tesserafire` |
@@ -225,7 +228,7 @@ Example with several:
 
 ```bash
 NAME=swin_daily_cosine MODEL=swinunetr3d DATA_ROOT="$HOME/scratch/firepred/data-daily" \
-BATCH=8 LR=0.001 TS=6 IT=1 CHAIN=3 \
+BATCH=8 LR=0.001 TS=6 IT=1 CHAIN=3 TEST=5 \
 EXTRA="--epochs 200 --lr-schedule cosine --lr-min 0.000001" \
 bash scripts/ice/plan.sh
 ```
@@ -248,7 +251,7 @@ Example:
 
 ```bash
 NAME=swin_daily_h100 MODEL=swinunetr3d DATA_ROOT="$HOME/scratch/firepred/data-daily" \
-BATCH=8 LR=0.001 TS=6 IT=1 CHAIN=3 EXTRA="--epochs 100" \
+BATCH=8 LR=0.001 TS=6 IT=1 CHAIN=3 TEST=5 EXTRA="--epochs 100" \
 PARTITION=ice-gpu,coe-gpu GPU_TYPE=h100 SMOKE=1 \
 bash scripts/ice/plan.sh
 ```
@@ -267,6 +270,16 @@ When a run finishes, its log ends with the test scores:
 ```bash
 grep -h "Model F1" logs/fp-swin_daily-*.out
 ```
+
+While it trains, every `TEST` epochs (default 5) adds a line with the current weights' test scores:
+
+```bash
+grep -h "test fire F1" logs/fp-swin_daily-*.out    # Epoch 5: test fire F1 ..., fire IoU ... (periodic, current weights)
+```
+
+In W&B these are the charts `Test F1 — Next-Day Fire Growth (periodic, current weights)` and
+`Test IoU — Next-Day Fire Growth (periodic, current weights)`. They are for watching progress only:
+the checkpoint the final test uses is still the one with the lowest validation loss.
 
 The same numbers are on the run's W&B page (`test_f1`, `test_iou`), team `gt-fri`, project
 `AFBAPred`. To test a chosen checkpoint, compare runs or read every option, see [README.md](README.md).

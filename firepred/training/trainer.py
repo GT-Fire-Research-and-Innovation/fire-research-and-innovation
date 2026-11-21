@@ -313,7 +313,7 @@ class Trainer:
 
         Each epoch: train, validate, offer the checkpoint to the store (uploading
         it when asked), step the schedule, and every --test-every epochs score the
-        test fires for the charts. The checkpoint is saved before the schedule
+        test fires for the charts and the log. The checkpoint is saved before the schedule
         steps, so it keeps that epoch's learning rate. With a run state (--resume)
         the finished epoch is then written to it, so a stopped job continues from
         there (start_epoch). Results only flow out.
@@ -343,9 +343,11 @@ class Trainer:
                 tracker.log_checkpoint(saved, epoch, val.loss, store.settings)
             # 4. Optional learning-rate decay (plateau reads the validation loss).
             self.schedule.step(val.loss)
-            # 5. Optional test-fire scores with the current weights, for the charts only.
+            # 5. Optional test-fire scores with the current weights, for the charts and the log only.
             if self.periodic_test_due(epoch, evaluator):
-                tracker.log_periodic_test(epoch, evaluator.score(self.model))
+                test = tracker.log_periodic_test(epoch, evaluator.score(self.model))
+                print(f"Epoch {epoch + 1}: test fire F1 {test.f1:.4f}, fire IoU {test.iou:.4f} "
+                      "(periodic, current weights)")
             # 6. With --resume: everything needed to continue after this epoch.
             if run_state is not None:
                 run_state.write(epoch, self, store, tracker.run_id, getattr(data.train_loader, "generator", None))
